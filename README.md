@@ -41,10 +41,12 @@ npm run dev
 
 Open `http://localhost:3000`.
 
-The first successful run opens a six-step judge tour. It walks through the
-lie-detector contradiction, genuine cloud gating, co-optimisation comparison,
-safety events, and per-tick explanation. Use **Guided tour** in the header to
-restart it; event cards jump the timeline inspector to the relevant evidence.
+The first successful run opens an 18-step interactive dashboard tutorial. It
+teaches the scenario tabs, environmental controls, controller weights,
+run/reset workflow, KPIs, charts, lie-detector contradiction, genuine cloud
+gating, co-optimisation comparison, safety events, timeline scrubber, and
+per-tick explanation. Use **Guided tour** in the header to restart it or jump
+directly to any component; event cards move the inspector to their evidence.
 
 Lux compliance is evaluated during occupied ticks with at least 200 W/m² of
 available daylight. Relative cooling load is averaged across every occupied

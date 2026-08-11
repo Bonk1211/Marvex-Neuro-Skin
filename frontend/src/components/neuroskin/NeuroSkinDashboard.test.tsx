@@ -108,9 +108,15 @@ describe('NeuroSkinDashboard', () => {
       json: async () => ({ detail: 'Simulation engine warming up.' }),
     })
     render(<NeuroSkinDashboard />)
-    expect(await screen.findByText('Simulation API unavailable')).toBeInTheDocument()
-    expect(screen.getByText(/Simulation engine warming up/i)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument()
+    expect(
+      await screen.findByText('Simulation API unavailable')
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(/Simulation engine warming up/i)
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'Try again' })
+    ).toBeInTheDocument()
   })
 
   it('serializes the selected scenario when changing tabs', async () => {
@@ -125,13 +131,23 @@ describe('NeuroSkinDashboard', () => {
     })
   })
 
-  it('opens the guided judge tour and navigates to the lie-detector proof', async () => {
+  it('opens the detailed tutorial and jumps to the lie-detector component', async () => {
     render(<NeuroSkinDashboard />)
     await screen.findByText('NeuroSkin representative tropical day')
     fireEvent.click(screen.getByRole('button', { name: 'Guided tour' }))
-    expect(screen.getByText('Step 1 of 6')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Next tour step' }))
-    expect(await screen.findByText('Step 2 of 6')).toBeInTheDocument()
+    expect(screen.getByText('Step 1 of 18')).toBeInTheDocument()
+    expect(screen.getByText('Try this')).toBeInTheDocument()
+    expect(screen.getByText('What to notice')).toBeInTheDocument()
+    fireEvent.change(
+      screen.getByRole('combobox', { name: 'Jump to tour step' }),
+      {
+        target: { value: '10' },
+      }
+    )
+    expect(await screen.findByText('Step 11 of 18')).toBeInTheDocument()
+    expect(
+      screen.getByText('Read the lie-detector proof as a three-part argument.')
+    ).toBeInTheDocument()
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
     const options = fetchMock.mock.calls[1][1] as RequestInit
     expect(JSON.parse(String(options.body))).toMatchObject({

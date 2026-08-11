@@ -65,83 +65,92 @@ export function SimulationControls({
       </div>
 
       <div className='space-y-6 p-5'>
-        <label className='control-label'>
-          <span>Date</span>
-          <input
-            className='control-input mt-2'
-            type='date'
-            value={value.date}
-            onChange={(event) =>
-              onChange({ ...value, date: event.target.value })
-            }
-          />
-        </label>
+        <div className='space-y-6' data-tour='environment-inputs'>
+          <label className='control-label' data-tour='control-date'>
+            <span>Date</span>
+            <input
+              className='control-input mt-2'
+              type='date'
+              value={value.date}
+              onChange={(event) =>
+                onChange({ ...value, date: event.target.value })
+              }
+            />
+          </label>
 
-        <div>
-          <div className='control-label mb-2 flex items-center gap-2'>
-            <CloudSun className='h-4 w-4 text-mint' />
-            Cloud profile
+          <div data-tour='control-cloud'>
+            <div className='control-label mb-2 flex items-center gap-2'>
+              <CloudSun className='h-4 w-4 text-mint' />
+              Cloud profile
+            </div>
+            <div className='grid grid-cols-3 gap-1 rounded-xl bg-white/5 p-1'>
+              {cloudProfiles.map((profile) => (
+                <button
+                  key={profile.value}
+                  className={
+                    value.cloud_profile === profile.value
+                      ? 'segment-active'
+                      : 'segment'
+                  }
+                  type='button'
+                  onClick={() =>
+                    onChange({ ...value, cloud_profile: profile.value })
+                  }
+                >
+                  {profile.label}
+                </button>
+              ))}
+            </div>
           </div>
-          <div className='grid grid-cols-3 gap-1 rounded-xl bg-white/5 p-1'>
-            {cloudProfiles.map((profile) => (
-              <button
-                key={profile.value}
-                className={
-                  value.cloud_profile === profile.value
-                    ? 'segment-active'
-                    : 'segment'
-                }
-                type='button'
-                onClick={() =>
-                  onChange({ ...value, cloud_profile: profile.value })
-                }
-              >
-                {profile.label}
-              </button>
-            ))}
+
+          <div data-tour='control-occupancy'>
+            <RangeControl
+              icon={<Gauge className='h-4 w-4 text-mint' />}
+              label='Occupancy'
+              value={value.occupancy_scale}
+              min={0}
+              max={1.5}
+              step={0.1}
+              suffix='×'
+              onChange={(next) => onChange({ ...value, occupancy_scale: next })}
+            />
           </div>
+
+          <div data-tour='control-wind'>
+            <RangeControl
+              icon={<Zap className='h-4 w-4 text-mint' />}
+              label='Wind override'
+              value={value.wind_override ?? 3}
+              min={0}
+              max={20}
+              step={0.5}
+              suffix=' m/s'
+              onChange={(next) => onChange({ ...value, wind_override: next })}
+            />
+          </div>
+
+          <label
+            className='flex items-center justify-between rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white'
+            data-tour='control-power'
+          >
+            <span>
+              <span className='block font-medium'>Facade power</span>
+              <span className='text-xs text-white/50'>
+                Toggle the global safety input
+              </span>
+            </span>
+            <input
+              className='power-toggle'
+              type='checkbox'
+              checked={value.power_ok}
+              onChange={(event) =>
+                onChange({ ...value, power_ok: event.target.checked })
+              }
+            />
+          </label>
         </div>
 
-        <RangeControl
-          icon={<Gauge className='h-4 w-4 text-mint' />}
-          label='Occupancy'
-          value={value.occupancy_scale}
-          min={0}
-          max={1.5}
-          step={0.1}
-          suffix='×'
-          onChange={(next) => onChange({ ...value, occupancy_scale: next })}
-        />
-
-        <RangeControl
-          icon={<Zap className='h-4 w-4 text-mint' />}
-          label='Wind override'
-          value={value.wind_override ?? 3}
-          min={0}
-          max={20}
-          step={0.5}
-          suffix=' m/s'
-          onChange={(next) => onChange({ ...value, wind_override: next })}
-        />
-
-        <label className='flex items-center justify-between rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white'>
-          <span>
-            <span className='block font-medium'>Facade power</span>
-            <span className='text-xs text-white/50'>
-              Toggle the global safety input
-            </span>
-          </span>
-          <input
-            className='power-toggle'
-            type='checkbox'
-            checked={value.power_ok}
-            onChange={(event) =>
-              onChange({ ...value, power_ok: event.target.checked })
-            }
-          />
-        </label>
-
-        <div>
+        <div data-tour='controller-weights'>
           <p className='control-label mb-3'>Controller priorities</p>
           <div className='space-y-3'>
             {weightLabels.map(({ key, label }) => (
@@ -162,31 +171,33 @@ export function SimulationControls({
           </p>
         </div>
 
-        <label className='control-label'>
-          <span>Deterministic seed</span>
-          <input
-            className='control-input mt-2'
-            type='number'
-            min={0}
-            value={value.seed}
-            onChange={(event) =>
-              onChange({
-                ...value,
-                seed: Math.max(0, Number(event.target.value)),
-              })
-            }
-          />
-        </label>
+        <div className='space-y-4' data-tour='run-workflow'>
+          <label className='control-label'>
+            <span>Deterministic seed</span>
+            <input
+              className='control-input mt-2'
+              type='number'
+              min={0}
+              value={value.seed}
+              onChange={(event) =>
+                onChange({
+                  ...value,
+                  seed: Math.max(0, Number(event.target.value)),
+                })
+              }
+            />
+          </label>
 
-        <button
-          className='run-button'
-          onClick={onRun}
-          disabled={loading}
-          type='button'
-        >
-          <span className={loading ? 'status-pulse' : 'run-dot'} />
-          {loading ? 'Simulating day…' : 'Run simulation'}
-        </button>
+          <button
+            className='run-button'
+            onClick={onRun}
+            disabled={loading}
+            type='button'
+          >
+            <span className={loading ? 'status-pulse' : 'run-dot'} />
+            {loading ? 'Simulating day…' : 'Run simulation'}
+          </button>
+        </div>
       </div>
     </section>
   )

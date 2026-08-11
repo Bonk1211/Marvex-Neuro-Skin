@@ -131,7 +131,7 @@ export function NeuroSkinDashboard() {
   useEffect(() => {
     if (tourPrompted.current || loading || !data || error) return
     tourPrompted.current = true
-    if (window.localStorage.getItem('neuroskin-tour-v1') === 'complete') return
+    if (window.localStorage.getItem('neuroskin-tour-v2') === 'complete') return
     const timer = window.setTimeout(() => setTourOpen(true), 900)
     return () => window.clearTimeout(timer)
   }, [data, error, loading])
@@ -219,7 +219,10 @@ export function NeuroSkinDashboard() {
         </div>
       </header>
 
-      <div className='sticky top-0 z-30 border-b border-border/80 bg-background/90 backdrop-blur-xl'>
+      <div
+        className='sticky top-0 z-30 border-b border-border/80 bg-background/90 backdrop-blur-xl'
+        data-tour='scenario-tabs'
+      >
         <div className='mx-auto flex max-w-[1600px] gap-1 overflow-x-auto px-5 py-3 lg:px-8'>
           {tabs.map((tab) => {
             const Icon = tab.icon
@@ -284,7 +287,10 @@ export function NeuroSkinDashboard() {
                 </div>
               </div>
 
-              <div className='grid gap-3 sm:grid-cols-2 xl:grid-cols-4'>
+              <div
+                className='grid gap-3 sm:grid-cols-2 xl:grid-cols-4'
+                data-tour='kpi-grid'
+              >
                 <MetricCard
                   icon={Gauge}
                   label='Mean relative load'
@@ -361,11 +367,11 @@ export function NeuroSkinDashboard() {
               </div>
 
               {selectedTick && (
-                <div
-                  className='grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(320px,0.7fr)]'
-                  data-tour='explainability'
-                >
-                  <section className='surface-card p-5 sm:p-6'>
+                <div className='grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(320px,0.7fr)]'>
+                  <section
+                    className='surface-card p-5 sm:p-6'
+                    data-tour='timeline-inspector'
+                  >
                     <div className='flex flex-col justify-between gap-4 sm:flex-row sm:items-center'>
                       <div>
                         <p className='eyebrow'>Timeline inspector</p>
@@ -426,7 +432,10 @@ export function NeuroSkinDashboard() {
                     </div>
                   </section>
 
-                  <section className='explain-card'>
+                  <section
+                    className='explain-card'
+                    data-tour='explanation-panel'
+                  >
                     <div className='flex items-center gap-3'>
                       <div className='explain-icon'>
                         <BrainCircuit className='h-5 w-5' />
@@ -679,7 +688,11 @@ function ScenarioPager({
   const previous = tabs[currentIndex - 1]
   const next = tabs[currentIndex + 1]
   return (
-    <nav className='scenario-pager' aria-label='Demo navigation'>
+    <nav
+      className='scenario-pager'
+      aria-label='Demo navigation'
+      data-tour='scenario-pager'
+    >
       <button
         type='button'
         disabled={!previous}
