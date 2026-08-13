@@ -6,7 +6,13 @@ import numpy as np
 from app.config import DEFAULTS
 from app.domain.controller import run_tick
 from app.domain.environment import generate_day, inject_sensor_fault, solar_frame
-from app.domain.facade import ORIENTATIONS, facade_heat, poa_series, wall_gains
+from app.domain.facade import (
+    ORIENTATIONS,
+    facade_heat,
+    poa_series,
+    roof_segments,
+    wall_gains,
+)
 from app.domain.types import (
     ControllerWeights,
     Environment,
@@ -19,6 +25,7 @@ from app.schemas import (
     CostBreakdown,
     EventAnnotation,
     FacadeHeatPayload,
+    RoofSegmentPayload,
     SimulationMetadata,
     SimulationRunRequest,
     SimulationRunResponse,
@@ -253,6 +260,15 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
         np.array([env.dhi for env in environments]),
         tilt=request.facade_tilt,
     )
+    # The roof is the same calculation at a different tilt.
+    roof_poa = poa_series(
+        times,
+        position,
+        np.array([env.ghi for env in environments]),
+        np.array([env.dni for env in environments]),
+        np.array([env.dhi for env in environments]),
+        tilt=request.roof_pitch,
+    )
     weights = ControllerWeights(**request.weights.model_dump())
     ticks: list[TickPayload] = []
     annotations: list[EventAnnotation] = []
@@ -320,6 +336,13 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
             wind=env.wind,
             primary=request.facade_orientation,
         )
+        roof = roof_segments(
+            roof_poa,
+            index,
+            outdoor_temp=env.outdoor_temp,
+            wind=env.wind,
+            pitch=request.roof_pitch,
+        )
         payload = TickPayload(
             timestamp=env.t,
             ghi=round(env.ghi, 2),
@@ -346,6 +369,7 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
             reason=decision.reason,
             cost_breakdown=breakdown,
             facade=[FacadeHeatPayload(**vars(wall)) for wall in walls],
+            roof=[RoofSegmentPayload(**vars(segment)) for segment in roof],
         )
         ticks.append(payload)
 
@@ -431,6 +455,7 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
         environment_source=request.environment_source,
         facade_orientation=request.facade_orientation,
         facade_tilt=request.facade_tilt,
+        roof_pitch=request.roof_pitch,
         floors=DEFAULTS.floors,
         synthetic=True,
         data_notice=_data_notice(weather_context, open_meteo, site),

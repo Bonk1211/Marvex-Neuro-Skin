@@ -28,6 +28,11 @@ class SimulationDefaults:
     # That overhang is the building's passive shading device. 90 = a plain wall.
     facade_tilt: float = 115.0
     floors: int = 7
+    # Roof pitch in degrees, measured from horizontal. The building carries a
+    # 71.4 kWp rooftop PV array but no source publishes the roof geometry or the
+    # array tilt, so this is an assumption shaped like a real low-latitude array.
+    # Set 0 for a flat roof, where every segment reads the same by definition.
+    roof_pitch: float = 10.0
 
 
 DEFAULTS = SimulationDefaults()

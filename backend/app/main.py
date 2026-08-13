@@ -94,6 +94,7 @@ def config() -> dict[str, object]:
             "facade_orientation": DEFAULTS.facade_orientation,
             "facade_orientations": list(ORIENTATIONS),
             "facade_tilt": DEFAULTS.facade_tilt,
+            "roof_pitch": DEFAULTS.roof_pitch,
             "floors": DEFAULTS.floors,
         },
         "simulation": {

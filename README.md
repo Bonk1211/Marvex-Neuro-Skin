@@ -67,7 +67,7 @@ as advisory context only and never bypass the controller's local safety inputs.
 
 - `frontend/` — Next.js 15, TypeScript, Tailwind CSS, Recharts, and three.js.
 - `backend/` — FastAPI, Pydantic, pvlib, NumPy, and pandas.
-- `docs/neuroskin_software_prd.md` — source implementation specification.
+- `docs/neuroskin_software_prd.md` — as-built implementation specification (v0.2).
 
 The backend intentionally uses a deterministic, physics-inspired `LoadPredictor`. No learned model, training pipeline, database, authentication, or hardware integration is included.
 
@@ -165,10 +165,20 @@ T_sol-air = T_air + (a x I) / (5.7 + 3.8 x v)
 ```
 
 with absorptance `a = 0.6` and the long-wave correction taken as zero for
-vertical surfaces. The dashboard renders this as an orbitable 3D building whose
-walls are shaded on a single-hue temperature ramp, with the same numbers listed
-in a table beside it. Only the wall named by `facade_orientation` carries
-louvres; the other three show unshaded gain for comparison.
+vertical surfaces.
+
+Every tick also carries a `roof` array: the same calculation at `roof_pitch`
+instead of `facade_tilt`, giving one entry per roof quadrant. Roof faces carry
+no louvres, so incident gain is what the surface keeps. **At `roof_pitch: 0` all
+four quadrants read identically** — a flat roof has no orientation to
+distinguish — and the spread grows with pitch (about 125 W/m² at 10°, 305 W/m²
+at 25°, late afternoon).
+
+The dashboard renders all of this as an orbitable 3D building: seven storeys
+with walls leaning 25°, four pitched roof faces, every surface shaded on a
+single-hue temperature ramp. Click any wall or roof face to inspect it, or use
+the surface-readings table for the keyboard equivalent. Each wall runs its own
+controller and carries its own louvres at its own angle.
 
 Run a MET-informed synthetic scenario for a date inside the current official
 seven-day forecast window:

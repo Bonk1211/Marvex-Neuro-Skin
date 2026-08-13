@@ -4,7 +4,17 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { Box, Sun } from 'lucide-react'
-import type { FacadeHeat, FacadeOrientation, TickPayload } from '@/lib/types'
+import type {
+  FacadeHeat,
+  FacadeOrientation,
+  RoofSegment,
+  TickPayload,
+} from '@/lib/types'
+
+/** Which surface the inspector is pointed at. Walls and roof faces share a key. */
+export type SurfaceId =
+  | `wall:${FacadeOrientation}`
+  | `roof:${FacadeOrientation}`
 
 // Sequential single-hue ramp, light to dark, for sol-air surface temperature.
 // One hue only: a rainbow would read as categories where there is a magnitude.
@@ -92,6 +102,38 @@ function wallPanel(halfBottom: number, halfTop: number, height: number) {
   return geometry
 }
 
+/**
+ * One quadrant of the pitched roof: the two top-of-wall corners rising to a
+ * central apex. Same local frame as a wall panel, so the same rotation places
+ * it. At pitch 0 the apex sits level and the four faces form a flat roof.
+ */
+function roofPanel(halfTop: number, height: number, apexHeight: number) {
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute(
+    'position',
+    new THREE.BufferAttribute(
+      new Float32Array([
+        -halfTop,
+        height,
+        halfTop,
+        halfTop,
+        height,
+        halfTop,
+        0,
+        apexHeight,
+        0,
+      ]),
+      3
+    )
+  )
+  geometry.computeVertexNormals()
+  return geometry
+}
+
+const apexHeightFor = (halfTop: number, height: number, pitch: number) =>
+  // Lifted a hair so a flat roof does not z-fight with the structure below it.
+  height + 0.006 + halfTop * Math.tan(THREE.MathUtils.degToRad(pitch))
+
 const rampColor = (() => {
   const stops = HEAT_RAMP.map((hex) => new THREE.Color(hex))
   const scratch = new THREE.Color()
@@ -163,16 +205,18 @@ interface BuildingHeatmapProps {
   tick: TickPayload
   floors: number
   facadeTilt: number
+  roofPitch: number
   timeLabel: string
   locationName: string
-  selected: FacadeOrientation
-  onSelect: (orientation: FacadeOrientation) => void
+  selected: SurfaceId
+  onSelect: (surface: SurfaceId) => void
 }
 
 export function BuildingHeatmap({
   tick,
   floors,
   facadeTilt,
+  roofPitch,
   timeLabel,
   locationName,
   selected,
@@ -187,8 +231,10 @@ export function BuildingHeatmap({
     camera: THREE.PerspectiveCamera
     controls: OrbitControls
     panels: Map<FacadeOrientation, THREE.Mesh[]>
+    roofFaces: Map<FacadeOrientation, THREE.Mesh>
     louvres: Map<FacadeOrientation, THREE.Group>
     outline: THREE.LineLoop
+    roofOutline: THREE.LineLoop
     sunlight: THREE.DirectionalLight
     sunMarker: THREE.Mesh
   } | null>(null)
@@ -202,6 +248,13 @@ export function BuildingHeatmap({
     for (const wall of tick.facade ?? [])
       byOrientation.set(wall.orientation, wall)
     return byOrientation
+  }, [tick])
+
+  const roof = useMemo(() => {
+    const byQuadrant = new Map<FacadeOrientation, RoofSegment>()
+    for (const segment of tick.roof ?? [])
+      byQuadrant.set(segment.quadrant, segment)
+    return byQuadrant
   }, [tick])
 
   // Build the scene once. Ticks only repaint it.
@@ -297,19 +350,40 @@ export function BuildingHeatmap({
         )
         panel.position.y = base
         panel.rotation.y = WALLS[orientation]
-        panel.userData.orientation = orientation
+        panel.userData.surface = `wall:${orientation}` satisfies SurfaceId
         scene.add(panel)
         stack.push(panel)
       }
       panels.set(orientation, stack)
     }
 
+    // Segmented roof: one pitched face per quadrant, each with its own POA.
+    const roofHalf = halfWidthAt(height, overhang)
+    const apexHeight = apexHeightFor(roofHalf, height, roofPitch)
+    const roofFaces = new Map<FacadeOrientation, THREE.Mesh>()
+    for (const orientation of ORIENTATIONS) {
+      const face = new THREE.Mesh(
+        roofPanel(roofHalf - PANEL_GAP, height, apexHeight),
+        new THREE.MeshBasicMaterial({
+          color: 0xfde3d5,
+          side: THREE.DoubleSide,
+        })
+      )
+      face.rotation.y = WALLS[orientation]
+      face.userData.surface = `roof:${orientation}` satisfies SurfaceId
+      scene.add(face)
+      roofFaces.set(orientation, face)
+    }
+
     // Every wall carries its own louvres, driven by its own controller.
     const louvres = new Map<FacadeOrientation, THREE.Group>()
-    const slatCount = floors * 2
-    const slatGeometry = new THREE.BoxGeometry(1, 0.035, 0.22)
+    const slatCount = floors * 3
+    // Scene units are metres / 10, so these are 5 cm blades projecting 50 cm.
+    // Sized against the real building: anything heavier hides the heat map the
+    // blades are mounted on, which is the thing worth looking at.
+    const slatGeometry = new THREE.BoxGeometry(1, 0.005, 0.05)
     const slatMaterial = new THREE.MeshStandardMaterial({
-      color: 0x4a5350,
+      color: 0x6f7b77,
       roughness: 0.35,
       metalness: 0.45,
     })
@@ -319,8 +393,8 @@ export function BuildingHeatmap({
         const mesh = new THREE.Mesh(slatGeometry, slatMaterial)
         // Follow the leaning facade: each slat stands off the wall it belongs to.
         const y = ((slat + 0.5) * height) / slatCount
-        mesh.position.set(0, y, halfWidthAt(y, overhang) + 0.13)
-        mesh.scale.x = 2 * halfWidthAt(y, overhang) - 0.1
+        mesh.position.set(0, y, halfWidthAt(y, overhang) + 0.035)
+        mesh.scale.x = 2 * halfWidthAt(y, overhang) - 0.12
         group.add(mesh)
       }
       group.rotation.y = WALLS[orientation]
@@ -352,15 +426,38 @@ export function BuildingHeatmap({
         3
       )
     )
-    const outline = new THREE.LineLoop(
-      outlineGeometry,
-      new THREE.LineBasicMaterial({ color: 0x0b3128, depthTest: false })
-    )
+    const outlineMaterial = new THREE.LineBasicMaterial({
+      color: 0x0b3128,
+      depthTest: false,
+    })
+    const outline = new THREE.LineLoop(outlineGeometry, outlineMaterial)
     outline.renderOrder = 2
     scene.add(outline)
 
-    // Click to select a wall, but never treat the end of an orbit drag as a click.
-    const pickable = [...panels.values()].flat()
+    const roofOutlineGeometry = new THREE.BufferGeometry()
+    roofOutlineGeometry.setAttribute(
+      'position',
+      new THREE.BufferAttribute(
+        new Float32Array([
+          -roofHalf,
+          height,
+          roofHalf,
+          roofHalf,
+          height,
+          roofHalf,
+          0,
+          apexHeight,
+          0,
+        ]),
+        3
+      )
+    )
+    const roofOutline = new THREE.LineLoop(roofOutlineGeometry, outlineMaterial)
+    roofOutline.renderOrder = 2
+    scene.add(roofOutline)
+
+    // Click to select a surface, but never treat the end of an orbit drag as a click.
+    const pickable = [...[...panels.values()].flat(), ...roofFaces.values()]
     const raycaster = new THREE.Raycaster()
     const pointer = new THREE.Vector2()
     let pressedAt: { x: number; y: number } | null = null
@@ -380,10 +477,8 @@ export function BuildingHeatmap({
       pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
       raycaster.setFromCamera(pointer, camera)
       const hit = raycaster.intersectObjects(pickable, false)[0]
-      const orientation = hit?.object.userData.orientation as
-        | FacadeOrientation
-        | undefined
-      if (orientation) onSelectRef.current(orientation)
+      const surface = hit?.object.userData.surface as SurfaceId | undefined
+      if (surface) onSelectRef.current(surface)
     }
     renderer.domElement.addEventListener('pointerdown', onPointerDown)
     renderer.domElement.addEventListener('pointerup', onPointerUp)
@@ -428,8 +523,10 @@ export function BuildingHeatmap({
       camera,
       controls,
       panels,
+      roofFaces,
       louvres,
       outline,
+      roofOutline,
       sunlight,
       sunMarker,
     }
@@ -454,7 +551,7 @@ export function BuildingHeatmap({
       mount.removeChild(renderer.domElement)
       sceneRef.current = null
     }
-  }, [floors, overhang])
+  }, [floors, overhang, roofPitch])
 
   // Repaint for the selected tick.
   useEffect(() => {
@@ -487,7 +584,23 @@ export function BuildingHeatmap({
         slat.rotation.x = THREE.MathUtils.degToRad(angle)
       })
     }
-    context.outline.rotation.y = WALLS[selected]
+    // Roof faces carry raw plane-of-array gain: no louvres up there.
+    for (const orientation of ORIENTATIONS) {
+      const face = context.roofFaces.get(orientation)
+      const segment = roof.get(orientation)
+      if (!face) continue
+      const material = face.material as THREE.MeshBasicMaterial
+      material.color.copy(rampColor(segment?.sol_air_temp ?? tick.outdoor_temp))
+    }
+
+    const [kind, orientation] = selected.split(':') as [
+      'wall' | 'roof',
+      FacadeOrientation,
+    ]
+    context.outline.visible = kind === 'wall'
+    context.roofOutline.visible = kind === 'roof'
+    context.outline.rotation.y = WALLS[orientation]
+    context.roofOutline.rotation.y = WALLS[orientation]
 
     const azimuth = THREE.MathUtils.degToRad(tick.solar_azimuth)
     const elevation = THREE.MathUtils.degToRad(
@@ -504,7 +617,7 @@ export function BuildingHeatmap({
     context.sunMarker.position.copy(sunPosition)
     context.sunMarker.visible = tick.solar_elevation > 0
     context.controls.target.set(0, height * 0.45, 0)
-  }, [floors, selected, tick, walls])
+  }, [floors, roof, selected, tick, walls])
 
   return (
     <>
@@ -542,7 +655,7 @@ export function BuildingHeatmap({
             </span>
           </div>
           <p className='mt-1 text-[9px] text-muted-foreground'>
-            Sol-air surface temperature · drag to orbit · click a wall
+            Sol-air surface temperature · drag to orbit · click any surface
           </p>
         </div>
 
@@ -575,37 +688,61 @@ export function FacadeReadout({
   onSelect,
 }: {
   tick: TickPayload
-  selected: FacadeOrientation
-  onSelect: (orientation: FacadeOrientation) => void
+  selected: SurfaceId
+  onSelect: (surface: SurfaceId) => void
 }) {
   const walls = new Map<FacadeOrientation, FacadeHeat>()
   for (const wall of tick.facade ?? []) walls.set(wall.orientation, wall)
+  const roof = new Map<FacadeOrientation, RoofSegment>()
+  for (const segment of tick.roof ?? []) roof.set(segment.quadrant, segment)
 
-  const readout = ORIENTATIONS.map((orientation) => {
-    const wall = walls.get(orientation)
-    return {
-      orientation,
-      primary: wall?.primary ?? false,
-      angle: wall?.angle ?? 0,
-      incident: wall?.incident ?? 0,
-      temperature: wall
-        ? floorTemperature(wall, 0.5, tick.outdoor_temp, tick.wind)
-        : tick.outdoor_temp,
-    }
-  })
+  const readout: Array<{
+    id: SurfaceId
+    label: string
+    tag: string | null
+    angle: string
+    incident: number
+    temperature: number
+  }> = [
+    ...ORIENTATIONS.map((orientation) => {
+      const wall = walls.get(orientation)
+      return {
+        id: `wall:${orientation}` as SurfaceId,
+        label: orientation,
+        tag: wall?.primary ? 'primary' : null,
+        angle: `${(wall?.angle ?? 0).toFixed(0)}°`,
+        incident: wall?.incident ?? 0,
+        temperature: wall
+          ? floorTemperature(wall, 0.5, tick.outdoor_temp, tick.wind)
+          : tick.outdoor_temp,
+      }
+    }),
+    ...ORIENTATIONS.map((orientation) => {
+      const segment = roof.get(orientation)
+      return {
+        id: `roof:${orientation}` as SurfaceId,
+        label: `roof ${orientation}`,
+        tag: null,
+        // Roof pitch is fixed geometry, not a controlled angle.
+        angle: segment ? `${segment.tilt.toFixed(0)}° pitch` : '—',
+        incident: segment?.incident ?? 0,
+        temperature: segment?.sol_air_temp ?? tick.outdoor_temp,
+      }
+    }),
+  ]
 
   return (
-    <section className='console-card' aria-label='Wall readings'>
-      <p className='console-card-title'>Wall readings</p>
+    <section className='console-card' aria-label='Surface readings'>
+      <p className='console-card-title'>Surface readings</p>
       <table className='mt-2 w-full text-left'>
         <caption className='sr-only'>
-          Plane-of-array irradiance, louvre angle and sol-air temperature per
-          wall. Select a row to inspect that wall.
+          Plane-of-array irradiance, angle and sol-air temperature per wall and
+          roof face. Select a row to inspect that surface.
         </caption>
         <thead>
           <tr className='text-[9px] uppercase tracking-wider text-muted-foreground'>
             <th className='pb-1 font-semibold' scope='col'>
-              Wall
+              Surface
             </th>
             <th className='pb-1 text-right font-semibold' scope='col'>
               Incident
@@ -619,16 +756,16 @@ export function FacadeReadout({
           </tr>
         </thead>
         <tbody className='font-mono text-xs'>
-          {readout.map((wall) => (
+          {readout.map((surface) => (
             <tr
-              key={wall.orientation}
-              aria-selected={wall.orientation === selected}
+              key={surface.id}
+              aria-selected={surface.id === selected}
               className={
-                wall.orientation === selected
+                surface.id === selected
                   ? 'cursor-pointer border-t border-border/50 bg-secondary/60'
                   : 'cursor-pointer border-t border-border/50 hover:bg-secondary/30'
               }
-              onClick={() => onSelect(wall.orientation)}
+              onClick={() => onSelect(surface.id)}
             >
               <th
                 className='py-1 font-sans text-[11px] font-medium capitalize'
@@ -639,32 +776,32 @@ export function FacadeReadout({
                   type='button'
                   onClick={(event) => {
                     event.stopPropagation()
-                    onSelect(wall.orientation)
+                    onSelect(surface.id)
                   }}
                 >
                   <span
                     aria-hidden
                     className='mr-1.5 inline-block h-2 w-2 rounded-full align-middle'
                     style={{
-                      backgroundColor: `#${rampColor(wall.temperature).getHexString()}`,
+                      backgroundColor: `#${rampColor(surface.temperature).getHexString()}`,
                     }}
                   />
-                  {wall.orientation}
-                  {wall.primary && (
+                  {surface.label}
+                  {surface.tag && (
                     <span className='ml-1.5 text-[9px] uppercase tracking-wider text-primary'>
-                      primary
+                      {surface.tag}
                     </span>
                   )}
                 </button>
               </th>
               <td className='py-1 text-right tabular-nums'>
-                {wall.incident.toFixed(0)} W/m²
+                {surface.incident.toFixed(0)} W/m²
+              </td>
+              <td className='whitespace-nowrap py-1 text-right tabular-nums'>
+                {surface.angle}
               </td>
               <td className='py-1 text-right tabular-nums'>
-                {wall.angle.toFixed(0)}°
-              </td>
-              <td className='py-1 text-right tabular-nums'>
-                {wall.temperature.toFixed(1)} °C
+                {surface.temperature.toFixed(1)} °C
               </td>
             </tr>
           ))}

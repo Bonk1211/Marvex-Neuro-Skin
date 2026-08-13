@@ -59,6 +59,19 @@ class WallGain:
 
 
 @dataclass(frozen=True)
+class RoofSegment:
+    """One pitched roof face. No louvres up here, so gain is what it receives."""
+
+    quadrant: str
+    azimuth: float
+    tilt: float
+    incident: float
+    sky_diffuse: float
+    ground_diffuse: float
+    sol_air_temp: float
+
+
+@dataclass(frozen=True)
 class WallState:
     """One wall's control outcome for a tick."""
 

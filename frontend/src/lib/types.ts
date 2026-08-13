@@ -31,9 +31,20 @@ export interface SimulationRunRequest {
   location_name: string
   facade_orientation: FacadeOrientation
   facade_tilt: number
+  roof_pitch: number
 }
 
 export type CostBreakdown = ControllerWeights
+
+export interface RoofSegment {
+  quadrant: FacadeOrientation
+  azimuth: number
+  tilt: number
+  incident: number
+  sky_diffuse: number
+  ground_diffuse: number
+  sol_air_temp: number
+}
 
 export interface FacadeHeat {
   orientation: FacadeOrientation
@@ -78,6 +89,7 @@ export interface TickPayload {
   reason: string
   cost_breakdown: CostBreakdown
   facade: FacadeHeat[]
+  roof: RoofSegment[]
 }
 
 export interface ComparisonMetric {
@@ -138,6 +150,7 @@ export interface SimulationRunResponse {
     environment_source: EnvironmentSource
     facade_orientation: FacadeOrientation
     facade_tilt: number
+    roof_pitch: number
     floors: number
     synthetic: boolean
     data_notice: string

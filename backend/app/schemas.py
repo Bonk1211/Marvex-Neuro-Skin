@@ -45,6 +45,8 @@ class SimulationRunRequest(BaseModel):
     facade_orientation: FacadeOrientation = DEFAULTS.facade_orientation  # type: ignore[assignment]
     # 90 is a plain vertical wall; above 90 the facade leans out and self-shades.
     facade_tilt: float = Field(DEFAULTS.facade_tilt, ge=0, le=180)
+    # Roof pitch from horizontal. 0 is flat, where every segment reads alike.
+    roof_pitch: float = Field(DEFAULTS.roof_pitch, ge=0, le=60)
 
     @field_validator("timezone")
     @classmethod
@@ -83,6 +85,18 @@ class FacadeHeatPayload(BaseModel):
     primary: bool
 
 
+class RoofSegmentPayload(BaseModel):
+    """One pitched roof face, for the segmented roof heat map."""
+
+    quadrant: FacadeOrientation
+    azimuth: float
+    tilt: float
+    incident: float
+    sky_diffuse: float
+    ground_diffuse: float
+    sol_air_temp: float
+
+
 class TickPayload(BaseModel):
     timestamp: datetime
     ghi: float
@@ -109,6 +123,7 @@ class TickPayload(BaseModel):
     reason: str
     cost_breakdown: CostBreakdown
     facade: list[FacadeHeatPayload] = Field(default_factory=list)
+    roof: list[RoofSegmentPayload] = Field(default_factory=list)
 
 
 class ComparisonMetric(BaseModel):
@@ -168,6 +183,7 @@ class SimulationMetadata(BaseModel):
     environment_source: EnvironmentSource
     facade_orientation: FacadeOrientation
     facade_tilt: float
+    roof_pitch: float
     floors: int
     synthetic: bool
     data_notice: str

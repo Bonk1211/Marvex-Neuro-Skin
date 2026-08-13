@@ -13,7 +13,7 @@ import pvlib
 
 from app.config import DEFAULTS
 from app.domain.thermal import shade_transmittance
-from app.domain.types import FacadeHeat, WallGain, WallState
+from app.domain.types import FacadeHeat, RoofSegment, WallGain, WallState
 
 ORIENTATIONS: dict[str, float] = {
     "north": 0.0,
@@ -66,6 +66,41 @@ def poa_series(
 def sol_air_temp(outdoor_temp: float, poa_global: float, wind: float) -> float:
     film_coefficient = 5.7 + 3.8 * max(0.0, wind)
     return float(outdoor_temp + SOLAR_ABSORPTANCE * max(0.0, poa_global) / film_coefficient)
+
+
+def roof_segments(
+    series: dict[str, dict[str, np.ndarray]],
+    index: int,
+    *,
+    outdoor_temp: float,
+    wind: float,
+    pitch: float,
+) -> list[RoofSegment]:
+    """Heat state of each pitched roof face at one tick.
+
+    A roof face is just another surface with a tilt and an azimuth, so this
+    reuses ``poa_series`` — call it with the roof pitch instead of the facade
+    tilt. There are no louvres up here, so incident gain is what the surface
+    keeps. At pitch 0 every quadrant returns the same value, correctly: a flat
+    roof has no orientation to distinguish.
+    """
+
+    segments: list[RoofSegment] = []
+    for quadrant, azimuth in ORIENTATIONS.items():
+        face = series[quadrant]
+        incident = float(face["poa_global"][index])
+        segments.append(
+            RoofSegment(
+                quadrant=quadrant,
+                azimuth=azimuth,
+                tilt=pitch,
+                incident=round(incident, 2),
+                sky_diffuse=round(float(face["poa_sky_diffuse"][index]), 2),
+                ground_diffuse=round(float(face["poa_ground_diffuse"][index]), 2),
+                sol_air_temp=round(sol_air_temp(outdoor_temp, incident, wind), 2),
+            )
+        )
+    return segments
 
 
 def wall_gains(series: dict[str, dict[str, np.ndarray]], index: int) -> list[WallGain]:

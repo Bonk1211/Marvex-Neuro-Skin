@@ -23,6 +23,7 @@ import type {
   SimulationRunResponse,
 } from '@/lib/types'
 import { BuildingHeatmap, FacadeReadout } from './BuildingHeatmap'
+import type { SurfaceId } from './BuildingHeatmap'
 import { ControllerPanel } from './ControllerPanel'
 import { SimulationCharts } from './SimulationCharts'
 import { SimulationControls } from './SimulationControls'
@@ -43,6 +44,7 @@ const DEFAULT_REQUEST: SimulationRunRequest = {
   location_name: 'ST Diamond Building, Putrajaya',
   facade_orientation: 'west',
   facade_tilt: 115,
+  roof_pitch: 10,
 }
 
 const sourceLabels: Record<SimulationRunRequest['environment_source'], string> =
@@ -98,8 +100,8 @@ export function NeuroSkinDashboard() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [timelineIndex, setTimelineIndex] = useState(72)
-  const [selectedWall, setSelectedWall] = useState<FacadeOrientation>(
-    DEFAULT_REQUEST.facade_orientation
+  const [selectedWall, setSelectedWall] = useState<SurfaceId>(
+    `wall:${DEFAULT_REQUEST.facade_orientation}`
   )
   const requestController = useRef<AbortController | null>(null)
 
@@ -152,9 +154,22 @@ export function NeuroSkinDashboard() {
       100
     : 0
   const zone = data?.metadata.timezone
-  const selectedWallState = selectedTick?.facade?.find(
-    (wall) => wall.orientation === selectedWall
-  )
+  const [selectedKind, selectedOrientation] = selectedWall.split(':') as [
+    'wall' | 'roof',
+    FacadeOrientation,
+  ]
+  const selectedWallState =
+    selectedKind === 'wall'
+      ? selectedTick?.facade?.find(
+          (wall) => wall.orientation === selectedOrientation
+        )
+      : undefined
+  const selectedRoofState =
+    selectedKind === 'roof'
+      ? selectedTick?.roof?.find(
+          (segment) => segment.quadrant === selectedOrientation
+        )
+      : undefined
 
   return (
     <div className='console-shell'>
@@ -315,6 +330,7 @@ export function NeuroSkinDashboard() {
               tick={selectedTick}
               floors={data.metadata.floors}
               facadeTilt={data.metadata.facade_tilt}
+              roofPitch={data.metadata.roof_pitch}
               locationName={data.metadata.location}
               timeLabel={timeLabel(selectedTick.timestamp, zone)}
               selected={selectedWall}
@@ -327,11 +343,15 @@ export function NeuroSkinDashboard() {
                   {timeLabel(selectedTick.timestamp, zone)}
                 </p>
                 <span className='text-[11px] font-semibold capitalize'>
-                  {selectedWall} facade
+                  {selectedKind === 'roof'
+                    ? `${selectedOrientation} roof face`
+                    : `${selectedOrientation} facade`}
                 </span>
-                <StatusBadge
-                  mode={selectedWallState?.mode ?? selectedTick.mode}
-                />
+                {selectedKind === 'wall' && (
+                  <StatusBadge
+                    mode={selectedWallState?.mode ?? selectedTick.mode}
+                  />
+                )}
                 <span
                   className={
                     selectedTick.sensor_trusted ? 'trust-badge' : 'fault-badge'
@@ -357,29 +377,49 @@ export function NeuroSkinDashboard() {
               />
 
               <div className='flex flex-wrap items-center gap-1.5'>
-                <span className='stage-chip'>
-                  {(
-                    selectedWallState?.angle ?? selectedTick.angle_final
-                  ).toFixed(0)}
-                  ° angle
-                </span>
-                <span className='stage-chip'>
-                  {(selectedWallState?.lux ?? selectedTick.lux).toFixed(0)} lux
-                </span>
-                <span className='stage-chip'>
-                  {(
-                    selectedWallState?.incident ??
-                    selectedTick.measured_irradiance
-                  ).toFixed(0)}{' '}
-                  W/m² on wall
-                </span>
-                <span className='stage-chip'>
-                  {(
-                    selectedWallState?.load_relative ??
-                    selectedTick.load_relative
-                  ).toFixed(3)}{' '}
-                  load
-                </span>
+                {selectedRoofState ? (
+                  <>
+                    <span className='stage-chip'>
+                      {selectedRoofState.tilt.toFixed(0)}° pitch
+                    </span>
+                    <span className='stage-chip'>
+                      {selectedRoofState.incident.toFixed(0)} W/m² on roof
+                    </span>
+                    <span className='stage-chip'>
+                      {selectedRoofState.sky_diffuse.toFixed(0)} W/m² sky
+                    </span>
+                    <span className='stage-chip'>
+                      {selectedRoofState.sol_air_temp.toFixed(1)} °C surface
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className='stage-chip'>
+                      {(
+                        selectedWallState?.angle ?? selectedTick.angle_final
+                      ).toFixed(0)}
+                      ° angle
+                    </span>
+                    <span className='stage-chip'>
+                      {(selectedWallState?.lux ?? selectedTick.lux).toFixed(0)}{' '}
+                      lux
+                    </span>
+                    <span className='stage-chip'>
+                      {(
+                        selectedWallState?.incident ??
+                        selectedTick.measured_irradiance
+                      ).toFixed(0)}{' '}
+                      W/m² on wall
+                    </span>
+                    <span className='stage-chip'>
+                      {(
+                        selectedWallState?.load_relative ??
+                        selectedTick.load_relative
+                      ).toFixed(3)}{' '}
+                      load
+                    </span>
+                  </>
+                )}
                 <span className='stage-chip'>
                   {selectedTick.wind.toFixed(1)} m/s
                 </span>
@@ -390,6 +430,12 @@ export function NeuroSkinDashboard() {
               {selectedWallState && (
                 <p className='text-[10px] leading-4 text-muted-foreground'>
                   {selectedWallState.reason}
+                </p>
+              )}
+              {selectedRoofState && (
+                <p className='text-[10px] leading-4 text-muted-foreground'>
+                  Roof faces carry no louvres, so this is raw plane-of-array
+                  gain. A flat roof reads the same on every quadrant.
                 </p>
               )}
             </div>

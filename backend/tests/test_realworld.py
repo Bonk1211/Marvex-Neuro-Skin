@@ -225,6 +225,41 @@ def test_upright_wall_still_available_for_comparison():
     assert upright["west"]["poa_global"].max() > tilted["west"]["poa_global"].max()
 
 
+def test_a_flat_roof_has_no_orientation_to_distinguish():
+    """The degenerate case has to be right, or the heat map is lying."""
+
+    payload = run_scenario(
+        SimulationRunRequest(date=DAY, cloud_profile="clear", roof_pitch=0.0)
+    )
+    noon = payload.ticks[12 * 6].roof
+
+    assert len({segment.incident for segment in noon}) == 1
+
+
+def test_a_pitched_roof_separates_its_faces():
+    payload = run_scenario(
+        SimulationRunRequest(date=DAY, cloud_profile="clear", roof_pitch=10.0)
+    )
+    late = {segment.quadrant: segment.incident for segment in payload.ticks[17 * 6].roof}
+
+    assert len(set(late.values())) == 4, late
+    # Late afternoon: the west-facing pitch leads, the east-facing one trails.
+    assert late["west"] > late["north"] > late["east"], late
+
+
+def test_roof_segments_cover_every_quadrant():
+    payload = run_scenario(SimulationRunRequest(date=DAY))
+
+    for tick in payload.ticks:
+        assert {segment.quadrant for segment in tick.roof} == {
+            "north",
+            "east",
+            "south",
+            "west",
+        }
+        assert all(segment.incident >= 0 for segment in tick.roof)
+
+
 def test_sol_air_temp_tracks_gain_and_wind():
     assert sol_air_temp(30.0, 0.0, 2.0) == pytest.approx(30.0)
     assert sol_air_temp(30.0, 800.0, 2.0) > sol_air_temp(30.0, 400.0, 2.0)
