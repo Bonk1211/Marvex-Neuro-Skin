@@ -34,6 +34,12 @@ def predict_load(env: Environment, solar: SolarState) -> LoadEstimate:
     return DEFAULT_PREDICTOR.predict(env, solar)
 
 
-def load_at_angle(load: LoadEstimate, angle: float) -> float:
+def shade_transmittance(angle: float) -> float:
+    """Fraction of solar gain the louvres still let through at this angle."""
+
     shade_fraction = np.clip(angle / 60.0, 0.0, 1.0)
-    return float(load.latent + load.shadeable * (1.0 - 0.78 * shade_fraction))
+    return float(1.0 - 0.78 * shade_fraction)
+
+
+def load_at_angle(load: LoadEstimate, angle: float) -> float:
+    return float(load.latent + load.shadeable * shade_transmittance(angle))

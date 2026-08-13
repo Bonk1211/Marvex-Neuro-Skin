@@ -1,6 +1,9 @@
+from datetime import date, datetime, timezone
+
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.weather import MetForecast, MetWarning, MetWeatherContext
 
 client = TestClient(app)
 
@@ -21,6 +24,81 @@ def test_simulation_is_reproducible_and_complete() -> None:
     assert first.json() == second.json()
     assert len(first.json()["ticks"]) == 144
     assert first.json()["metadata"]["load_unit"] == "relative cooling-load index"
+    assert first.json()["metadata"]["environment_source"] == "synthetic"
+    assert first.json()["metadata"]["weather_context"] is None
+
+
+def test_met_anchored_run_exposes_provenance(monkeypatch) -> None:
+    context = MetWeatherContext(
+        status="applied",
+        fetched_at=datetime(2026, 8, 11, 3, 0, tzinfo=timezone.utc),
+        forecast=MetForecast(
+            date=date(2026, 8, 11),
+            location_id="Tn079",
+            location_name="Kuala Lumpur",
+            min_temp=25,
+            max_temp=34,
+            morning_forecast="Tiada hujan",
+            afternoon_forecast="Ribut petir di beberapa tempat",
+            night_forecast="Hujan di satu dua tempat",
+            summary_forecast="Ribut petir di beberapa tempat",
+            summary_when="Petang",
+        ),
+        warnings=(
+            MetWarning(
+                title="Continuous Rain Warning",
+                heading="Continuous Rain",
+                text="Heavy rain is expected.",
+                instruction="Monitor official updates.",
+                valid_from="2026-08-11T12:00:00",
+                valid_to="2026-08-12T06:00:00",
+            ),
+        ),
+    )
+    monkeypatch.setattr("app.domain.scenarios.get_met_weather_context", lambda _day: context)
+
+    response = client.post(
+        "/api/v1/simulations/run",
+        json={
+            "scenario": "overview",
+            "date": "2026-08-11",
+            "environment_source": "met_anchored",
+            "seed": 7,
+        },
+    )
+
+    assert response.status_code == 200
+    metadata = response.json()["metadata"]
+    assert metadata["environment_source"] == "met_anchored"
+    assert metadata["weather_context"]["status"] == "applied"
+    assert metadata["weather_context"]["location_id"] == "Tn079"
+    assert metadata["weather_context"]["warnings"][0]["title"] == "Continuous Rain Warning"
+    temperatures = [tick["outdoor_temp"] for tick in response.json()["ticks"]]
+    assert min(temperatures) == 25
+    assert max(temperatures) == 34
+
+
+def test_met_failure_returns_a_successful_synthetic_fallback(monkeypatch) -> None:
+    context = MetWeatherContext(
+        status="fallback",
+        fetched_at=datetime(2026, 8, 11, 3, 0, tzinfo=timezone.utc),
+        forecast=None,
+        warnings=(),
+        fallback_reason="MET API request failed: upstream unavailable",
+    )
+    monkeypatch.setattr("app.domain.scenarios.get_met_weather_context", lambda _day: context)
+
+    response = client.post(
+        "/api/v1/simulations/run",
+        json={"date": "2026-08-11", "environment_source": "met_anchored", "seed": 7},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["ticks"]) == 144
+    assert payload["metadata"]["weather_context"]["status"] == "fallback"
+    assert "upstream unavailable" in payload["metadata"]["weather_context"]["fallback_reason"]
+    assert "fell back" in payload["metadata"]["data_notice"]
 
 
 def test_lie_detector_contains_fault_and_cloud_gate() -> None:

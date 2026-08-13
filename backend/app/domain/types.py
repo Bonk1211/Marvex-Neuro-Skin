@@ -21,6 +21,57 @@ class Environment:
 
 
 @dataclass(frozen=True)
+class Site:
+    """Where the facade is. pvlib is location-agnostic, so this is all it takes."""
+
+    name: str
+    latitude: float
+    longitude: float
+    timezone: str
+
+
+@dataclass(frozen=True)
+class ObservedWeather:
+    """Hourly measured/forecast weather for one local day. 24 values per channel."""
+
+    ghi: tuple[float, ...]
+    dni: tuple[float, ...]
+    dhi: tuple[float, ...]
+    temperature: tuple[float, ...]
+    cloud: tuple[float, ...]
+    wind: tuple[float, ...]
+    precipitation: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class FacadeHeat:
+    """Plane-of-array gain and sol-air surface temperature for one wall."""
+
+    orientation: str
+    azimuth: float
+    incident: float
+    transmitted: float
+    sky_diffuse: float
+    ground_diffuse: float
+    sol_air_temp: float
+    controlled: bool
+
+
+@dataclass(frozen=True)
+class EnvironmentAnchor:
+    """Official daily context used to shape, never replace, synthetic ticks."""
+
+    min_temp: float
+    max_temp: float
+    morning_cloud: float
+    afternoon_cloud: float
+    night_cloud: float
+    morning_rain: bool
+    afternoon_rain: bool
+    night_rain: bool
+
+
+@dataclass(frozen=True)
 class SolarState:
     azimuth: float
     elevation: float

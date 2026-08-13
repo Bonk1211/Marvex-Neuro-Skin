@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ArrowLeft,
   ArrowRight,
@@ -28,6 +28,20 @@ interface TourStep {
   target: string
   scenario: ScenarioName
   placement?: 'left' | 'right'
+}
+
+interface TourPosition {
+  left: number
+  top: number
+  side: 'left' | 'right' | 'top' | 'bottom'
+}
+
+const VIEWPORT_MARGIN = 12
+const TARGET_GAP = 14
+
+const firstSentence = (value: string) => {
+  const match = value.match(/^.*?[.!?](?:\s|$)/)
+  return match?.[0].trim() ?? value
 }
 
 const steps: TourStep[] = [
@@ -294,8 +308,107 @@ export function GuidedTour({
   onScenarioChange,
 }: GuidedTourProps) {
   const [stepIndex, setStepIndex] = useState(0)
+  const [position, setPosition] = useState<TourPosition | null>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const step = steps[stepIndex]
+
+  const positionPanel = useCallback(() => {
+    const panel = panelRef.current
+    const target = document.querySelector<HTMLElement>(step.target)
+    if (!panel || !target) return
+
+    const targetRect = target.getBoundingClientRect()
+    const panelRect = panel.getBoundingClientRect()
+    const viewportWidth = window.innerWidth
+    const viewportHeight = window.innerHeight
+    const panelWidth = Math.min(
+      panelRect.width,
+      viewportWidth - VIEWPORT_MARGIN * 2
+    )
+    const panelHeight = Math.min(
+      panelRect.height,
+      viewportHeight - VIEWPORT_MARGIN * 2
+    )
+    const centerLeft =
+      targetRect.left + targetRect.width / 2 - panelWidth / 2
+    const centerTop =
+      targetRect.top + targetRect.height / 2 - panelHeight / 2
+
+    const candidates: TourPosition[] = [
+      step.placement === 'left'
+        ? {
+            side: 'left',
+            left: targetRect.left - panelWidth - TARGET_GAP,
+            top: centerTop,
+          }
+        : {
+            side: 'right',
+            left: targetRect.right + TARGET_GAP,
+            top: centerTop,
+          },
+      step.placement === 'left'
+        ? {
+            side: 'right',
+            left: targetRect.right + TARGET_GAP,
+            top: centerTop,
+          }
+        : {
+            side: 'left',
+            left: targetRect.left - panelWidth - TARGET_GAP,
+            top: centerTop,
+          },
+      {
+        side: 'bottom',
+        left: centerLeft,
+        top: targetRect.bottom + TARGET_GAP,
+      },
+      {
+        side: 'top',
+        left: centerLeft,
+        top: targetRect.top - panelHeight - TARGET_GAP,
+      },
+    ]
+
+    const fits = (candidate: TourPosition) =>
+      candidate.left >= VIEWPORT_MARGIN &&
+      candidate.top >= VIEWPORT_MARGIN &&
+      candidate.left + panelWidth <= viewportWidth - VIEWPORT_MARGIN &&
+      candidate.top + panelHeight <= viewportHeight - VIEWPORT_MARGIN
+
+    const visibleArea = (candidate: TourPosition) => {
+      const visibleWidth = Math.max(
+        0,
+        Math.min(candidate.left + panelWidth, viewportWidth - VIEWPORT_MARGIN) -
+          Math.max(candidate.left, VIEWPORT_MARGIN)
+      )
+      const visibleHeight = Math.max(
+        0,
+        Math.min(candidate.top + panelHeight, viewportHeight - VIEWPORT_MARGIN) -
+          Math.max(candidate.top, VIEWPORT_MARGIN)
+      )
+      return visibleWidth * visibleHeight
+    }
+
+    const selected =
+      candidates.find(fits) ??
+      candidates.reduce((best, candidate) =>
+        visibleArea(candidate) > visibleArea(best) ? candidate : best
+      )
+    const maxLeft = Math.max(
+      VIEWPORT_MARGIN,
+      viewportWidth - panelWidth - VIEWPORT_MARGIN
+    )
+    const maxTop = Math.max(
+      VIEWPORT_MARGIN,
+      viewportHeight - panelHeight - VIEWPORT_MARGIN
+    )
+
+    setPosition({
+      side: selected.side,
+      left: Math.min(Math.max(selected.left, VIEWPORT_MARGIN), maxLeft),
+      top: Math.min(Math.max(selected.top, VIEWPORT_MARGIN), maxTop),
+    })
+  }, [step.placement, step.target])
 
   useEffect(() => {
     if (!open) return
@@ -306,11 +419,24 @@ export function GuidedTour({
     if (!open || loading) return
     const target = document.querySelector<HTMLElement>(step.target)
     if (!target) return
+    setPosition(null)
     target.classList.add('tour-focus')
     target.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    panelRef.current?.focus({ preventScroll: true })
-    return () => target.classList.remove('tour-focus')
-  }, [loading, open, step.target])
+    const frame = window.requestAnimationFrame(() => {
+      positionPanel()
+      panelRef.current?.focus({ preventScroll: true })
+    })
+    const settleTimer = window.setTimeout(positionPanel, 350)
+    window.addEventListener('resize', positionPanel)
+    window.addEventListener('scroll', positionPanel, { passive: true })
+    return () => {
+      target.classList.remove('tour-focus')
+      window.cancelAnimationFrame(frame)
+      window.clearTimeout(settleTimer)
+      window.removeEventListener('resize', positionPanel)
+      window.removeEventListener('scroll', positionPanel)
+    }
+  }, [loading, open, positionPanel, step.target])
 
   useEffect(() => {
     if (!open) return
@@ -344,17 +470,25 @@ export function GuidedTour({
     <div className='tour-layer' aria-live='polite'>
       <div
         ref={panelRef}
-        className={`tour-panel tour-panel-${step.placement ?? 'right'}`}
+        className={`tour-panel ${position ? `tour-panel-${position.side}` : 'tour-panel-pending'}`}
         role='dialog'
         aria-modal='false'
         aria-labelledby='tour-title'
         aria-describedby='tour-description'
         tabIndex={-1}
+        style={
+          position
+            ? {
+                left: `${position.left}px`,
+                top: `${position.top}px`,
+              }
+            : undefined
+        }
       >
-        <div className='flex items-start justify-between gap-4'>
+        <div className='flex items-center justify-between gap-3'>
           <div>
             <p className='tour-kicker'>{step.section}</p>
-            <p className='mt-1 text-xs text-white/45'>
+            <p className='mt-0.5 text-[10px] text-white/45'>
               Step {stepIndex + 1} of {steps.length}
             </p>
           </div>
@@ -368,7 +502,7 @@ export function GuidedTour({
           </button>
         </div>
 
-        <div className='tour-progress mt-4'>
+        <div className='tour-progress mt-3'>
           {steps.map((item, index) => (
             <button
               key={item.title}
@@ -382,65 +516,58 @@ export function GuidedTour({
 
         <h2
           id='tour-title'
-          className='mt-5 font-display text-xl font-semibold leading-tight text-white'
+          className='mt-4 font-display text-base font-semibold leading-snug text-white'
         >
           {step.title}
         </h2>
         <p
           id='tour-description'
-          className='mt-3 text-sm leading-6 text-white/65'
+          className='mt-2 text-xs leading-5 text-white/60'
         >
-          {step.body}
+          {firstSentence(step.body)}
         </p>
 
-        <div className='tour-action mt-4'>
-          <MousePointerClick className='mt-0.5 h-4 w-4 shrink-0 text-mint' />
+        <div className='tour-action mt-3'>
+          <MousePointerClick className='mt-0.5 h-3.5 w-3.5 shrink-0 text-mint' />
           <div>
             <p className='text-[10px] font-bold uppercase tracking-wider text-mint'>
               Try this
             </p>
-            <p className='mt-1 text-xs leading-5 text-white/70'>
-              {step.action}
+            <p className='mt-0.5 text-[11px] leading-4 text-white/70'>
+              {firstSentence(step.action)}
             </p>
           </div>
         </div>
 
-        <div className='mt-4 flex gap-3'>
-          <Eye className='mt-0.5 h-4 w-4 shrink-0 text-sky' />
+        <div className='mt-3 flex gap-2.5 rounded-xl bg-white/[0.04] p-3'>
+          <Eye className='mt-0.5 h-3.5 w-3.5 shrink-0 text-sky' />
           <div>
             <p className='text-[10px] font-bold uppercase tracking-wider text-sky'>
               What to notice
             </p>
-            <ul className='mt-1 space-y-1 text-xs leading-5 text-white/55'>
-              {step.notice.map((item) => (
-                <li key={item} className='flex gap-2'>
-                  <span aria-hidden='true'>•</span>
-                  <span>{item}</span>
-                </li>
-              ))}
-            </ul>
+            <p className='mt-0.5 text-[11px] leading-4 text-white/55'>
+              {step.notice[0]}
+            </p>
           </div>
         </div>
 
-        <label className='mt-5 block'>
-          <span className='text-[10px] font-bold uppercase tracking-wider text-white/35'>
-            Jump to a component
-          </span>
+        <label className='mt-3 block'>
+          <span className='sr-only'>Jump to a component</span>
           <select
             aria-label='Jump to tour step'
-            className='tour-step-select mt-2'
+            className='tour-step-select'
             value={stepIndex}
             onChange={(event) => setStepIndex(Number(event.target.value))}
           >
             {steps.map((item, index) => (
               <option key={item.title} value={index}>
-                {index + 1}. {item.section} — {item.title}
+                {index + 1}. {item.section}
               </option>
             ))}
           </select>
         </label>
 
-        <div className='mt-5 flex items-center justify-between gap-3'>
+        <div className='mt-3 flex items-center justify-between gap-3'>
           <button
             className='tour-secondary-button'
             type='button'
@@ -472,7 +599,7 @@ export function GuidedTour({
             </button>
           )}
         </div>
-        <p className='mt-3 text-center text-[10px] text-white/35'>
+        <p className='mt-2 text-center text-[9px] text-white/30'>
           Use ← → to navigate · Esc to close
         </p>
       </div>

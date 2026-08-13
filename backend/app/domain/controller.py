@@ -5,7 +5,7 @@ from app.domain.brain import lux_at_angle, naive_angle, optimise_angle
 from app.domain.safety import movement_budget, safety_gate
 from app.domain.solar import sun_position
 from app.domain.thermal import load_at_angle, predict_load
-from app.domain.types import ControllerWeights, Decision, Environment
+from app.domain.types import ControllerWeights, Decision, Environment, Site
 from app.domain.validation import expected_irradiance, validate
 
 
@@ -13,6 +13,8 @@ from app.domain.validation import expected_irradiance, validate
 class TickResult:
     decision: Decision
     clear_sky_ghi: float
+    solar_azimuth: float
+    solar_elevation: float
     expected_ghi: float
     load_relative: float
     latent_load: float
@@ -29,8 +31,13 @@ def run_tick(
     *,
     power_ok: bool = True,
     movement_threshold: float = DEFAULTS.movement_threshold,
+    site: Site | None = None,
 ) -> TickResult:
-    solar = sun_position(env.t)
+    solar = (
+        sun_position(env.t, site.latitude, site.longitude, site.timezone)
+        if site is not None
+        else sun_position(env.t)
+    )
     trusted, trust_reason = validate(env, solar)
     expected = expected_irradiance(env, solar)
     effective_irradiance = env.measured_irradiance if trusted else expected
@@ -56,6 +63,8 @@ def run_tick(
         return TickResult(
             decision=decision,
             clear_sky_ghi=solar.clear_sky_ghi,
+            solar_azimuth=solar.azimuth,
+            solar_elevation=solar.elevation,
             expected_ghi=expected,
             load_relative=load_at_angle(load, angle),
             latent_load=load.latent,
@@ -93,6 +102,8 @@ def run_tick(
     return TickResult(
         decision=decision,
         clear_sky_ghi=solar.clear_sky_ghi,
+        solar_azimuth=solar.azimuth,
+        solar_elevation=solar.elevation,
         expected_ghi=expected,
         load_relative=load_at_angle(load, final_angle),
         latent_load=load.latent,

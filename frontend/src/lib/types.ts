@@ -5,6 +5,8 @@ export type ScenarioName =
   | 'budget_failsafe'
 
 export type CloudProfile = 'clear' | 'scattered' | 'overcast'
+export type EnvironmentSource = 'synthetic' | 'met_anchored' | 'open_meteo'
+export type FacadeOrientation = 'north' | 'east' | 'south' | 'west'
 
 export interface ControllerWeights {
   thermal: number
@@ -17,19 +19,39 @@ export interface SimulationRunRequest {
   scenario: ScenarioName
   date: string
   seed: number
+  environment_source: EnvironmentSource
   cloud_profile: CloudProfile
   occupancy_scale: number
   wind_override: number | null
   power_ok: boolean
   weights: ControllerWeights
+  latitude: number
+  longitude: number
+  timezone: string
+  location_name: string
+  facade_orientation: FacadeOrientation
+  facade_tilt: number
 }
 
 export type CostBreakdown = ControllerWeights
+
+export interface FacadeHeat {
+  orientation: FacadeOrientation
+  azimuth: number
+  incident: number
+  transmitted: number
+  sky_diffuse: number
+  ground_diffuse: number
+  sol_air_temp: number
+  controlled: boolean
+}
 
 export interface TickPayload {
   timestamp: string
   ghi: number
   expected_ghi: number
+  solar_azimuth: number
+  solar_elevation: number
   measured_irradiance: number
   cloud: number
   outdoor_temp: number
@@ -49,6 +71,7 @@ export interface TickPayload {
   sensor_trusted: boolean
   reason: string
   cost_breakdown: CostBreakdown
+  facade: FacadeHeat[]
 }
 
 export interface ComparisonMetric {
@@ -67,6 +90,35 @@ export interface EventAnnotation {
   detail: string
 }
 
+export interface WeatherWarningPayload {
+  title: string
+  heading: string
+  text: string
+  instruction: string
+  valid_from: string | null
+  valid_to: string | null
+}
+
+export interface WeatherContextPayload {
+  status: 'applied' | 'fallback'
+  provider: string
+  source_url: string
+  fetched_at: string
+  location_id: string
+  location_name: string
+  dataset: string | null
+  forecast_date: string | null
+  min_temp: number | null
+  max_temp: number | null
+  morning_forecast: string | null
+  afternoon_forecast: string | null
+  night_forecast: string | null
+  summary_forecast: string | null
+  summary_when: string | null
+  warnings: WeatherWarningPayload[]
+  fallback_reason: string | null
+}
+
 export interface SimulationRunResponse {
   scenario: ScenarioName
   title: string
@@ -77,9 +129,14 @@ export interface SimulationRunResponse {
     timezone: string
     tick_minutes: number
     seed: number
+    environment_source: EnvironmentSource
+    facade_orientation: FacadeOrientation
+    facade_tilt: number
+    floors: number
     synthetic: boolean
     data_notice: string
     load_unit: string
+    weather_context: WeatherContextPayload | null
   }
   summary: Record<string, string | number | boolean>
   ticks: TickPayload[]

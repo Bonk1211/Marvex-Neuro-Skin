@@ -14,10 +14,15 @@ const response: SimulationRunResponse = {
     timezone: 'Asia/Kuala_Lumpur',
     tick_minutes: 10,
     seed: 42,
+    environment_source: 'synthetic',
+    facade_orientation: 'west',
+    facade_tilt: 115,
+    floors: 7,
     synthetic: true,
     data_notice:
       'Modelled Kuala Lumpur tropical day; all environmental and sensor data are synthetic.',
     load_unit: 'relative cooling-load index',
+    weather_context: null,
   },
   summary: {
     ticks: 1,
@@ -31,6 +36,8 @@ const response: SimulationRunResponse = {
       timestamp: '2026-03-21T12:00:00+08:00',
       ghi: 800,
       expected_ghi: 810,
+      solar_azimuth: 264,
+      solar_elevation: 68,
       measured_irradiance: 800,
       cloud: 0.1,
       outdoor_temp: 31,
@@ -50,6 +57,48 @@ const response: SimulationRunResponse = {
       sensor_trusted: true,
       reason: 'Sensor reading is consistent. The movement clears the budget.',
       cost_breakdown: { thermal: 0.2, lux: 0, movement: 0.08, risk: 0.01 },
+      facade: [
+        {
+          orientation: 'north',
+          azimuth: 0,
+          incident: 120,
+          transmitted: 120,
+          sky_diffuse: 90,
+          ground_diffuse: 30,
+          sol_air_temp: 35.2,
+          controlled: false,
+        },
+        {
+          orientation: 'east',
+          azimuth: 90,
+          incident: 180,
+          transmitted: 180,
+          sky_diffuse: 110,
+          ground_diffuse: 30,
+          sol_air_temp: 37.4,
+          controlled: false,
+        },
+        {
+          orientation: 'south',
+          azimuth: 180,
+          incident: 210,
+          transmitted: 210,
+          sky_diffuse: 120,
+          ground_diffuse: 30,
+          sol_air_temp: 38.1,
+          controlled: false,
+        },
+        {
+          orientation: 'west',
+          azimuth: 270,
+          incident: 640,
+          transmitted: 356,
+          sky_diffuse: 140,
+          ground_diffuse: 30,
+          sol_air_temp: 42.6,
+          controlled: true,
+        },
+      ],
     },
   ],
   comparison: [
@@ -79,26 +128,44 @@ describe('NeuroSkinDashboard', () => {
     window.localStorage.clear()
   })
 
-  it('renders API output, the synthetic notice, and the explanation panel', async () => {
+  it('renders direct impact metrics without narrative explanation', async () => {
     render(<NeuroSkinDashboard />)
+    expect(await screen.findByText('Mean load')).toBeInTheDocument()
+    expect(screen.getAllByText('0.420').length).toBeGreaterThan(0)
+    expect(screen.getByText('Impact')).toBeInTheDocument()
+    expect(screen.getByText('Selected tick')).toBeInTheDocument()
+    expect(screen.queryByText('Decision explanation')).not.toBeInTheDocument()
     expect(
-      await screen.findByText('NeuroSkin representative tropical day')
-    ).toBeInTheDocument()
-    expect(
-      screen.getByText(/all environmental and sensor data are synthetic/i)
-    ).toBeInTheDocument()
-    expect(screen.getByText('Decision explanation')).toBeInTheDocument()
-    expect(screen.getAllByText(/relative load/i).length).toBeGreaterThan(0)
-    expect(
-      screen.getByText(/no HVAC energy conversion is claimed/i)
-    ).toBeInTheDocument()
+      screen.queryByText(/all environmental and sensor data are synthetic/i)
+    ).not.toBeInTheDocument()
     expect(screen.queryByText(/kWh/i)).not.toBeInTheDocument()
+  })
+
+  it('keeps each formula attached to its relevant setting', async () => {
+    render(<NeuroSkinDashboard />)
+    await screen.findByText('Mean load')
+
+    expect(
+      screen.getByRole('complementary', { name: 'Environment settings' })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('complementary', {
+        name: 'Controller settings and formulas',
+      })
+    ).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Weather' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Demand' })).toBeInTheDocument()
+    expect(screen.queryByText('Angle objective')).not.toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'Show formula for Thermal load cost' })
+    ).toBeInTheDocument()
+    expect(screen.getByText('CT(θ) = wT × L(θ)')).toBeInTheDocument()
   })
 
   it('shows an accessible loading state while the simulation is pending', () => {
     fetchMock.mockReturnValue(new Promise(() => {}))
     render(<NeuroSkinDashboard />)
-    expect(screen.getByText('Modelling the tropical day')).toBeInTheDocument()
+    expect(screen.getByText('Running simulation')).toBeInTheDocument()
   })
 
   it('shows API detail and offers a retry after a request failure', async () => {
@@ -109,7 +176,7 @@ describe('NeuroSkinDashboard', () => {
     })
     render(<NeuroSkinDashboard />)
     expect(
-      await screen.findByText('Simulation API unavailable')
+      await screen.findByText('Simulation unavailable')
     ).toBeInTheDocument()
     expect(
       screen.getByText(/Simulation engine warming up/i)
@@ -121,8 +188,8 @@ describe('NeuroSkinDashboard', () => {
 
   it('serializes the selected scenario when changing tabs', async () => {
     render(<NeuroSkinDashboard />)
-    await screen.findByText('NeuroSkin representative tropical day')
-    fireEvent.click(screen.getByRole('button', { name: 'Lie Detector' }))
+    await screen.findByText('Mean load')
+    fireEvent.click(screen.getByRole('button', { name: 'Sensor Trust' }))
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
     const options = fetchMock.mock.calls[1][1] as RequestInit
     expect(JSON.parse(String(options.body))).toMatchObject({
@@ -131,27 +198,75 @@ describe('NeuroSkinDashboard', () => {
     })
   })
 
-  it('opens the detailed tutorial and jumps to the lie-detector component', async () => {
+  it('shows only the compact MET source status in the operating view', async () => {
+    const anchored: SimulationRunResponse = {
+      ...response,
+      metadata: {
+        ...response.metadata,
+        environment_source: 'met_anchored',
+        data_notice:
+          'MET Malaysia daily forecast anchors temperature and period-level sky conditions.',
+        weather_context: {
+          status: 'applied',
+          provider: 'MET Malaysia via data.gov.my',
+          source_url: 'https://api.data.gov.my/weather/forecast/',
+          fetched_at: '2026-08-11T03:00:00Z',
+          dataset: null,
+          location_id: 'Tn079',
+          location_name: 'Kuala Lumpur',
+          forecast_date: '2026-08-11',
+          min_temp: 25,
+          max_temp: 34,
+          morning_forecast: 'Tiada hujan',
+          afternoon_forecast: 'Ribut petir di beberapa tempat',
+          night_forecast: 'Hujan di satu dua tempat',
+          summary_forecast: 'Ribut petir di beberapa tempat',
+          summary_when: 'Petang',
+          warnings: [
+            {
+              title: 'Continuous Rain Warning',
+              heading: 'Continuous Rain',
+              text: 'Heavy rain is expected.',
+              instruction: 'Monitor official updates.',
+              valid_from: '2026-08-11T12:00:00',
+              valid_to: '2026-08-12T06:00:00',
+            },
+          ],
+          fallback_reason: null,
+        },
+      },
+    }
+    fetchMock.mockResolvedValue({ ok: true, json: async () => anchored })
     render(<NeuroSkinDashboard />)
-    await screen.findByText('NeuroSkin representative tropical day')
-    fireEvent.click(screen.getByRole('button', { name: 'Guided tour' }))
-    expect(screen.getByText('Step 1 of 18')).toBeInTheDocument()
-    expect(screen.getByText('Try this')).toBeInTheDocument()
-    expect(screen.getByText('What to notice')).toBeInTheDocument()
-    fireEvent.change(
-      screen.getByRole('combobox', { name: 'Jump to tour step' }),
-      {
-        target: { value: '10' },
-      }
-    )
-    expect(await screen.findByText('Step 11 of 18')).toBeInTheDocument()
+
+    expect(await screen.findByText('MET anchored')).toBeInTheDocument()
+    expect(screen.queryByTestId('weather-context')).not.toBeInTheDocument()
     expect(
-      screen.getByText('Read the lie-detector proof as a three-part argument.')
-    ).toBeInTheDocument()
+      screen.queryByText(/Continuous Rain Warning/)
+    ).not.toBeInTheDocument()
+  })
+
+  it('serializes MET-anchored mode from the environment control', async () => {
+    render(<NeuroSkinDashboard />)
+    await screen.findByText('Mean load')
+    fireEvent.click(screen.getByRole('button', { name: 'MET-anchored' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Run simulation' }))
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
     const options = fetchMock.mock.calls[1][1] as RequestInit
     expect(JSON.parse(String(options.body))).toMatchObject({
-      scenario: 'lie_detector',
+      environment_source: 'met_anchored',
     })
+  })
+
+  it('links to the project overview and excludes tutorial chrome', async () => {
+    render(<NeuroSkinDashboard />)
+    await screen.findByText('Mean load')
+    expect(
+      screen.getByRole('link', { name: 'Project overview' })
+    ).toHaveAttribute('href', '/')
+    expect(
+      screen.queryByRole('button', { name: 'Guided tour' })
+    ).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })

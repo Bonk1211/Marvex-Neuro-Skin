@@ -52,10 +52,10 @@ export function SimulationCharts({
 
   if (scenario === 'lie_detector') {
     return (
-      <div className='grid gap-4 xl:grid-cols-2'>
+      <div className='grid gap-4'>
         <ChartCard
           title='Sensor cross-check'
-          caption='Synthetic measured irradiance versus cloud-adjusted almanac expectation (W/m²).'
+          caption='Expected vs measured · W/m²'
         >
           <BaseChart data={chartData} annotations={referenceTimes}>
             <Line
@@ -77,8 +77,8 @@ export function SimulationCharts({
           </BaseChart>
         </ChartCard>
         <ChartCard
-          title='Controller consequence'
-          caption='Synthetic facade angle: NeuroSkin fallback versus the naive sensor-only response.'
+          title='Facade response'
+          caption='NeuroSkin vs baseline · degrees'
         >
           <BaseChart
             data={chartData}
@@ -111,11 +111,8 @@ export function SimulationCharts({
 
   if (scenario === 'budget_failsafe') {
     return (
-      <div className='grid gap-4 xl:grid-cols-2'>
-        <ChartCard
-          title='Safety-priority angle timeline'
-          caption='Synthetic angle response showing movement rationing and the 60° fail-shaded state.'
-        >
+      <div className='grid gap-4'>
+        <ChartCard title='Safety response' caption='Target vs final · degrees'>
           <BaseChart
             data={chartData}
             annotations={referenceTimes}
@@ -140,10 +137,7 @@ export function SimulationCharts({
             />
           </BaseChart>
         </ChartCard>
-        <ChartCard
-          title='Relative cooling-load floor'
-          caption='Synthetic relative load; the latent component remains even under full shading.'
-        >
+        <ChartCard title='Load floor' caption='Total vs latent load'>
           <BaseChart
             data={chartData}
             annotations={referenceTimes}
@@ -172,14 +166,14 @@ export function SimulationCharts({
   }
 
   return (
-    <div className='grid gap-4 xl:grid-cols-2'>
+    <div className='grid gap-4'>
       <ChartCard
         title={
           scenario === 'co_optimization'
             ? 'Cooling-load comparison'
             : 'Relative cooling load'
         }
-        caption='Synthetic relative cooling-load index only; no HVAC energy conversion is claimed.'
+        caption='NeuroSkin vs baseline · relative index'
       >
         <BaseChart data={chartData} domain={[0, 1.2]}>
           <Line
@@ -215,8 +209,8 @@ export function SimulationCharts({
         }
         caption={
           scenario === 'co_optimization'
-            ? 'Synthetic indoor illuminance with the 300–700 lux target band.'
-            : 'Synthetic co-optimised and reactive baseline facade angles.'
+            ? 'Target band · 300–700 lux'
+            : 'NeuroSkin vs baseline · degrees'
         }
       >
         {scenario === 'co_optimization' ? (

@@ -5,16 +5,29 @@ import numpy as np
 
 from app.config import DEFAULTS
 from app.domain.controller import run_tick
-from app.domain.environment import generate_day, inject_sensor_fault
-from app.domain.types import ControllerWeights, Environment
+from app.domain.environment import generate_day, inject_sensor_fault, solar_frame
+from app.domain.facade import facade_heat, poa_series
+from app.domain.types import ControllerWeights, Environment, Site
 from app.schemas import (
     ComparisonMetric,
     CostBreakdown,
     EventAnnotation,
+    FacadeHeatPayload,
     SimulationMetadata,
     SimulationRunRequest,
     SimulationRunResponse,
     TickPayload,
+    WeatherContextPayload,
+    WeatherWarningPayload,
+)
+from app.weather import (
+    FORECAST_URL,
+    LOCATION_ID,
+    LOCATION_NAME,
+    MetWeatherContext,
+    OpenMeteoContext,
+    get_met_weather_context,
+    get_open_meteo_context,
 )
 
 SCENARIO_TITLES = {
@@ -25,13 +38,38 @@ SCENARIO_TITLES = {
 }
 
 
-def _prepare_environment(request: SimulationRunRequest) -> list[Environment]:
+def _site(request: SimulationRunRequest) -> Site:
+    return Site(
+        name=request.location_name,
+        latitude=request.latitude,
+        longitude=request.longitude,
+        timezone=request.timezone,
+    )
+
+
+def _prepare_environment(
+    request: SimulationRunRequest,
+    site: Site,
+) -> tuple[list[Environment], MetWeatherContext | None, OpenMeteoContext | None]:
+    weather_context = (
+        get_met_weather_context(request.date)
+        if request.environment_source == "met_anchored"
+        else None
+    )
+    open_meteo = (
+        get_open_meteo_context(request.date, site)
+        if request.environment_source == "open_meteo"
+        else None
+    )
     day = generate_day(
         request.date,
         cloud_profile=request.cloud_profile,
         seed=request.seed,
         occupancy_scale=request.occupancy_scale,
         wind_override=request.wind_override,
+        weather_anchor=weather_context.anchor if weather_context is not None else None,
+        observed=open_meteo.observed if open_meteo is not None else None,
+        site=site,
     )
     if request.scenario == "lie_detector":
         prepared: list[Environment] = []
@@ -56,8 +94,90 @@ def _prepare_environment(request: SimulationRunRequest) -> list[Environment]:
                 )
             else:
                 prepared.append(env)
-        return prepared
-    return day
+        return prepared, weather_context, open_meteo
+    return day, weather_context, open_meteo
+
+
+def _open_meteo_payload(
+    context: OpenMeteoContext,
+    request: SimulationRunRequest,
+    site: Site,
+) -> WeatherContextPayload:
+    return WeatherContextPayload(
+        status=context.status,
+        provider="Open-Meteo",
+        source_url=context.source_url,
+        dataset=context.dataset,
+        fetched_at=context.fetched_at,
+        location_id=f"{site.latitude:.4f},{site.longitude:.4f}",
+        location_name=site.name,
+        forecast_date=request.date if context.status == "applied" else None,
+        fallback_reason=context.fallback_reason,
+    )
+
+
+def _weather_payload(context: MetWeatherContext | None) -> WeatherContextPayload | None:
+    if context is None:
+        return None
+    forecast = context.forecast
+    return WeatherContextPayload(
+        status=context.status,
+        provider="MET Malaysia via data.gov.my",
+        source_url=FORECAST_URL,
+        fetched_at=context.fetched_at,
+        location_id=forecast.location_id if forecast else LOCATION_ID,
+        location_name=forecast.location_name if forecast else LOCATION_NAME,
+        forecast_date=forecast.date if forecast else None,
+        min_temp=forecast.min_temp if forecast else None,
+        max_temp=forecast.max_temp if forecast else None,
+        morning_forecast=forecast.morning_forecast if forecast else None,
+        afternoon_forecast=forecast.afternoon_forecast if forecast else None,
+        night_forecast=forecast.night_forecast if forecast else None,
+        summary_forecast=forecast.summary_forecast if forecast else None,
+        summary_when=forecast.summary_when if forecast else None,
+        warnings=[
+            WeatherWarningPayload(
+                title=warning.title,
+                heading=warning.heading,
+                text=warning.text,
+                instruction=warning.instruction,
+                valid_from=warning.valid_from,
+                valid_to=warning.valid_to,
+            )
+            for warning in context.warnings
+        ],
+        fallback_reason=context.fallback_reason,
+    )
+
+
+def _data_notice(
+    met: MetWeatherContext | None,
+    open_meteo: OpenMeteoContext | None,
+    site: Site,
+) -> str:
+    if open_meteo is not None:
+        if open_meteo.status == "applied":
+            return (
+                f"Open-Meteo {open_meteo.dataset} supplies hourly irradiance, temperature, "
+                f"cloud, wind and rain for {site.name}, interpolated to 10-minute ticks. "
+                "Occupancy, indoor readings and every sensor fault remain synthetic."
+            )
+        return (
+            "Open-Meteo data was requested but unavailable; the run fell back to a fully "
+            f"synthetic {site.name} day."
+        )
+    if met is not None:
+        if met.status == "applied":
+            return (
+                "MET Malaysia daily forecast anchors temperature and period-level sky "
+                "conditions; all 10-minute environmental and sensor ticks remain seeded "
+                "synthetic data."
+            )
+        return (
+            "MET anchoring was requested but unavailable; the run fell back to a fully "
+            "synthetic Kuala Lumpur day."
+        )
+    return f"Modelled {site.name} day; all environmental and sensor data are synthetic."
 
 
 def _metric_payload(ticks: list[TickPayload]) -> list[ComparisonMetric]:
@@ -107,7 +227,18 @@ def _metric_payload(ticks: list[TickPayload]) -> list[ComparisonMetric]:
 
 
 def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
-    environments = _prepare_environment(request)
+    site = _site(request)
+    environments, weather_context, open_meteo = _prepare_environment(request, site)
+    times, position, _location = solar_frame(request.date, site=site)
+    # Heat map runs on the irradiance the walls actually see, doctored ticks included.
+    poa = poa_series(
+        times,
+        position,
+        np.array([env.ghi for env in environments]),
+        np.array([env.dni for env in environments]),
+        np.array([env.dhi for env in environments]),
+        tilt=request.facade_tilt,
+    )
     weights = ControllerWeights(**request.weights.model_dump())
     ticks: list[TickPayload] = []
     annotations: list[EventAnnotation] = []
@@ -116,7 +247,7 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
     power_loss_start = time(14, 0)
     power_loss_end = time(14, 30)
 
-    for env in environments:
+    for index, env in enumerate(environments):
         local_time = env.t.time()
         power_ok = request.power_ok
         movement_threshold = DEFAULTS.movement_threshold
@@ -131,14 +262,25 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
             weights,
             power_ok=power_ok,
             movement_threshold=movement_threshold,
+            site=site,
         )
         decision = result.decision
         current_angle = decision.angle_final
         breakdown = CostBreakdown(**decision.cost_breakdown)
+        walls = facade_heat(
+            poa,
+            index,
+            outdoor_temp=env.outdoor_temp,
+            wind=env.wind,
+            angle=decision.angle_final,
+            controlled=request.facade_orientation,
+        )
         payload = TickPayload(
             timestamp=env.t,
             ghi=round(env.ghi, 2),
             expected_ghi=round(result.expected_ghi, 2),
+            solar_azimuth=round(result.solar_azimuth, 2),
+            solar_elevation=round(result.solar_elevation, 2),
             measured_irradiance=round(env.measured_irradiance, 2),
             cloud=round(env.cloud, 3),
             outdoor_temp=round(env.outdoor_temp, 2),
@@ -158,6 +300,7 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
             sensor_trusted=decision.sensor_trusted,
             reason=decision.reason,
             cost_breakdown=breakdown,
+            facade=[FacadeHeatPayload(**vars(wall)) for wall in walls],
         )
         ticks.append(payload)
 
@@ -227,17 +370,24 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
         "power_ok": request.power_ok,
     }
     metadata = SimulationMetadata(
-        location="Kuala Lumpur, Malaysia",
-        latitude=DEFAULTS.latitude,
-        longitude=DEFAULTS.longitude,
-        timezone=DEFAULTS.timezone,
+        location=site.name,
+        latitude=site.latitude,
+        longitude=site.longitude,
+        timezone=site.timezone,
         tick_minutes=DEFAULTS.tick_minutes,
         seed=request.seed,
+        environment_source=request.environment_source,
+        facade_orientation=request.facade_orientation,
+        facade_tilt=request.facade_tilt,
+        floors=DEFAULTS.floors,
         synthetic=True,
-        data_notice=(
-            "Modelled Kuala Lumpur tropical day; all environmental and sensor data are synthetic."
-        ),
+        data_notice=_data_notice(weather_context, open_meteo, site),
         load_unit="relative cooling-load index",
+        weather_context=(
+            _open_meteo_payload(open_meteo, request, site)
+            if open_meteo is not None
+            else _weather_payload(weather_context)
+        ),
     )
     return SimulationRunResponse(
         scenario=request.scenario,

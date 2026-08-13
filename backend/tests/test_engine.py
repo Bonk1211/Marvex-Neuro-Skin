@@ -10,7 +10,7 @@ from app.domain.environment import generate_day, inject_sensor_fault
 from app.domain.safety import movement_budget, safety_gate
 from app.domain.solar import sun_position
 from app.domain.thermal import load_at_angle, predict_load
-from app.domain.types import ControllerWeights, LoadEstimate
+from app.domain.types import ControllerWeights, EnvironmentAnchor, LoadEstimate
 from app.domain.validation import validate
 
 
@@ -31,6 +31,30 @@ def test_day_generation_is_seeded_and_contains_diffuse_cloud_events() -> None:
     assert [tick.cloud for tick in first] == [tick.cloud for tick in second]
     assert max(tick.cloud for tick in first) > 0.5
     assert max(tick.diffuse_fraction for tick in first) >= 0.8
+
+
+def test_weather_anchor_preserves_seeded_ticks_and_applies_daily_bounds() -> None:
+    anchor = EnvironmentAnchor(
+        min_temp=25,
+        max_temp=34,
+        morning_cloud=0.12,
+        afternoon_cloud=0.86,
+        night_cloud=0.72,
+        morning_rain=False,
+        afternoon_rain=True,
+        night_rain=True,
+    )
+    first = generate_day(date(2026, 8, 11), seed=7, weather_anchor=anchor)
+    second = generate_day(date(2026, 8, 11), seed=7, weather_anchor=anchor)
+
+    assert first == second
+    assert min(tick.outdoor_temp for tick in first) == pytest.approx(25)
+    assert max(tick.outdoor_temp for tick in first) == pytest.approx(34)
+    morning_cloud = [tick.cloud for tick in first if 6 <= tick.t.hour < 12]
+    afternoon_cloud = [tick.cloud for tick in first if 12 <= tick.t.hour < 18]
+    assert sum(afternoon_cloud) / len(afternoon_cloud) > sum(morning_cloud) / len(
+        morning_cloud
+    )
 
 
 def test_dead_sensor_is_rejected_under_clear_sky_but_cloud_gate_is_trusted() -> None:

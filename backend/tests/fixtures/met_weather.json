@@ -1,0 +1,40 @@
+{
+  "forecast": [
+    {
+      "location": {
+        "location_id": "Tn079",
+        "location_name": "Kuala Lumpur"
+      },
+      "date": "2026-08-11",
+      "morning_forecast": "Tiada hujan",
+      "afternoon_forecast": "Ribut petir di beberapa tempat",
+      "night_forecast": "Hujan di satu dua tempat",
+      "summary_forecast": "Ribut petir di beberapa tempat",
+      "summary_when": "Petang",
+      "min_temp": 25,
+      "max_temp": 34
+    }
+  ],
+  "warnings": [
+    {
+      "warning_issue": {
+        "title_en": "Continuous Rain Warning"
+      },
+      "valid_from": "2026-08-11T12:00:00",
+      "valid_to": "2026-08-12T06:00:00",
+      "heading_en": "Continuous Rain",
+      "text_en": "Heavy rain is expected in parts of the region.",
+      "instruction_en": "Monitor official updates."
+    },
+    {
+      "warning_issue": {
+        "title_en": "No Advisory"
+      },
+      "valid_from": null,
+      "valid_to": null,
+      "heading_en": "No Advisory",
+      "text_en": "",
+      "instruction_en": ""
+    }
+  ]
+}

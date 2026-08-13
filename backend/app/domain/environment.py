@@ -6,7 +6,39 @@ import pandas as pd
 import pvlib
 
 from app.config import DEFAULTS
-from app.domain.types import Environment
+from app.domain.types import Environment, EnvironmentAnchor, ObservedWeather, Site
+
+
+def default_site() -> Site:
+    return Site(
+        name=DEFAULTS.location_name,
+        latitude=DEFAULTS.latitude,
+        longitude=DEFAULTS.longitude,
+        timezone=DEFAULTS.timezone,
+    )
+
+
+def solar_frame(
+    day: date,
+    *,
+    site: Site | None = None,
+    tick_minutes: int = DEFAULTS.tick_minutes,
+) -> tuple[pd.DatetimeIndex, pd.DataFrame, pvlib.location.Location]:
+    """Tick timestamps and solar position for one local day at one site."""
+
+    site = site or default_site()
+    start = pd.Timestamp(day, tz=site.timezone)
+    periods = 24 * 60 // tick_minutes
+    times = pd.date_range(start, periods=periods, freq=f"{tick_minutes}min")
+    location = pvlib.location.Location(site.latitude, site.longitude, tz=site.timezone)
+    return times, location.get_solarposition(times), location
+
+
+def _hourly_to_ticks(hours: np.ndarray, values: tuple[float, ...]) -> np.ndarray:
+    # ponytail: np.interp clamps after the last hourly sample instead of wrapping
+    # into the next day. Only the 23:00-23:50 tail is affected, where irradiance
+    # is zero and temperature barely moves. Fetch a second day if that matters.
+    return np.interp(hours, np.arange(len(values), dtype=float), np.asarray(values, dtype=float))
 
 
 def _cloud_series(profile: str, count: int, rng: np.random.Generator) -> np.ndarray:
@@ -47,45 +79,114 @@ def generate_day(
     seed: int = DEFAULTS.seed,
     occupancy_scale: float = 1.0,
     wind_override: float | None = None,
+    weather_anchor: EnvironmentAnchor | None = None,
+    observed: ObservedWeather | None = None,
+    site: Site | None = None,
 ) -> list[Environment]:
     rng = np.random.default_rng(seed)
-    start = pd.Timestamp(day, tz=DEFAULTS.timezone)
-    periods = 24 * 60 // tick_minutes
-    times = pd.date_range(start, periods=periods, freq=f"{tick_minutes}min")
-    location = pvlib.location.Location(
-        DEFAULTS.latitude,
-        DEFAULTS.longitude,
-        tz=DEFAULTS.timezone,
-    )
-    clear = location.get_clearsky(times, model="ineichen")
-    position = location.get_solarposition(times)
-    cloud = _cloud_series(cloud_profile, periods, rng)
-    transmittance = np.clip(1.0 - DEFAULTS.cloud_attenuation * cloud, 0.12, 1.0)
-    ghi = clear["ghi"].to_numpy() * transmittance
-    decomposition = pd.DataFrame(
-        pvlib.irradiance.erbs(
-            pd.Series(ghi, index=times),
-            position["zenith"],
-            times.dayofyear,
-        ),
-        index=times,
-    ).fillna(0.0)
+    site = site or default_site()
+    times, position, location = solar_frame(day, site=site, tick_minutes=tick_minutes)
+    periods = len(times)
+    hours = times.hour.to_numpy() + times.minute.to_numpy() / 60.0
+
+    temp_series: np.ndarray | None = None
+    wind_series: np.ndarray | None = None
+    rain_series: np.ndarray | None = None
+
+    if observed is not None:
+        # Measured/forecast irradiance replaces the clear-sky-times-cloud guess.
+        # Occupancy, indoor readings and sensor faults stay synthetic.
+        ghi = np.maximum(0.0, _hourly_to_ticks(hours, observed.ghi))
+        dni = np.maximum(0.0, _hourly_to_ticks(hours, observed.dni))
+        dhi = np.maximum(0.0, _hourly_to_ticks(hours, observed.dhi))
+        cloud = np.clip(_hourly_to_ticks(hours, observed.cloud), 0.0, 0.96)
+        temp_series = _hourly_to_ticks(hours, observed.temperature)
+        wind_series = np.maximum(0.0, _hourly_to_ticks(hours, observed.wind))
+        rain_series = _hourly_to_ticks(hours, observed.precipitation) > 0.1
+    else:
+        clear = location.get_clearsky(times, model="ineichen")
+        cloud = _cloud_series(cloud_profile, periods, rng)
+        rain_period = np.zeros(periods, dtype=bool)
+        if weather_anchor is not None:
+            period_cloud = np.empty(periods)
+            for i, timestamp in enumerate(times):
+                hour = timestamp.hour + timestamp.minute / 60
+                if 6 <= hour < 12:
+                    period_cloud[i] = weather_anchor.morning_cloud
+                    rain_period[i] = weather_anchor.morning_rain
+                elif 12 <= hour < 18:
+                    period_cloud[i] = weather_anchor.afternoon_cloud
+                    rain_period[i] = weather_anchor.afternoon_rain
+                else:
+                    period_cloud[i] = weather_anchor.night_cloud
+                    rain_period[i] = weather_anchor.night_rain
+            # Preserve seeded intra-period variation while making the official
+            # period-level forecast the dominant shape of the synthetic sky.
+            cloud = np.clip(0.35 * cloud + 0.65 * period_cloud, 0.0, 0.96)
+        transmittance = np.clip(1.0 - DEFAULTS.cloud_attenuation * cloud, 0.12, 1.0)
+        ghi = clear["ghi"].to_numpy() * transmittance
+        decomposition = pd.DataFrame(
+            pvlib.irradiance.erbs(
+                pd.Series(ghi, index=times),
+                position["zenith"],
+                times.dayofyear,
+            ),
+            index=times,
+        ).fillna(0.0)
+        dni = decomposition["dni"].to_numpy()
+        dhi = decomposition["dhi"].to_numpy()
+
+        if weather_anchor is not None:
+            anchor_rng = np.random.default_rng(seed + 101_003)
+            raw_temp = np.array(
+                [
+                    28.2
+                    + 3.8
+                    * np.sin((timestamp.hour + timestamp.minute / 60 - 9.5) / 24 * 2 * np.pi)
+                    + anchor_rng.normal(0, 0.18)
+                    for timestamp in times
+                ]
+            )
+            span = float(raw_temp.max() - raw_temp.min())
+            normalized = (raw_temp - raw_temp.min()) / span if span else np.zeros(periods)
+            temp_series = weather_anchor.min_temp + normalized * (
+                weather_anchor.max_temp - weather_anchor.min_temp
+            )
+            rain_rng = np.random.default_rng(seed + 202_007)
+            rain_series = np.array(
+                [
+                    bool(rain_period[i] and cloud[i] > 0.62 and rain_rng.random() < 0.35)
+                    for i in range(periods)
+                ]
+            )
 
     output: list[Environment] = []
     for i, timestamp in enumerate(times):
         hour = timestamp.hour + timestamp.minute / 60
-        temp = 28.2 + 3.8 * np.sin((hour - 9.5) / 24 * 2 * np.pi)
-        temp += rng.normal(0, 0.18)
+        if temp_series is not None:
+            temp = float(temp_series[i])
+        else:
+            temp = 28.2 + 3.8 * np.sin((hour - 9.5) / 24 * 2 * np.pi)
+            temp += rng.normal(0, 0.18)
         occupancy = _occupancy(hour, occupancy_scale)
-        wind = wind_override if wind_override is not None else 2.3 + 1.1 * np.sin(hour / 24 * np.pi)
+        if wind_override is not None:
+            wind = wind_override
+        elif wind_series is not None:
+            wind = float(wind_series[i])
+        else:
+            wind = 2.3 + 1.1 * np.sin(hour / 24 * np.pi)
         wind = max(0.0, float(wind + rng.normal(0, 0.25)))
-        # Keep incidental safety events out of the ordinary demos. Rain remains
-        # available through the explicit overcast profile and Tier 3 has its own
-        # deterministic power-loss event.
-        rain = bool(cloud_profile == "overcast" and cloud[i] > 0.91 and rng.random() < 0.2)
+        if rain_series is not None:
+            rain = bool(rain_series[i])
+        else:
+            # Keep incidental safety events out of the ordinary demos. Rain remains
+            # available through the explicit overcast profile and Tier 3 has its own
+            # deterministic power-loss event. The draw stays inside the loop so the
+            # seeded stream matches the pre-observed-weather behaviour.
+            rain = bool(cloud_profile == "overcast" and cloud[i] > 0.91 and rng.random() < 0.2)
         current_ghi = max(0.0, float(ghi[i]))
-        current_dni = max(0.0, float(decomposition.iloc[i]["dni"]))
-        current_dhi = max(0.0, float(decomposition.iloc[i]["dhi"]))
+        current_dni = max(0.0, float(dni[i]))
+        current_dhi = max(0.0, float(dhi[i]))
         diffuse_fraction = current_dhi / current_ghi if current_ghi > 1 else 1.0
         measured = max(0.0, current_ghi * (1 + rng.normal(0, 0.025)))
         # Simple indoor work-plane proxy: diffuse light remains useful in the

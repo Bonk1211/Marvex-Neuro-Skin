@@ -11,10 +11,11 @@ def sun_position(
     t: datetime,
     lat: float = DEFAULTS.latitude,
     lon: float = DEFAULTS.longitude,
+    tz: str = DEFAULTS.timezone,
 ) -> SolarState:
     timestamp = pd.Timestamp(t)
     if timestamp.tzinfo is None:
-        timestamp = timestamp.tz_localize(DEFAULTS.timezone)
+        timestamp = timestamp.tz_localize(tz)
     times = pd.DatetimeIndex([timestamp])
     location = pvlib.location.Location(lat, lon, tz=str(timestamp.tz))
     position = location.get_solarposition(times).iloc[0]

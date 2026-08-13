@@ -1,11 +1,16 @@
 from datetime import date as Date
 from datetime import datetime
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.config import DEFAULTS
+
 ScenarioName = Literal["overview", "lie_detector", "co_optimization", "budget_failsafe"]
 CloudProfile = Literal["clear", "scattered", "overcast"]
+EnvironmentSource = Literal["synthetic", "met_anchored", "open_meteo"]
+FacadeOrientation = Literal["north", "east", "south", "west"]
 
 
 class WeightInput(BaseModel):
@@ -27,11 +32,29 @@ class SimulationRunRequest(BaseModel):
     scenario: ScenarioName = "overview"
     date: Date = Date(2026, 3, 21)
     seed: int = Field(42, ge=0, le=2_147_483_647)
+    environment_source: EnvironmentSource = "synthetic"
     cloud_profile: CloudProfile = "scattered"
     occupancy_scale: float = Field(1.0, ge=0, le=1.5)
     wind_override: float | None = Field(None, ge=0, le=40)
     power_ok: bool = True
     weights: WeightInput = Field(default_factory=WeightInput)
+    latitude: float = Field(DEFAULTS.latitude, ge=-90, le=90)
+    longitude: float = Field(DEFAULTS.longitude, ge=-180, le=180)
+    timezone: str = Field(DEFAULTS.timezone, min_length=1, max_length=64)
+    location_name: str = Field(DEFAULTS.location_name, min_length=1, max_length=120)
+    facade_orientation: FacadeOrientation = DEFAULTS.facade_orientation  # type: ignore[assignment]
+    # 90 is a plain vertical wall; above 90 the facade leans out and self-shades.
+    facade_tilt: float = Field(DEFAULTS.facade_tilt, ge=0, le=180)
+
+    @field_validator("timezone")
+    @classmethod
+    def known_timezone(cls, value: str) -> str:
+        # Reaches an outbound query string, so reject anything not in the IANA database.
+        try:
+            ZoneInfo(value)
+        except (KeyError, ValueError) as exc:
+            raise ValueError(f"Unknown IANA timezone: {value}") from exc
+        return value
 
 
 class CostBreakdown(BaseModel):
@@ -41,10 +64,25 @@ class CostBreakdown(BaseModel):
     risk: float = 0
 
 
+class FacadeHeatPayload(BaseModel):
+    """One wall of the building at one tick, for the 3D heat map."""
+
+    orientation: FacadeOrientation
+    azimuth: float
+    incident: float
+    transmitted: float
+    sky_diffuse: float
+    ground_diffuse: float
+    sol_air_temp: float
+    controlled: bool
+
+
 class TickPayload(BaseModel):
     timestamp: datetime
     ghi: float
     expected_ghi: float
+    solar_azimuth: float
+    solar_elevation: float
     measured_irradiance: float
     cloud: float
     outdoor_temp: float
@@ -64,6 +102,7 @@ class TickPayload(BaseModel):
     sensor_trusted: bool
     reason: str
     cost_breakdown: CostBreakdown
+    facade: list[FacadeHeatPayload] = Field(default_factory=list)
 
 
 class ComparisonMetric(BaseModel):
@@ -82,6 +121,35 @@ class EventAnnotation(BaseModel):
     detail: str
 
 
+class WeatherWarningPayload(BaseModel):
+    title: str
+    heading: str
+    text: str
+    instruction: str
+    valid_from: str | None = None
+    valid_to: str | None = None
+
+
+class WeatherContextPayload(BaseModel):
+    status: Literal["applied", "fallback"]
+    provider: str
+    source_url: str
+    fetched_at: datetime
+    location_id: str
+    location_name: str
+    dataset: str | None = None
+    forecast_date: Date | None = None
+    min_temp: float | None = None
+    max_temp: float | None = None
+    morning_forecast: str | None = None
+    afternoon_forecast: str | None = None
+    night_forecast: str | None = None
+    summary_forecast: str | None = None
+    summary_when: str | None = None
+    warnings: list[WeatherWarningPayload] = Field(default_factory=list)
+    fallback_reason: str | None = None
+
+
 class SimulationMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -91,9 +159,14 @@ class SimulationMetadata(BaseModel):
     timezone: str
     tick_minutes: int
     seed: int
+    environment_source: EnvironmentSource
+    facade_orientation: FacadeOrientation
+    facade_tilt: float
+    floors: int
     synthetic: bool
     data_notice: str
     load_unit: str
+    weather_context: WeatherContextPayload | None = None
 
 
 class SimulationRunResponse(BaseModel):

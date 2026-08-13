@@ -1,5 +1,5 @@
-import { NeuroSkinDashboard } from '@/components/neuroskin/NeuroSkinDashboard'
+import { NeuroSkinLanding } from '@/components/neuroskin/NeuroSkinLanding'
 
 export default function Home() {
-  return <NeuroSkinDashboard />
+  return <NeuroSkinLanding />
 }

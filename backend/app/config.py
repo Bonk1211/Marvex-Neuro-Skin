@@ -3,8 +3,8 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class SimulationDefaults:
-    latitude: float = 3.1390
-    longitude: float = 101.6869
+    latitude: float = 2.9220
+    longitude: float = 101.6885
     timezone: str = "Asia/Kuala_Lumpur"
     tick_minutes: int = 10
     seed: int = 42
@@ -21,6 +21,13 @@ class SimulationDefaults:
     low_cloud_threshold: float = 0.35
     cloud_attenuation: float = 0.72
     daylight_evaluation_ghi: float = 200.0
+    location_name: str = "ST Diamond Building, Putrajaya"
+    facade_orientation: str = "west"
+    # The Diamond Building's facades lean out 25 degrees, so the outward normal
+    # sits 25 degrees below horizontal: 90 + 25 in pvlib's surface-tilt terms.
+    # That overhang is the building's passive shading device. 90 = a plain wall.
+    facade_tilt: float = 115.0
+    floors: int = 7
 
 
 DEFAULTS = SimulationDefaults()
