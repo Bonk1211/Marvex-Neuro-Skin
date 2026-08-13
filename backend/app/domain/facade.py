@@ -13,7 +13,7 @@ import pvlib
 
 from app.config import DEFAULTS
 from app.domain.thermal import shade_transmittance
-from app.domain.types import FacadeHeat
+from app.domain.types import FacadeHeat, WallGain, WallState
 
 ORIENTATIONS: dict[str, float] = {
     "north": 0.0,
@@ -68,33 +68,51 @@ def sol_air_temp(outdoor_temp: float, poa_global: float, wind: float) -> float:
     return float(outdoor_temp + SOLAR_ABSORPTANCE * max(0.0, poa_global) / film_coefficient)
 
 
+def wall_gains(series: dict[str, dict[str, np.ndarray]], index: int) -> list[WallGain]:
+    """Unshaded gain on each wall at one tick. This is what each controller reads."""
+
+    return [
+        WallGain(
+            orientation=orientation,
+            azimuth=azimuth,
+            incident=float(series[orientation]["poa_global"][index]),
+            sky_diffuse=float(series[orientation]["poa_sky_diffuse"][index]),
+            ground_diffuse=float(series[orientation]["poa_ground_diffuse"][index]),
+        )
+        for orientation, azimuth in ORIENTATIONS.items()
+    ]
+
+
 def facade_heat(
-    series: dict[str, dict[str, np.ndarray]],
-    index: int,
+    gains: list[WallGain],
+    decisions: dict[str, WallState],
     *,
     outdoor_temp: float,
     wind: float,
-    angle: float,
-    controlled: str,
+    primary: str,
 ) -> list[FacadeHeat]:
-    """Heat state of all four walls at one tick, with louvres applied to one."""
+    """Heat state of every wall once its own louvres have acted."""
 
     walls: list[FacadeHeat] = []
-    for orientation, azimuth in ORIENTATIONS.items():
-        wall = series[orientation]
-        incident = float(wall["poa_global"][index])
-        is_controlled = orientation == controlled
-        transmitted = incident * shade_transmittance(angle) if is_controlled else incident
+    for gain in gains:
+        state = decisions[gain.orientation]
+        transmitted = gain.incident * shade_transmittance(state.angle)
         walls.append(
             FacadeHeat(
-                orientation=orientation,
-                azimuth=azimuth,
-                incident=round(incident, 2),
+                orientation=gain.orientation,
+                azimuth=gain.azimuth,
+                incident=round(gain.incident, 2),
                 transmitted=round(transmitted, 2),
-                sky_diffuse=round(float(wall["poa_sky_diffuse"][index]), 2),
-                ground_diffuse=round(float(wall["poa_ground_diffuse"][index]), 2),
+                sky_diffuse=round(gain.sky_diffuse, 2),
+                ground_diffuse=round(gain.ground_diffuse, 2),
                 sol_air_temp=round(sol_air_temp(outdoor_temp, transmitted, wind), 2),
-                controlled=is_controlled,
+                angle=state.angle,
+                mode=state.mode,
+                moved=state.moved,
+                lux=round(state.lux, 1),
+                load_relative=round(state.load_relative, 4),
+                reason=state.reason,
+                primary=gain.orientation == primary,
             )
         )
     return walls

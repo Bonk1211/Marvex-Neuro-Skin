@@ -74,7 +74,13 @@ class FacadeHeatPayload(BaseModel):
     sky_diffuse: float
     ground_diffuse: float
     sol_air_temp: float
-    controlled: bool
+    angle: float
+    mode: str
+    moved: bool
+    lux: float
+    load_relative: float
+    reason: str
+    primary: bool
 
 
 class TickPayload(BaseModel):

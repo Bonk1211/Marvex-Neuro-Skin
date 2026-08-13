@@ -165,6 +165,8 @@ interface BuildingHeatmapProps {
   facadeTilt: number
   timeLabel: string
   locationName: string
+  selected: FacadeOrientation
+  onSelect: (orientation: FacadeOrientation) => void
 }
 
 export function BuildingHeatmap({
@@ -173,6 +175,8 @@ export function BuildingHeatmap({
   facadeTilt,
   timeLabel,
   locationName,
+  selected,
+  onSelect,
 }: BuildingHeatmapProps) {
   // pvlib surface tilt: 90 is a plain wall, 115 is the Diamond's 25 degree lean.
   const overhang = facadeTilt - 90
@@ -183,11 +187,15 @@ export function BuildingHeatmap({
     camera: THREE.PerspectiveCamera
     controls: OrbitControls
     panels: Map<FacadeOrientation, THREE.Mesh[]>
-    louvres: THREE.Group
+    louvres: Map<FacadeOrientation, THREE.Group>
+    outline: THREE.LineLoop
     sunlight: THREE.DirectionalLight
     sunMarker: THREE.Mesh
   } | null>(null)
   const [supported, setSupported] = useState(true)
+  // Kept in a ref so changing the handler never rebuilds the scene.
+  const onSelectRef = useRef(onSelect)
+  onSelectRef.current = onSelect
 
   const walls = useMemo(() => {
     const byOrientation = new Map<FacadeOrientation, FacadeHeat>()
@@ -289,13 +297,15 @@ export function BuildingHeatmap({
         )
         panel.position.y = base
         panel.rotation.y = WALLS[orientation]
+        panel.userData.orientation = orientation
         scene.add(panel)
         stack.push(panel)
       }
       panels.set(orientation, stack)
     }
 
-    const louvres = new THREE.Group()
+    // Every wall carries its own louvres, driven by its own controller.
+    const louvres = new Map<FacadeOrientation, THREE.Group>()
     const slatCount = floors * 2
     const slatGeometry = new THREE.BoxGeometry(1, 0.035, 0.22)
     const slatMaterial = new THREE.MeshStandardMaterial({
@@ -303,15 +313,80 @@ export function BuildingHeatmap({
       roughness: 0.35,
       metalness: 0.45,
     })
-    for (let slat = 0; slat < slatCount; slat += 1) {
-      const mesh = new THREE.Mesh(slatGeometry, slatMaterial)
-      // Follow the leaning facade: each slat stands off the wall it belongs to.
-      const y = ((slat + 0.5) * height) / slatCount
-      mesh.position.set(0, y, halfWidthAt(y, overhang) + 0.13)
-      mesh.scale.x = 2 * halfWidthAt(y, overhang) - 0.1
-      louvres.add(mesh)
+    for (const orientation of ORIENTATIONS) {
+      const group = new THREE.Group()
+      for (let slat = 0; slat < slatCount; slat += 1) {
+        const mesh = new THREE.Mesh(slatGeometry, slatMaterial)
+        // Follow the leaning facade: each slat stands off the wall it belongs to.
+        const y = ((slat + 0.5) * height) / slatCount
+        mesh.position.set(0, y, halfWidthAt(y, overhang) + 0.13)
+        mesh.scale.x = 2 * halfWidthAt(y, overhang) - 0.1
+        group.add(mesh)
+      }
+      group.rotation.y = WALLS[orientation]
+      scene.add(group)
+      louvres.set(orientation, group)
     }
-    scene.add(louvres)
+
+    // Selection frame. The plan is square, so one outline serves every wall.
+    const outlineGeometry = new THREE.BufferGeometry()
+    const hb = halfWidthAt(0, overhang)
+    const ht = halfWidthAt(height, overhang)
+    outlineGeometry.setAttribute(
+      'position',
+      new THREE.BufferAttribute(
+        new Float32Array([
+          -hb,
+          0.01,
+          hb,
+          hb,
+          0.01,
+          hb,
+          ht,
+          height,
+          ht,
+          -ht,
+          height,
+          ht,
+        ]),
+        3
+      )
+    )
+    const outline = new THREE.LineLoop(
+      outlineGeometry,
+      new THREE.LineBasicMaterial({ color: 0x0b3128, depthTest: false })
+    )
+    outline.renderOrder = 2
+    scene.add(outline)
+
+    // Click to select a wall, but never treat the end of an orbit drag as a click.
+    const pickable = [...panels.values()].flat()
+    const raycaster = new THREE.Raycaster()
+    const pointer = new THREE.Vector2()
+    let pressedAt: { x: number; y: number } | null = null
+    const onPointerDown = (event: PointerEvent) => {
+      pressedAt = { x: event.clientX, y: event.clientY }
+    }
+    const onPointerUp = (event: PointerEvent) => {
+      if (!pressedAt) return
+      const travelled = Math.hypot(
+        event.clientX - pressedAt.x,
+        event.clientY - pressedAt.y
+      )
+      pressedAt = null
+      if (travelled > 5) return
+      const rect = renderer.domElement.getBoundingClientRect()
+      pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
+      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
+      raycaster.setFromCamera(pointer, camera)
+      const hit = raycaster.intersectObjects(pickable, false)[0]
+      const orientation = hit?.object.userData.orientation as
+        | FacadeOrientation
+        | undefined
+      if (orientation) onSelectRef.current(orientation)
+    }
+    renderer.domElement.addEventListener('pointerdown', onPointerDown)
+    renderer.domElement.addEventListener('pointerup', onPointerUp)
 
     const sunMarker = new THREE.Mesh(
       new THREE.SphereGeometry(0.28, 24, 24),
@@ -354,6 +429,7 @@ export function BuildingHeatmap({
       controls,
       panels,
       louvres,
+      outline,
       sunlight,
       sunMarker,
     }
@@ -362,6 +438,8 @@ export function BuildingHeatmap({
     return () => {
       cancelAnimationFrame(frame)
       observer.disconnect()
+      renderer.domElement.removeEventListener('pointerdown', onPointerDown)
+      renderer.domElement.removeEventListener('pointerup', onPointerUp)
       controls.dispose()
       scene.traverse((object) => {
         if (object instanceof THREE.Mesh || object instanceof THREE.Sprite) {
@@ -398,14 +476,18 @@ export function BuildingHeatmap({
       })
     }
 
-    const controlled = tick.facade?.find((wall) => wall.controlled)
-    if (controlled) {
-      context.louvres.rotation.y = WALLS[controlled.orientation]
-      context.louvres.children.forEach((slat) => {
-        slat.rotation.x = THREE.MathUtils.degToRad(tick.angle_final)
+    // Each wall's louvres sit at that wall's own angle.
+    for (const orientation of ORIENTATIONS) {
+      const group = context.louvres.get(orientation)
+      const wall = walls.get(orientation)
+      if (!group) continue
+      group.visible = Boolean(wall)
+      const angle = wall?.angle ?? 0
+      group.children.forEach((slat) => {
+        slat.rotation.x = THREE.MathUtils.degToRad(angle)
       })
     }
-    context.louvres.visible = Boolean(controlled)
+    context.outline.rotation.y = WALLS[selected]
 
     const azimuth = THREE.MathUtils.degToRad(tick.solar_azimuth)
     const elevation = THREE.MathUtils.degToRad(
@@ -421,8 +503,8 @@ export function BuildingHeatmap({
     context.sunlight.intensity = tick.solar_elevation > 0 ? 1.4 : 0.2
     context.sunMarker.position.copy(sunPosition)
     context.sunMarker.visible = tick.solar_elevation > 0
-    context.controls.target.set(0, height / 2, 0)
-  }, [floors, tick, walls])
+    context.controls.target.set(0, height * 0.45, 0)
+  }, [floors, selected, tick, walls])
 
   return (
     <>
@@ -460,7 +542,7 @@ export function BuildingHeatmap({
             </span>
           </div>
           <p className='mt-1 text-[9px] text-muted-foreground'>
-            Sol-air surface temperature · drag to orbit
+            Sol-air surface temperature · drag to orbit · click a wall
           </p>
         </div>
 
@@ -483,8 +565,19 @@ export function BuildingHeatmap({
   )
 }
 
-/** The stage's numbers as text, so the heat map is never colour-alone. */
-export function FacadeReadout({ tick }: { tick: TickPayload }) {
+/**
+ * The stage's numbers as text, so the heat map is never colour-alone, and a
+ * keyboard route to the same wall selection the 3D offers by clicking.
+ */
+export function FacadeReadout({
+  tick,
+  selected,
+  onSelect,
+}: {
+  tick: TickPayload
+  selected: FacadeOrientation
+  onSelect: (orientation: FacadeOrientation) => void
+}) {
   const walls = new Map<FacadeOrientation, FacadeHeat>()
   for (const wall of tick.facade ?? []) walls.set(wall.orientation, wall)
 
@@ -492,7 +585,8 @@ export function FacadeReadout({ tick }: { tick: TickPayload }) {
     const wall = walls.get(orientation)
     return {
       orientation,
-      controlled: wall?.controlled ?? false,
+      primary: wall?.primary ?? false,
+      angle: wall?.angle ?? 0,
       incident: wall?.incident ?? 0,
       temperature: wall
         ? floorTemperature(wall, 0.5, tick.outdoor_temp, tick.wind)
@@ -505,7 +599,8 @@ export function FacadeReadout({ tick }: { tick: TickPayload }) {
       <p className='console-card-title'>Wall readings</p>
       <table className='mt-2 w-full text-left'>
         <caption className='sr-only'>
-          Plane-of-array irradiance and sol-air temperature per wall
+          Plane-of-array irradiance, louvre angle and sol-air temperature per
+          wall. Select a row to inspect that wall.
         </caption>
         <thead>
           <tr className='text-[9px] uppercase tracking-wider text-muted-foreground'>
@@ -516,33 +611,57 @@ export function FacadeReadout({ tick }: { tick: TickPayload }) {
               Incident
             </th>
             <th className='pb-1 text-right font-semibold' scope='col'>
+              Angle
+            </th>
+            <th className='pb-1 text-right font-semibold' scope='col'>
               Surface
             </th>
           </tr>
         </thead>
         <tbody className='font-mono text-xs'>
           {readout.map((wall) => (
-            <tr key={wall.orientation} className='border-t border-border/50'>
+            <tr
+              key={wall.orientation}
+              aria-selected={wall.orientation === selected}
+              className={
+                wall.orientation === selected
+                  ? 'cursor-pointer border-t border-border/50 bg-secondary/60'
+                  : 'cursor-pointer border-t border-border/50 hover:bg-secondary/30'
+              }
+              onClick={() => onSelect(wall.orientation)}
+            >
               <th
                 className='py-1 font-sans text-[11px] font-medium capitalize'
                 scope='row'
               >
-                <span
-                  aria-hidden
-                  className='mr-1.5 inline-block h-2 w-2 rounded-full align-middle'
-                  style={{
-                    backgroundColor: `#${rampColor(wall.temperature).getHexString()}`,
+                <button
+                  className='text-left'
+                  type='button'
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onSelect(wall.orientation)
                   }}
-                />
-                {wall.orientation}
-                {wall.controlled && (
-                  <span className='ml-1.5 text-[9px] uppercase tracking-wider text-primary'>
-                    shaded
-                  </span>
-                )}
+                >
+                  <span
+                    aria-hidden
+                    className='mr-1.5 inline-block h-2 w-2 rounded-full align-middle'
+                    style={{
+                      backgroundColor: `#${rampColor(wall.temperature).getHexString()}`,
+                    }}
+                  />
+                  {wall.orientation}
+                  {wall.primary && (
+                    <span className='ml-1.5 text-[9px] uppercase tracking-wider text-primary'>
+                      primary
+                    </span>
+                  )}
+                </button>
               </th>
               <td className='py-1 text-right tabular-nums'>
                 {wall.incident.toFixed(0)} W/m²
+              </td>
+              <td className='py-1 text-right tabular-nums'>
+                {wall.angle.toFixed(0)}°
               </td>
               <td className='py-1 text-right tabular-nums'>
                 {wall.temperature.toFixed(1)} °C

@@ -8,9 +8,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.domain.environment import generate_day, solar_frame
-from app.domain.facade import facade_heat, poa_series, sol_air_temp
-from app.domain.types import Site
+from app.domain.facade import facade_heat, poa_series, sol_air_temp, wall_gains
+from app.domain.scenarios import run_scenario
+from app.domain.types import Site, WallState
 from app.main import app
+from app.schemas import SimulationRunRequest
 from app.weather import OpenMeteoContext, clear_weather_cache, get_open_meteo_context
 
 KUALA_LUMPUR = Site("Kuala Lumpur, Malaysia", 3.1390, 101.6869, "Asia/Kuala_Lumpur")
@@ -133,24 +135,68 @@ def test_west_wall_takes_the_afternoon_sun():
     assert west > north
 
 
-def test_louvres_only_cool_the_controlled_wall():
-    poa = _poa_for()
+def test_each_wall_cools_by_its_own_angle():
+    gains = wall_gains(_poa_for(), AFTERNOON_TICK)
+    angles = {"north": 0.0, "east": 0.0, "south": 0.0, "west": 60.0}
     walls = {
         wall.orientation: wall
         for wall in facade_heat(
-            poa,
-            AFTERNOON_TICK,
+            gains,
+            {
+                orientation: WallState(
+                    angle=angle,
+                    mode="NORMAL",
+                    moved=False,
+                    lux=400.0,
+                    load_relative=0.4,
+                    reason="test",
+                )
+                for orientation, angle in angles.items()
+            },
             outdoor_temp=32.0,
             wind=2.0,
-            angle=60.0,
-            controlled="west",
+            primary="west",
         )
     }
 
-    assert [wall.controlled for wall in walls.values()].count(True) == 1
+    assert [wall.primary for wall in walls.values()].count(True) == 1
     assert walls["west"].transmitted < walls["west"].incident
     assert walls["north"].transmitted == walls["north"].incident
     assert walls["west"].sol_air_temp < sol_air_temp(32.0, walls["west"].incident, 2.0)
+
+
+def test_each_wall_reaches_its_own_angle():
+    """The point of per-facade control: different walls, different answers."""
+
+    payload = run_scenario(
+        SimulationRunRequest(
+            date=DAY,
+            cloud_profile="clear",
+            facade_orientation="west",
+            facade_tilt=90.0,
+        )
+    )
+    late = payload.ticks[17 * 6].facade
+    angles = {wall.orientation: wall.angle for wall in late}
+
+    assert len(set(angles.values())) > 1, angles
+    assert angles["west"] > angles["north"], angles
+
+
+def test_the_tilt_leaves_the_louvres_little_to_do():
+    """As built, the 25 degree overhang already does the shading work."""
+
+    tilted = run_scenario(
+        SimulationRunRequest(date=DAY, cloud_profile="clear", facade_tilt=115.0)
+    )
+    upright = run_scenario(
+        SimulationRunRequest(date=DAY, cloud_profile="clear", facade_tilt=90.0)
+    )
+
+    def shaded_ticks(payload):
+        return sum(wall.angle > 0 for tick in payload.ticks for wall in tick.facade)
+
+    assert shaded_ticks(tilted) < shaded_ticks(upright)
 
 
 def test_diamond_tilt_self_shades_north_and_south():
@@ -217,7 +263,7 @@ def test_run_endpoint_reports_open_meteo_and_facade_heat(monkeypatch):
 
     facade = body["ticks"][AFTERNOON_TICK]["facade"]
     assert len(facade) == 4
-    assert sum(wall["controlled"] for wall in facade) == 1
+    assert sum(wall["primary"] for wall in facade) == 1
     assert {wall["orientation"] for wall in facade} == {"north", "east", "south", "west"}
 
 

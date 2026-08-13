@@ -17,6 +17,7 @@ import {
 import { runSimulation } from '@/lib/api-client'
 import type {
   ComparisonMetric,
+  FacadeOrientation,
   ScenarioName,
   SimulationRunRequest,
   SimulationRunResponse,
@@ -97,6 +98,9 @@ export function NeuroSkinDashboard() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [timelineIndex, setTimelineIndex] = useState(72)
+  const [selectedWall, setSelectedWall] = useState<FacadeOrientation>(
+    DEFAULT_REQUEST.facade_orientation
+  )
   const requestController = useRef<AbortController | null>(null)
 
   const execute = useCallback(async (nextRequest: SimulationRunRequest) => {
@@ -148,6 +152,9 @@ export function NeuroSkinDashboard() {
       100
     : 0
   const zone = data?.metadata.timezone
+  const selectedWallState = selectedTick?.facade?.find(
+    (wall) => wall.orientation === selectedWall
+  )
 
   return (
     <div className='console-shell'>
@@ -253,7 +260,13 @@ export function NeuroSkinDashboard() {
               <ImpactStrip metrics={data.comparison} />
             )}
 
-            {selectedTick && <FacadeReadout tick={selectedTick} />}
+            {selectedTick && (
+              <FacadeReadout
+                tick={selectedTick}
+                selected={selectedWall}
+                onSelect={setSelectedWall}
+              />
+            )}
 
             {data.annotations.length > 0 && (
               <section className='console-card' data-tour='events'>
@@ -304,6 +317,8 @@ export function NeuroSkinDashboard() {
               facadeTilt={data.metadata.facade_tilt}
               locationName={data.metadata.location}
               timeLabel={timeLabel(selectedTick.timestamp, zone)}
+              selected={selectedWall}
+              onSelect={setSelectedWall}
             />
 
             <div className='stage-toolbar' data-tour='timeline-inspector'>
@@ -311,7 +326,12 @@ export function NeuroSkinDashboard() {
                 <p className='font-mono text-sm font-semibold'>
                   {timeLabel(selectedTick.timestamp, zone)}
                 </p>
-                <StatusBadge mode={selectedTick.mode} />
+                <span className='text-[11px] font-semibold capitalize'>
+                  {selectedWall} facade
+                </span>
+                <StatusBadge
+                  mode={selectedWallState?.mode ?? selectedTick.mode}
+                />
                 <span
                   className={
                     selectedTick.sensor_trusted ? 'trust-badge' : 'fault-badge'
@@ -338,24 +358,40 @@ export function NeuroSkinDashboard() {
 
               <div className='flex flex-wrap items-center gap-1.5'>
                 <span className='stage-chip'>
-                  {selectedTick.angle_final.toFixed(0)}° angle
+                  {(
+                    selectedWallState?.angle ?? selectedTick.angle_final
+                  ).toFixed(0)}
+                  ° angle
                 </span>
                 <span className='stage-chip'>
-                  {selectedTick.lux.toFixed(0)} lux
+                  {(selectedWallState?.lux ?? selectedTick.lux).toFixed(0)} lux
                 </span>
                 <span className='stage-chip'>
-                  {selectedTick.load_relative.toFixed(3)} load
+                  {(
+                    selectedWallState?.incident ??
+                    selectedTick.measured_irradiance
+                  ).toFixed(0)}{' '}
+                  W/m² on wall
+                </span>
+                <span className='stage-chip'>
+                  {(
+                    selectedWallState?.load_relative ??
+                    selectedTick.load_relative
+                  ).toFixed(3)}{' '}
+                  load
                 </span>
                 <span className='stage-chip'>
                   {selectedTick.wind.toFixed(1)} m/s
                 </span>
                 <span className='stage-chip'>
-                  {selectedTick.measured_irradiance.toFixed(0)} W/m²
-                </span>
-                <span className='stage-chip'>
                   {selectedTick.outdoor_temp.toFixed(1)} °C
                 </span>
               </div>
+              {selectedWallState && (
+                <p className='text-[10px] leading-4 text-muted-foreground'>
+                  {selectedWallState.reason}
+                </p>
+              )}
             </div>
           </>
         ) : null}

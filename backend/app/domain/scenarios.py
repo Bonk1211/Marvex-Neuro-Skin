@@ -6,8 +6,14 @@ import numpy as np
 from app.config import DEFAULTS
 from app.domain.controller import run_tick
 from app.domain.environment import generate_day, inject_sensor_fault, solar_frame
-from app.domain.facade import facade_heat, poa_series
-from app.domain.types import ControllerWeights, Environment, Site
+from app.domain.facade import ORIENTATIONS, facade_heat, poa_series, wall_gains
+from app.domain.types import (
+    ControllerWeights,
+    Environment,
+    Site,
+    SolarState,
+    WallState,
+)
 from app.schemas import (
     ComparisonMetric,
     CostBreakdown,
@@ -180,13 +186,21 @@ def _data_notice(
     return f"Modelled {site.name} day; all environmental and sensor data are synthetic."
 
 
+def _primary_incident(tick: TickPayload) -> float:
+    return next((wall.incident for wall in tick.facade if wall.primary), tick.ghi)
+
+
 def _metric_payload(ticks: list[TickPayload]) -> list[ComparisonMetric]:
     occupied = [tick for tick in ticks if tick.occupancy >= 0.2]
     occupied = occupied or ticks
-    # Do not score the facade for dawn/dusk periods when insufficient daylight
-    # exists for either strategy. Cooling load still covers every occupied tick.
+    # Score the facade only while its own plane has daylight to work with. A west
+    # wall at 09:00 sees a bright sky on the roof and nothing on itself, and
+    # neither strategy can do anything about that. Cooling load still covers
+    # every occupied tick.
     daylight_window = [
-        tick for tick in occupied if tick.ghi >= DEFAULTS.daylight_evaluation_ghi
+        tick
+        for tick in occupied
+        if _primary_incident(tick) >= DEFAULTS.daylight_evaluation_ghi
     ] or occupied
     ours_compliant = np.mean([300 <= tick.lux <= 700 for tick in daylight_window]) * 100
     naive_compliant = np.mean(
@@ -242,8 +256,13 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
     weights = ControllerWeights(**request.weights.model_dump())
     ticks: list[TickPayload] = []
     annotations: list[EventAnnotation] = []
-    current_angle = 0.0
-    budget_time = time(11, 0)
+    # Every wall keeps its own actuator position between ticks.
+    wall_angles = dict.fromkeys(ORIENTATIONS, 0.0)
+    # A window rather than one tick: the moment the primary facade actually wants
+    # to move depends on which wall it is and where the sun is, so let the run
+    # find it instead of hard-coding a clock time that only suits one facade.
+    budget_window = (time(15, 0), time(16, 0))
+    budget_annotated = False
     power_loss_start = time(14, 0)
     power_loss_end = time(14, 30)
 
@@ -252,28 +271,54 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
         power_ok = request.power_ok
         movement_threshold = DEFAULTS.movement_threshold
         if request.scenario == "budget_failsafe":
-            if local_time == budget_time:
+            if budget_window[0] <= local_time <= budget_window[1]:
                 movement_threshold = 1.0
             if power_loss_start <= local_time <= power_loss_end:
                 power_ok = False
-        result = run_tick(
-            env,
-            current_angle,
-            weights,
-            power_ok=power_ok,
-            movement_threshold=movement_threshold,
-            site=site,
-        )
+        # One controller per wall, each reading the irradiance on its own plane.
+        # The first call resolves the sun; the rest reuse it.
+        gains = wall_gains(poa, index)
+        solar: SolarState | None = None
+        wall_results = {}
+        for gain in gains:
+            wall_result = run_tick(
+                env,
+                wall_angles[gain.orientation],
+                weights,
+                power_ok=power_ok,
+                movement_threshold=movement_threshold,
+                site=site,
+                solar=solar,
+                gain=gain,
+            )
+            solar = SolarState(
+                azimuth=wall_result.solar_azimuth,
+                elevation=wall_result.solar_elevation,
+                clear_sky_ghi=wall_result.clear_sky_ghi,
+            )
+            wall_angles[gain.orientation] = wall_result.decision.angle_final
+            wall_results[gain.orientation] = wall_result
+
+        # The primary facade's controller drives the headline metrics.
+        result = wall_results[request.facade_orientation]
         decision = result.decision
-        current_angle = decision.angle_final
         breakdown = CostBreakdown(**decision.cost_breakdown)
         walls = facade_heat(
-            poa,
-            index,
+            gains,
+            {
+                orientation: WallState(
+                    angle=item.decision.angle_final,
+                    mode=item.decision.mode,
+                    moved=item.decision.moved,
+                    lux=item.lux,
+                    load_relative=item.load_relative,
+                    reason=item.decision.reason,
+                )
+                for orientation, item in wall_results.items()
+            },
             outdoor_temp=env.outdoor_temp,
             wind=env.wind,
-            angle=decision.angle_final,
-            controlled=request.facade_orientation,
+            primary=request.facade_orientation,
         )
         payload = TickPayload(
             timestamp=env.t,
@@ -328,7 +373,14 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
                     ),
                 )
             )
-        if request.scenario == "budget_failsafe" and local_time == budget_time:
+        if (
+            request.scenario == "budget_failsafe"
+            and not budget_annotated
+            and budget_window[0] <= local_time <= budget_window[1]
+            and decision.mode == "HOLD"
+            and decision.angle_target != decision.angle_final
+        ):
+            budget_annotated = True
             annotations.append(
                 EventAnnotation(
                     timestamp=env.t,

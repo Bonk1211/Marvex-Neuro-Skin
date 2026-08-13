@@ -44,8 +44,35 @@ class ObservedWeather:
 
 
 @dataclass(frozen=True)
+class WallGain:
+    """Unshaded plane-of-array gain on one wall, before its louvres act."""
+
+    orientation: str
+    azimuth: float
+    incident: float
+    sky_diffuse: float
+    ground_diffuse: float
+
+    @property
+    def direct(self) -> float:
+        return max(0.0, self.incident - self.sky_diffuse - self.ground_diffuse)
+
+
+@dataclass(frozen=True)
+class WallState:
+    """One wall's control outcome for a tick."""
+
+    angle: float
+    mode: str
+    moved: bool
+    lux: float
+    load_relative: float
+    reason: str
+
+
+@dataclass(frozen=True)
 class FacadeHeat:
-    """Plane-of-array gain and sol-air surface temperature for one wall."""
+    """What one wall sees, and what its own controller did about it."""
 
     orientation: str
     azimuth: float
@@ -54,7 +81,13 @@ class FacadeHeat:
     sky_diffuse: float
     ground_diffuse: float
     sol_air_temp: float
-    controlled: bool
+    angle: float
+    mode: str
+    moved: bool
+    lux: float
+    load_relative: float
+    reason: str
+    primary: bool
 
 
 @dataclass(frozen=True)

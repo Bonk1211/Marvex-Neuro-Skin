@@ -43,7 +43,13 @@ export interface FacadeHeat {
   sky_diffuse: number
   ground_diffuse: number
   sol_air_temp: number
-  controlled: boolean
+  angle: number
+  mode: string
+  moved: boolean
+  lux: number
+  load_relative: number
+  reason: string
+  primary: boolean
 }
 
 export interface TickPayload {
