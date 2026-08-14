@@ -8,7 +8,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.domain.environment import generate_day, solar_frame
-from app.domain.facade import facade_heat, poa_series, sol_air_temp, wall_gains
+from app.domain.facade import (
+    facade_heat,
+    poa_series,
+    profile_angle,
+    sol_air_temp,
+    wall_gains,
+    zone_gains,
+    zone_heat,
+)
 from app.domain.scenarios import run_scenario
 from app.domain.types import Site, WallState
 from app.main import app
@@ -206,11 +214,24 @@ def test_diamond_tilt_self_shades_north_and_south():
     self-shaded year round and cuts east/west solar impact substantially.
     """
 
+    def beam(series, wall):
+        face = series[wall]
+        return (
+            (face["poa_global"] - face["poa_sky_diffuse"] - face["poa_ground_diffuse"])
+            .clip(0.0)
+            .sum()
+        )
+
     for day in (date(2026, 3, 21), date(2026, 6, 21), date(2026, 12, 21)):
         upright = _poa_for(PUTRAJAYA, tilt=90.0, day=day)
         tilted = _poa_for(PUTRAJAYA, tilt=115.0, day=day)
+        # Shading is a claim about the beam, so measure the beam. Total gain is
+        # the wrong yardstick here: a wall leaning out looks down at the sunlit
+        # ground, so on days when it never saw the sun anyway (north in March,
+        # south in June) the extra ground-reflected diffuse lifts its total a
+        # few percent even as the tilt keeps the beam off it entirely.
         for wall in ("north", "south"):
-            assert tilted[wall]["poa_global"].sum() < upright[wall]["poa_global"].sum()
+            assert beam(tilted, wall) < 0.25 * max(beam(upright, wall), 1.0)
         for wall in ("east", "west"):
             reduction = 1 - (
                 tilted[wall]["poa_global"].sum() / upright[wall]["poa_global"].sum()
@@ -317,6 +338,100 @@ def test_run_endpoint_accepts_another_location():
     assert response.status_code == 200
     assert response.json()["metadata"]["location"] == "Oslo, Norway"
     assert response.json()["metadata"]["timezone"] == "Europe/Oslo"
+
+
+def _wall_gain(orientation, azimuth, incident, aoi=40.0):
+    from app.domain.types import WallGain
+
+    return WallGain(
+        orientation=orientation,
+        azimuth=azimuth,
+        incident=incident,
+        sky_diffuse=90.0,
+        ground_diffuse=110.0,
+        aoi=aoi,
+    )
+
+
+def _lit_grid():
+    return zone_gains(
+        [
+            _wall_gain("north", 0.0, 240.0, aoi=100.0),
+            _wall_gain("east", 90.0, 240.0, aoi=100.0),
+            _wall_gain("south", 180.0, 240.0, aoi=100.0),
+            _wall_gain("west", 270.0, 500.0, aoi=40.0),
+        ],
+        solar_elevation=60.0,
+        solar_azimuth=270.0,
+    )
+
+
+def test_the_roof_overhang_shades_the_top_zone_first():
+    """Zone readings have to fall from the roof line down, or the grid is decoration."""
+
+    zones = _lit_grid()["west"]
+    bottom = [zone for zone in zones if zone.row == 0]
+    top = [zone for zone in zones if zone.row == 3]
+
+    assert len(zones) == 16
+    assert [zone.zone for zone in zones[:4]] == ["W1", "W2", "W3", "W4"]
+    # The top row loses the beam while the bottom row still has all of it.
+    assert top[0].sunlit_fraction < bottom[0].sunlit_fraction == 1.0
+    assert top[0].incident < bottom[0].incident
+
+    state = WallState(
+        angle=0.0, mode="NORMAL", moved=False, lux=400.0, load_relative=0.4, reason=""
+    )
+    heats = [zone_heat(zone, state, outdoor_temp=31.0, wind=2.0) for zone in zones]
+    assert heats[-1].sol_air_temp < heats[0].sol_air_temp
+
+
+def test_a_corner_zone_answers_for_two_facades():
+    """The bays at a wall's ends wrap a corner, so they carry more than the middle."""
+
+    zones = _lit_grid()["north"]
+    row = {zone.column: zone for zone in zones if zone.row == 0}
+
+    # Same piece of wall, so the same incident gain on the surface itself.
+    assert row[0].incident == row[1].incident == row[3].incident
+    # The corner bay next to the sunlit west wall has the most to answer for,
+    # and the middle bays, glazed on one side only, have the least.
+    assert row[3].daylight > row[0].daylight > row[1].daylight == row[2].daylight
+    assert row[1].daylight == row[1].incident
+
+
+def test_every_zone_carries_its_own_controller():
+    """16 controllers per wall, and the corner bays must not copy the middle."""
+
+    payload = run_scenario(
+        SimulationRunRequest(
+            date=DAY, cloud_profile="clear", facade_tilt=90.0, facade_orientation="west"
+        )
+    )
+    zones = {
+        (wall.orientation, zone.zone)
+        for tick in payload.ticks
+        for wall in tick.facade
+        for zone in wall.zones
+    }
+    assert len(zones) == 4 * 16
+
+    split = [
+        row
+        for tick in payload.ticks
+        for wall in tick.facade
+        for row in range(4)
+        if len({zone.angle for zone in wall.zones if zone.row == row}) > 1
+    ]
+    assert split, "no row ever split across its four bays"
+
+
+def test_a_wall_the_sun_has_gone_behind_keeps_no_beam():
+    """Sun on the far side means diffuse only, whatever the zone."""
+
+    assert profile_angle(45.0, 90.0, 270.0) == 90.0
+    assert profile_angle(-2.0, 270.0, 270.0) == 90.0
+    assert profile_angle(45.0, 270.0, 270.0) == pytest.approx(45.0)
 
 
 def test_run_endpoint_rejects_an_unknown_timezone():

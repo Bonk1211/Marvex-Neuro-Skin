@@ -19,6 +19,13 @@ LOG_FIELDS = (
     "movement_count",
     "sensor_fault_ticks",
     "safe_mode_ticks",
+    # Predictive slab charging.
+    "planned_date",
+    "forecast_status",
+    "applicable",
+    "baseline_verdict",
+    "claim_allowed",
+    "saving_percent",
 )
 
 

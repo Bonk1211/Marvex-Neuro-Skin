@@ -165,7 +165,41 @@ T_sol-air = T_air + (a x I) / (5.7 + 3.8 x v)
 ```
 
 with absorptance `a = 0.6` and the long-wave correction taken as zero for
-vertical surfaces.
+vertical surfaces. Diffuse comes from pvlib's Perez model, not the isotropic
+default: isotropic spreads diffuse evenly over the sky dome, so two walls at the
+same tilt read the same diffuse however the sun sits.
+
+Each wall entry also carries `aoi`, `sunlit` and a `zones` array — one entry per
+cell of the 4 × 4 facade grid the 3D view draws, row-major from the bottom left,
+ids `W1`…`W16`. **Every zone runs its own louvre controller**, 16 per wall and 64
+on the building, each holding its own actuator position between ticks and each
+reporting its own `angle`, `mode`, `moved`, `lux` and `load_relative`.
+
+Zones separate on two pieces of geometry:
+
+- **Rows** — the roof slab oversails the top of the facade, and its shadow starts
+  at the roof line and walks down the wall as the sun climbs, so the top row
+  loses the beam first. The same lip hides part of the sky from the rows nearest
+  it.
+- **Columns** — the bay at each end of a wall wraps a corner of the building, so
+  the room behind it is glazed on two sides and its controller answers for the
+  neighbouring facade too (`corner_daylight_coupling`, 0.45). On a clear 21 March
+  at `facade_tilt: 90`, the east wall's top row settles at 55°, 20°, 20°, 55° —
+  corner bays closed, middle bays open. The two middle bays of a wall see one
+  facade only, so they read alike; that is the truth about a flat piece of wall,
+  not a gap in the model.
+
+The wall-level entry keeps its own supervisory controller, which is what the
+headline comparison metrics are measured on.
+
+**Once the sun climbs past about 65°, `sunlit` goes false on every wall and all
+four read the same.** That is the overhang doing its job, not a bug: at a 25°
+lean the outward normal sits 25° below horizontal, so a sun higher than 65° is
+behind every facade (`aoi > 90`) and each wall is left with diffuse only, which
+carries no orientation. In Putrajaya that covers roughly 11:00–15:00. Outside
+that window the walls separate properly — on 21 June at 10:00 the north wall
+reads 189 W/m² against the south wall's 144, and at 17:00 west reads 388 against
+east's 124. Set `facade_tilt: 90` to see upright-wall behaviour instead.
 
 Every tick also carries a `roof` array: the same calculation at `roof_pitch`
 instead of `facade_tilt`, giving one entry per roof quadrant. Roof faces carry
@@ -176,9 +210,47 @@ at 25°, late afternoon).
 
 The dashboard renders all of this as an orbitable 3D building: seven storeys
 with walls leaning 25°, four pitched roof faces, every surface shaded on a
-single-hue temperature ramp. Click any wall or roof face to inspect it, or use
-the surface-readings table for the keyboard equivalent. Each wall runs its own
+single-hue temperature ramp. Click any zone or roof face to inspect it, or use
+the surface-readings table for the keyboard equivalent. Every zone runs its own
 controller and carries its own louvres at its own angle.
+
+## Three-tier analysis
+
+All three tiers live on the one dashboard — there are no scenario sub-pages to
+switch between. **Run simulation** in the left rail runs the whole argument in
+order — read the sensor stream, then Tier 1 sensor trust, Tier 2
+co-optimisation, Tier 3 movement budget and fail-safe — one request per tier,
+with the 3D model, timeline and charts following each result as it lands and a
+floating card on the stage saying what that tier is doing and what it found.
+
+The run also **starts the clock**: the timeline walks the 144 ticks at ~45 ms
+each, so the sun crosses the sky on the solar positions the run actually
+returned while the tiers compute behind it. The 3D view draws the day's whole
+solar track as an arc and rides the sun marker along it, the directional light
+follows, and the heat map re-shades every zone tick by tick. The toolbar reads
+out the live elevation and azimuth, and its play/pause button replays the day
+whenever you want. When the analysis finishes, the clock stops on the last
+tier's own event.
+
+**Each tier keeps its own charts, all on the page at once** — Tier 1's sensor
+cross-check and facade response, Tier 2's load comparison and daylight
+compliance, Tier 3's safety response and load floor — so the tiers are read side
+by side rather than one chart area swapping its contents as the analysis moves
+on. Each set plots its own tier's run.
+
+**The charts run with the clock.** A mint playhead marks the current tick on
+every chart at once, and while the clock runs each curve is drawn only as far as
+that playhead, so the day plots itself left to right as the sun crosses. The
+slots past the playhead are kept but blanked, so the axis never rescales
+mid-play. Pause, or scrub the timeline by hand, and the full day comes back with
+the playhead parked where you left it.
+
+The run list marks each step `waiting → running → done` and **keeps every
+finished tier's findings on the page**, so the three read as one analysis.
+Clicking a finished step points the stage, timeline and charts at that tier's
+moment, re-shown from its stored result rather than run again; the header says
+which tier the stage is currently showing. **Apply settings and re-run** in the
+right rail re-runs the focused tier with edited weights and environment.
 
 Run a MET-informed synthetic scenario for a date inside the current official
 seven-day forecast window:

@@ -52,10 +52,59 @@ class WallGain:
     incident: float
     sky_diffuse: float
     ground_diffuse: float
+    # Angle between the sun and the wall's outward normal. Past 90 degrees the
+    # sun is behind the plane: the leaning facade is shading itself, and the wall
+    # is left with diffuse only.
+    aoi: float = 180.0
 
     @property
     def direct(self) -> float:
         return max(0.0, self.incident - self.sky_diffuse - self.ground_diffuse)
+
+    @property
+    def sunlit(self) -> bool:
+        return self.aoi < 90.0
+
+
+@dataclass(frozen=True)
+class ZoneGain:
+    """What one zone of the 4 x 4 facade grid sees, before its louvres act.
+
+    ``incident`` is the plane-of-array gain on that piece of wall. ``daylight``
+    is what its controller optimises against, which is larger at the two bays on
+    the building's corners: the room behind a corner bay is glazed on two sides,
+    so it takes light and heat from the neighbouring facade as well.
+    """
+
+    orientation: str
+    azimuth: float
+    row: int
+    column: int
+    zone: str
+    incident: float
+    sky_diffuse: float
+    ground_diffuse: float
+    sunlit_fraction: float
+    daylight: float
+    aoi: float = 180.0
+
+
+@dataclass(frozen=True)
+class ZoneHeat:
+    """One zone of the 4 x 4 facade grid, once its own controller has acted."""
+
+    row: int
+    column: int
+    zone: str
+    incident: float
+    transmitted: float
+    sunlit_fraction: float
+    sol_air_temp: float
+    angle: float
+    mode: str
+    moved: bool
+    lux: float
+    load_relative: float
 
 
 @dataclass(frozen=True)
@@ -101,6 +150,9 @@ class FacadeHeat:
     load_relative: float
     reason: str
     primary: bool
+    aoi: float = 180.0
+    sunlit: bool = False
+    zones: tuple[ZoneHeat, ...] = ()
 
 
 @dataclass(frozen=True)

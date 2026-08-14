@@ -1,0 +1,433 @@
+{
+  "surface": "report",
+  "manifest": {
+    "version": 1,
+    "surface": "report",
+    "title": "Appendix A — NeuroSkin Synthetic Simulation Results",
+    "description": "Seeded synthetic results produced by the current NeuroSkin deterministic simulator.",
+    "generatedAt": "2026-08-14T14:46:58Z",
+    "cards": [
+      {
+        "id": "daylight-card",
+        "description": "Upright west-facade counterfactual, seed 42; occupied ticks with at least 200 W/m² incident on the controlled wall.",
+        "dataset": "headline",
+        "sourceId": "sim-output",
+        "metrics": [
+          { "label": "NeuroSkin daylight compliance", "field": "ours_lux_rate", "format": "percent" },
+          { "label": "Naive baseline", "field": "naive_lux_rate", "format": "percent" }
+        ]
+      },
+      {
+        "id": "load-card",
+        "description": "Mean occupied relative cooling-load index; lower is better and the unit is not kWh.",
+        "dataset": "headline",
+        "sourceId": "sim-output",
+        "metrics": [
+          { "label": "NeuroSkin relative load", "field": "ours_load", "format": "number" },
+          { "label": "Naive baseline", "field": "naive_load", "format": "number" }
+        ]
+      },
+      {
+        "id": "movement-card",
+        "description": "Full-day actuator movements in the upright west-facade counterfactual.",
+        "dataset": "headline",
+        "sourceId": "sim-output",
+        "metrics": [
+          { "label": "NeuroSkin movements", "field": "ours_moves", "format": "number" },
+          { "label": "Naive baseline", "field": "naive_moves", "format": "number" }
+        ]
+      },
+      {
+        "id": "fault-card",
+        "description": "Ten-minute ticks rejected during the injected dead-pyranometer interval.",
+        "dataset": "headline",
+        "sourceId": "sim-output",
+        "metrics": [
+          { "label": "Rejected sensor ticks", "field": "rejected_ticks", "format": "number" }
+        ]
+      },
+      {
+        "id": "safety-card",
+        "description": "Ten-minute ticks in SAFE mode during the injected power-loss interval.",
+        "dataset": "headline",
+        "sourceId": "sim-output",
+        "metrics": [
+          { "label": "Fail-safe ticks", "field": "safe_ticks", "format": "number" }
+        ]
+      }
+    ],
+    "charts": [
+      {
+        "id": "seed-daylight-chart",
+        "title": "Daylight compliance across ten synthetic seeds",
+        "subtitle": "Upright west façade; percentage of eligible occupied ticks within 300–700 lux",
+        "showDescription": true,
+        "intent": "comparison",
+        "question": "Does NeuroSkin preserve more useful daylight than the naive irradiance-threshold controller across different seeded skies?",
+        "rationale": "Grouped bars show the two same-unit strategies for each discrete deterministic seed.",
+        "comparisonContext": {
+          "baseline": "Naive irradiance-threshold controller",
+          "denominator": "Occupied ticks where controlled-wall incident irradiance is at least 200 W/m²",
+          "grain": "One full synthetic day per seed",
+          "unit": "%"
+        },
+        "type": "bar",
+        "dataset": "seed_daylight_long",
+        "sourceId": "sim-output",
+        "encodings": {
+          "x": { "field": "seed", "type": "ordinal", "label": "Deterministic seed" },
+          "y": { "field": "compliance", "type": "quantitative", "aggregate": "none", "format": "number", "label": "Daylight compliance", "unit": "%" },
+          "color": { "field": "controller", "type": "nominal", "label": "Controller" },
+          "tooltip": [
+            { "field": "controller", "type": "nominal", "label": "Controller" },
+            { "field": "compliance", "type": "quantitative", "format": "number", "label": "Daylight compliance", "unit": "%" },
+            { "field": "relative_load", "type": "quantitative", "format": "number", "label": "Relative load" },
+            { "field": "movements", "type": "quantitative", "format": "number", "label": "Movements" }
+          ]
+        },
+        "xAxisTitle": "Deterministic seed",
+        "yAxisTitle": "Daylight compliance (%)",
+        "valueFormat": "number",
+        "unit": "%",
+        "layout": "full",
+        "palette": { "kind": "categorical", "name": "NeuroSkin versus naive" },
+        "settings": { "groupMode": "grouped", "orientation": "vertical", "sort": "none", "showValues": true },
+        "legend": { "position": "bottom", "sort": "spec" },
+        "surface": { "surface": "export", "showControls": true, "viewMode": "both" }
+      }
+    ],
+    "tables": [
+      {
+        "id": "reference-results-table",
+        "title": "Reference scenario results",
+        "subtitle": "Seed 42, synthetic scattered-cloud day, west façade, 25° outward tilt unless stated otherwise",
+        "showDescription": true,
+        "dataset": "reference_results",
+        "defaultSort": { "field": "scenario", "direction": "asc" },
+        "density": "spacious",
+        "sourceId": "sim-output",
+        "layout": "full",
+        "columns": [
+          { "field": "scenario", "label": "Scenario", "type": "text" },
+          { "field": "ours_lux", "label": "NeuroSkin daylight (%)", "format": "number" },
+          { "field": "naive_lux", "label": "Naive daylight (%)", "format": "number" },
+          { "field": "ours_load", "label": "NeuroSkin load", "format": "number" },
+          { "field": "naive_load", "label": "Naive load", "format": "number" },
+          { "field": "ours_moves", "label": "NeuroSkin moves", "format": "number" },
+          { "field": "naive_moves", "label": "Naive moves", "format": "number" },
+          { "field": "rejected", "label": "Rejected ticks", "format": "number" },
+          { "field": "safe", "label": "SAFE ticks", "format": "number" }
+        ]
+      },
+      {
+        "id": "fault-events-table",
+        "title": "Sensor-trust event evidence",
+        "subtitle": "Targeted east-facing upright façade; exact annotated ticks on 21 March 2026",
+        "showDescription": true,
+        "dataset": "fault_events",
+        "defaultSort": { "field": "time", "direction": "asc" },
+        "density": "spacious",
+        "sourceId": "sim-output",
+        "layout": "full",
+        "columns": [
+          { "field": "time", "label": "Time (MYT)", "type": "text" },
+          { "field": "event", "label": "Event", "type": "text" },
+          { "field": "measured", "label": "Measured (W/m²)", "format": "number" },
+          { "field": "expected", "label": "Expected (W/m²)", "format": "number" },
+          { "field": "trust", "label": "Decision", "type": "text" },
+          { "field": "ours_angle", "label": "NeuroSkin angle (°)", "format": "number" },
+          { "field": "naive_angle", "label": "Naive angle (°)", "format": "number" },
+          { "field": "ours_lux", "label": "NeuroSkin lux", "format": "number" },
+          { "field": "naive_lux", "label": "Naive lux", "format": "number" },
+          { "field": "ours_load", "label": "NeuroSkin load", "format": "number" },
+          { "field": "naive_load", "label": "Naive load", "format": "number" }
+        ]
+      },
+      {
+        "id": "safety-events-table",
+        "title": "Safety and movement-budget event evidence",
+        "subtitle": "West-facing 25° tilted façade; exact annotated ticks on 21 March 2026",
+        "showDescription": true,
+        "dataset": "safety_events",
+        "defaultSort": { "field": "time", "direction": "asc" },
+        "density": "spacious",
+        "sourceId": "sim-output",
+        "layout": "full",
+        "columns": [
+          { "field": "time", "label": "Time (MYT)", "type": "text" },
+          { "field": "event", "label": "Event", "type": "text" },
+          { "field": "mode", "label": "Mode", "type": "text" },
+          { "field": "target_angle", "label": "Target (°)", "format": "number" },
+          { "field": "final_angle", "label": "Final (°)", "format": "number" },
+          { "field": "measured", "label": "Measured (W/m²)", "format": "number" },
+          { "field": "relative_load", "label": "Relative load", "format": "number" },
+          { "field": "result", "label": "Controller result", "type": "text" }
+        ]
+      },
+      {
+        "id": "geometry-table",
+        "title": "Façade geometry counterfactual",
+        "subtitle": "Overview scenario, west façade, seed 42; same synthetic day and controller settings",
+        "showDescription": true,
+        "dataset": "geometry_comparison",
+        "defaultSort": { "field": "tilt", "direction": "desc" },
+        "density": "spacious",
+        "sourceId": "sim-output",
+        "layout": "full",
+        "columns": [
+          { "field": "geometry", "label": "Geometry", "type": "text" },
+          { "field": "tilt", "label": "pvlib tilt (°)", "format": "number" },
+          { "field": "ours_lux", "label": "NeuroSkin daylight (%)", "format": "number" },
+          { "field": "ours_load", "label": "NeuroSkin load", "format": "number" },
+          { "field": "ours_moves", "label": "NeuroSkin moves", "format": "number" },
+          { "field": "naive_lux", "label": "Naive daylight (%)", "format": "number" },
+          { "field": "naive_load", "label": "Naive load", "format": "number" },
+          { "field": "naive_moves", "label": "Naive moves", "format": "number" }
+        ]
+      },
+      {
+        "id": "seed-table",
+        "title": "Seed-sensitivity audit values",
+        "subtitle": "Ten upright west-façade co-optimisation runs; exact values behind the chart",
+        "showDescription": true,
+        "dataset": "seed_sensitivity",
+        "defaultSort": { "field": "seed", "direction": "asc" },
+        "density": "dense",
+        "sourceId": "sim-output",
+        "layout": "full",
+        "columns": [
+          { "field": "seed", "label": "Seed", "format": "number" },
+          { "field": "ours_lux", "label": "NeuroSkin daylight (%)", "format": "number" },
+          { "field": "naive_lux", "label": "Naive daylight (%)", "format": "number" },
+          { "field": "ours_load", "label": "NeuroSkin load", "format": "number" },
+          { "field": "naive_load", "label": "Naive load", "format": "number" },
+          { "field": "load_ratio", "label": "Load ratio", "format": "number" },
+          { "field": "ours_moves", "label": "NeuroSkin moves", "format": "number" },
+          { "field": "naive_moves", "label": "Naive moves", "format": "number" }
+        ]
+      },
+      {
+        "id": "configuration-table",
+        "title": "Simulation configuration",
+        "subtitle": "Inputs held constant unless a test-specific value is shown",
+        "showDescription": true,
+        "dataset": "configuration",
+        "defaultSort": { "field": "parameter", "direction": "asc" },
+        "density": "spacious",
+        "sourceId": "sim-output",
+        "layout": "full",
+        "columns": [
+          { "field": "parameter", "label": "Parameter", "type": "text" },
+          { "field": "reference", "label": "Reference value", "type": "text" },
+          { "field": "targeted_test", "label": "Targeted variation", "type": "text" }
+        ]
+      }
+    ],
+    "sources": [
+      {
+        "id": "sim-output",
+        "label": "NeuroSkin synthetic appendix dataset",
+        "path": "docs/appendix/neuroskin-synthetic-results.sql"
+      }
+    ],
+    "blocks": [
+      {
+        "id": "title",
+        "type": "markdown",
+        "body": "# Appendix A — NeuroSkin Synthetic Simulation Results"
+      },
+      {
+        "id": "technical-summary",
+        "type": "markdown",
+        "sourceId": "sim-output",
+        "body": "## Technical summary\n\nThe current deterministic simulator supports three bounded conclusions. First, in the seed-42 upright west-façade counterfactual, NeuroSkin held **70.8%** of eligible occupied ticks inside the 300–700 lux band versus **12.5%** for the naive controller, used **1** movement versus **2**, and accepted a higher mean relative cooling-load index (**0.507** versus **0.469**) because the naive strategy over-shaded. Second, the targeted east-upright fault test rejected all **10** injected dead-sensor ticks; at 11:30 it selected 55° while the naive controller opened to 0°. Third, the power-loss test produced **4 SAFE ticks** and the required 60° fail-shaded position. These are synthetic decision-logic results, not measured building performance or energy-savings claims."
+      },
+      {
+        "id": "headline-metrics",
+        "type": "metric-strip",
+        "cardIds": ["daylight-card", "load-card", "movement-card", "fault-card", "safety-card"]
+      },
+      {
+        "id": "reference-heading",
+        "type": "markdown",
+        "sourceId": "sim-output",
+        "body": "## The reference runs expose a real comfort–load trade-off\n\nAcross the consistent seed-42 reference set, NeuroSkin generally preserved more useful daylight and moved less than the naive threshold controller. The naive strategy sometimes produced a lower relative cooling-load index by closing more aggressively. That outcome is a Pareto trade-off, not a failure of the comparison: the prototype does not support a claim that one controller wins every metric simultaneously."
+      },
+      {
+        "id": "reference-table-block",
+        "type": "table",
+        "tableId": "reference-results-table"
+      },
+      {
+        "id": "seed-heading",
+        "type": "markdown",
+        "sourceId": "sim-output",
+        "body": "## Daylight advantage persists across the ten-seed audit\n\nOn the upright west façade, NeuroSkin matched or exceeded naive daylight compliance in **10 of 10** deterministic seeds and strictly exceeded it in **7 of 10**. Absolute compliance still ranged from 46.7% to 100%, showing that cloud realization materially affects the result. NeuroSkin movement was never higher, while its relative load was higher in nine seeds and equal in one; the largest NeuroSkin-to-naive load ratio was **1.128**."
+      },
+      {
+        "id": "seed-chart-block",
+        "type": "chart",
+        "chartId": "seed-daylight-chart"
+      },
+      {
+        "id": "seed-table-block",
+        "type": "table",
+        "tableId": "seed-table"
+      },
+      {
+        "id": "sensor-heading",
+        "type": "markdown",
+        "sourceId": "sim-output",
+        "body": "## The targeted fault test changes the control decision\n\nThe standard west-facing Diamond configuration detects the bad sensor but remains open because that wall is already self-shaded at the fault time. To test the control consequence rather than detection alone, the appendix uses the declared east-facing upright counterfactual. At 11:30, measured irradiance fell to **0 W/m²** while the almanac expected **816.12 W/m²**. NeuroSkin rejected the input, selected **55°**, kept daylight at **325.9 lux**, and reduced the relative load to **0.4509**; the naive controller opened to **0°**, produced **824.4 lux**, and reached **0.7707** load. At 15:00, heavy cloud made a similarly low reading plausible, so it was trusted rather than rejected."
+      },
+      {
+        "id": "fault-table-block",
+        "type": "table",
+        "tableId": "fault-events-table"
+      },
+      {
+        "id": "safety-heading",
+        "type": "markdown",
+        "sourceId": "sim-output",
+        "body": "## Safety overrides optimisation and the movement budget prevents churn\n\nAt the injected 14:00 power loss, the controller entered SAFE and set the final angle to **60°** without using the normal optimiser. The run remained in SAFE for four ten-minute ticks. At 15:00, normal power had returned, but the optimiser's 40° target did not clear the movement threshold, so the controller held the existing 60° position."
+      },
+      {
+        "id": "safety-table-block",
+        "type": "table",
+        "tableId": "safety-events-table"
+      },
+      {
+        "id": "geometry-heading",
+        "type": "markdown",
+        "sourceId": "sim-output",
+        "body": "## Passive geometry changes how much adaptive control is needed\n\nWith the Diamond Building's 25° outward tilt, the seed-42 west façade required no NeuroSkin movements and achieved 100% daylight compliance in the reference day. The upright counterfactual required one movement and achieved 70.8%. Its lower relative load reflects extra active shading, so this comparison should be read as a control-versus-passive-geometry interaction rather than a simple efficiency ranking."
+      },
+      {
+        "id": "geometry-table-block",
+        "type": "table",
+        "tableId": "geometry-table"
+      },
+      {
+        "id": "scope-heading",
+        "type": "markdown",
+        "body": "## Scope, data, and metric definitions\n\nThe report covers one synthetic tropical day at the ST Diamond Building site: 21 March 2026, 144 ten-minute ticks, Asia/Kuala_Lumpur time. The primary comparison is NeuroSkin versus the built-in naive irradiance-threshold controller. Daylight compliance is evaluated only during occupied ticks where the controlled wall receives at least 200 W/m², and compliance means 300–700 lux. Mean load is the occupied-tick average of a physics-inspired relative index with a latent floor. It is not measured HVAC energy and must not be presented as kWh or a verified energy saving."
+      },
+      {
+        "id": "configuration-table-block",
+        "type": "table",
+        "tableId": "configuration-table"
+      },
+      {
+        "id": "method-heading",
+        "type": "markdown",
+        "sourceId": "sim-output",
+        "body": "## Reproducible deterministic method\n\nEach result was generated by passing an explicit `SimulationRunRequest` into `run_scenario`. Solar position and plane-of-array irradiance were calculated for the selected site and façade geometry; the controller evaluated 0°–60° candidates in 5° increments. The same environmental realization was supplied to NeuroSkin and the naive baseline within each run. Seed 42 is the documented reference. Seeds 0–9 form a bounded sensitivity check for the upright west-façade co-optimisation case. Because the simulator is deterministic, repeating an identical request produces identical output."
+      },
+      {
+        "id": "limitations-heading",
+        "type": "markdown",
+        "body": "## Limitations and robustness boundaries\n\n- All environment, occupancy, indoor, and sensor channels in this appendix are synthetic.\n- The ten-seed audit varies the generated sky but is not a statistical confidence interval or field-validation sample.\n- Cooling load is a relative model output; no HVAC kWh, cost saving, carbon saving, or payback is inferred.\n- The 3D building massing is representative rather than a measured geometry survey.\n- The targeted sensor test changes orientation and geometry to expose the controller consequence; it must not be described as the default west-façade result.\n- Safety behavior is a software-state proof. Hardware actuator timing, failure mechanics, sensor calibration, and communications latency remain untested."
+      },
+      {
+        "id": "next-steps-heading",
+        "type": "markdown",
+        "body": "## Recommended next validation steps\n\n1. Replay the same request matrix using measured irradiance and indoor-lux data from a physical test bay.\n2. Calibrate the relative load model against a validated building-energy model before making any energy claim.\n3. Repeat the sensor-fault and fail-safe cases on the selected physical façade orientation.\n4. Define an acceptance threshold for daylight, load trade-off, movements, and fault-detection latency before hardware integration."
+      },
+      {
+        "id": "questions-heading",
+        "type": "markdown",
+        "body": "## Further questions\n\n- Should the preliminary claim focus on retrofit value for upright façades, with the Diamond Building treated as the passive-design control case?\n- Which physical façade and occupancy schedule will be used for the first validation pilot?\n- What measured HVAC or surface-temperature signal will anchor the relative load index?"
+      }
+    ]
+  },
+  "snapshot": {
+    "version": 1,
+    "generatedAt": "2026-08-14T14:46:58Z",
+    "status": "ready",
+    "datasets": {
+      "headline": [
+        {
+          "ours_lux_rate": 0.708,
+          "naive_lux_rate": 0.125,
+          "ours_load": 0.507,
+          "naive_load": 0.469,
+          "ours_moves": 1,
+          "naive_moves": 2,
+          "rejected_ticks": 10,
+          "safe_ticks": 4
+        }
+      ],
+      "reference_results": [
+        { "order": 1, "scenario": "Overview", "ours_lux": 100.0, "naive_lux": 16.7, "ours_load": 0.550, "naive_load": 0.456, "ours_moves": 0, "naive_moves": 2, "rejected": 0, "safe": 0 },
+        { "order": 2, "scenario": "Sensor Trust", "ours_lux": 100.0, "naive_lux": 51.9, "ours_load": 0.544, "naive_load": 0.489, "ours_moves": 0, "naive_moves": 6, "rejected": 10, "safe": 0 },
+        { "order": 3, "scenario": "Optimisation", "ours_lux": 100.0, "naive_lux": 16.7, "ours_load": 0.550, "naive_load": 0.456, "ours_moves": 0, "naive_moves": 2, "rejected": 0, "safe": 0 },
+        { "order": 4, "scenario": "Safety", "ours_lux": 46.7, "naive_lux": 16.7, "ours_load": 0.460, "naive_load": 0.456, "ours_moves": 1, "naive_moves": 2, "rejected": 0, "safe": 4 }
+      ],
+      "seed_sensitivity": [
+        { "seed": 0, "ours_lux": 94.7, "naive_lux": 57.9, "ours_load": 0.573, "naive_load": 0.522, "load_ratio": 1.098, "ours_moves": 0, "naive_moves": 4 },
+        { "seed": 1, "ours_lux": 100.0, "naive_lux": 55.2, "ours_load": 0.557, "naive_load": 0.506, "load_ratio": 1.101, "ours_moves": 0, "naive_moves": 4 },
+        { "seed": 2, "ours_lux": 46.7, "naive_lux": 46.7, "ours_load": 0.565, "naive_load": 0.552, "load_ratio": 1.024, "ours_moves": 0, "naive_moves": 2 },
+        { "seed": 3, "ours_lux": 57.7, "naive_lux": 15.4, "ours_load": 0.505, "naive_load": 0.468, "load_ratio": 1.079, "ours_moves": 1, "naive_moves": 2 },
+        { "seed": 4, "ours_lux": 100.0, "naive_lux": 40.0, "ours_load": 0.549, "naive_load": 0.524, "load_ratio": 1.048, "ours_moves": 0, "naive_moves": 2 },
+        { "seed": 5, "ours_lux": 100.0, "naive_lux": 78.1, "ours_load": 0.564, "naive_load": 0.540, "load_ratio": 1.044, "ours_moves": 0, "naive_moves": 2 },
+        { "seed": 6, "ours_lux": 100.0, "naive_lux": 61.1, "ours_load": 0.557, "naive_load": 0.494, "load_ratio": 1.128, "ours_moves": 0, "naive_moves": 2 },
+        { "seed": 7, "ours_lux": 100.0, "naive_lux": 66.7, "ours_load": 0.555, "naive_load": 0.537, "load_ratio": 1.034, "ours_moves": 0, "naive_moves": 2 },
+        { "seed": 8, "ours_lux": 100.0, "naive_lux": 100.0, "ours_load": 0.550, "naive_load": 0.550, "load_ratio": 1.000, "ours_moves": 0, "naive_moves": 0 },
+        { "seed": 9, "ours_lux": 68.8, "naive_lux": 68.8, "ours_load": 0.574, "naive_load": 0.570, "load_ratio": 1.007, "ours_moves": 0, "naive_moves": 2 }
+      ],
+      "seed_daylight_long": [
+        { "seed": 0, "controller": "NeuroSkin", "compliance": 94.7, "relative_load": 0.573, "movements": 0 },
+        { "seed": 0, "controller": "Naive", "compliance": 57.9, "relative_load": 0.522, "movements": 4 },
+        { "seed": 1, "controller": "NeuroSkin", "compliance": 100.0, "relative_load": 0.557, "movements": 0 },
+        { "seed": 1, "controller": "Naive", "compliance": 55.2, "relative_load": 0.506, "movements": 4 },
+        { "seed": 2, "controller": "NeuroSkin", "compliance": 46.7, "relative_load": 0.565, "movements": 0 },
+        { "seed": 2, "controller": "Naive", "compliance": 46.7, "relative_load": 0.552, "movements": 2 },
+        { "seed": 3, "controller": "NeuroSkin", "compliance": 57.7, "relative_load": 0.505, "movements": 1 },
+        { "seed": 3, "controller": "Naive", "compliance": 15.4, "relative_load": 0.468, "movements": 2 },
+        { "seed": 4, "controller": "NeuroSkin", "compliance": 100.0, "relative_load": 0.549, "movements": 0 },
+        { "seed": 4, "controller": "Naive", "compliance": 40.0, "relative_load": 0.524, "movements": 2 },
+        { "seed": 5, "controller": "NeuroSkin", "compliance": 100.0, "relative_load": 0.564, "movements": 0 },
+        { "seed": 5, "controller": "Naive", "compliance": 78.1, "relative_load": 0.540, "movements": 2 },
+        { "seed": 6, "controller": "NeuroSkin", "compliance": 100.0, "relative_load": 0.557, "movements": 0 },
+        { "seed": 6, "controller": "Naive", "compliance": 61.1, "relative_load": 0.494, "movements": 2 },
+        { "seed": 7, "controller": "NeuroSkin", "compliance": 100.0, "relative_load": 0.555, "movements": 0 },
+        { "seed": 7, "controller": "Naive", "compliance": 66.7, "relative_load": 0.537, "movements": 2 },
+        { "seed": 8, "controller": "NeuroSkin", "compliance": 100.0, "relative_load": 0.550, "movements": 0 },
+        { "seed": 8, "controller": "Naive", "compliance": 100.0, "relative_load": 0.550, "movements": 0 },
+        { "seed": 9, "controller": "NeuroSkin", "compliance": 68.8, "relative_load": 0.574, "movements": 0 },
+        { "seed": 9, "controller": "Naive", "compliance": 68.8, "relative_load": 0.570, "movements": 2 }
+      ],
+      "fault_events": [
+        { "time": "11:30", "event": "Injected dead pyranometer", "measured": 0.0, "expected": 816.12, "trust": "Rejected", "ours_angle": 55, "naive_angle": 0, "ours_lux": 325.9, "naive_lux": 824.4, "ours_load": 0.4509, "naive_load": 0.7707 },
+        { "time": "15:00", "event": "Genuine heavy cloud", "measured": 8.0, "expected": 281.63, "trust": "Trusted", "ours_angle": 55, "naive_angle": 0, "ours_lux": 20.0, "naive_lux": 20.0, "ours_load": 0.3778, "naive_load": 0.5131 }
+      ],
+      "safety_events": [
+        { "time": "14:00", "event": "Power loss", "mode": "SAFE", "target_angle": 60, "final_angle": 60, "measured": 721.02, "relative_load": 0.3939, "result": "Optimiser bypassed; fail shaded" },
+        { "time": "15:00", "event": "Marginal movement", "mode": "HOLD", "target_angle": 40, "final_angle": 60, "measured": 682.98, "relative_load": 0.3887, "result": "Movement declined below threshold" }
+      ],
+      "geometry_comparison": [
+        { "geometry": "Diamond as built: 25° outward", "tilt": 115, "ours_lux": 100.0, "ours_load": 0.550, "ours_moves": 0, "naive_lux": 16.7, "naive_load": 0.456, "naive_moves": 2 },
+        { "geometry": "Upright counterfactual", "tilt": 90, "ours_lux": 70.8, "ours_load": 0.507, "ours_moves": 1, "naive_lux": 12.5, "naive_load": 0.469, "naive_moves": 2 }
+      ],
+      "configuration": [
+        { "order": 1, "parameter": "Environment", "reference": "Synthetic, scattered cloud", "targeted_test": "Unchanged" },
+        { "order": 2, "parameter": "Date and timezone", "reference": "21 March 2026, Asia/Kuala_Lumpur", "targeted_test": "Unchanged" },
+        { "order": 3, "parameter": "Location", "reference": "ST Diamond Building, Putrajaya", "targeted_test": "Unchanged" },
+        { "order": 4, "parameter": "Resolution", "reference": "144 ticks, 10 minutes each", "targeted_test": "Unchanged" },
+        { "order": 5, "parameter": "Seed", "reference": "42", "targeted_test": "0–9 for sensitivity audit" },
+        { "order": 6, "parameter": "Controlled façade", "reference": "West", "targeted_test": "East for sensor-fault control consequence" },
+        { "order": 7, "parameter": "Façade geometry", "reference": "115° pvlib tilt (25° outward)", "targeted_test": "90° upright retrofit counterfactual" },
+        { "order": 8, "parameter": "Occupancy", "reference": "1.0×", "targeted_test": "Unchanged" },
+        { "order": 9, "parameter": "Wind", "reference": "3 m/s override", "targeted_test": "Unchanged" },
+        { "order": 10, "parameter": "Controller weights", "reference": "Thermal 0.45; daylight 0.35; movement 0.15; risk 0.05", "targeted_test": "Unchanged" }
+      ]
+    }
+  },
+  "sources": [
+    {
+      "id": "sim-output",
+      "label": "NeuroSkin synthetic appendix dataset",
+      "path": "docs/appendix/neuroskin-synthetic-results.sql"
+    }
+  ]
+}

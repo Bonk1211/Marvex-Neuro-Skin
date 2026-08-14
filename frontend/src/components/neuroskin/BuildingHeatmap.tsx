@@ -49,6 +49,21 @@ const BASE_HALF_WIDTH = 1.73
 // Floor-line hairline. Wide enough to read as separate storeys, narrow enough
 // that the structure behind does not become the dominant colour.
 const PANEL_GAP = 0.012
+// Every facade is a 4 x 4 grid of zones, N1..N16 by row from the bottom. Each
+// zone is its own mesh with its own material, so it can be hovered, selected
+// and shaded on its own.
+const PANEL_ROWS = 4
+const PANEL_COLUMNS = 4
+
+// Massing proportions, as fractions of overall height or of the roof-level half
+// width. Taken from the reference model: a 1.0 podium under an 8.5 facade, a
+// roof slab oversailing by 0.9 and stepping in to a 5.0 crown deck, carrying a
+// 4.2 wide diamond skylight.
+const PODIUM_FRACTION = 1.0 / 9.5
+const ROOF_OVERHANG = 0.9 / 15.5
+const ROOF_DECK_RATIO = 5.0 / 15.5
+const CROWN_RATIO = 4.2 / 15.5
+const CROWN_HEIGHT_FRACTION = 1.0 / 9.5
 
 // Square plan on the cardinals: the distance from the centre to a wall equals
 // half that wall's length, so one number describes both.
@@ -65,33 +80,44 @@ const WALLS: Record<FacadeOrientation, number> = {
 const ORIENTATIONS = Object.keys(WALLS) as FacadeOrientation[]
 
 /**
- * One floor's slice of one wall, as a trapezoid leaning outward.
+ * A leaning trapezoid on one wall: the shared shape of a facade zone and of a
+ * roof quadrant.
  *
  * Local frame: x runs along the wall, y is up, z points outward. The top edge
- * sits further out than the bottom, which is the overhang that shades the
- * floors below it.
+ * sits further out than the bottom, which is the overhang that shades whatever
+ * is below it. Rotating about y drops the same shape on any cardinal wall.
  */
-function wallPanel(halfBottom: number, halfTop: number, height: number) {
+export function slopedPanel(
+  halfBottom: number,
+  halfTop: number,
+  bottomY: number,
+  topY: number,
+  column = 0,
+  columns = 1
+) {
   const geometry = new THREE.BufferGeometry()
-  const xb = halfBottom - PANEL_GAP
-  const xt = halfTop - PANEL_GAP
-  const yb = PANEL_GAP / 2
-  const yt = height - PANEL_GAP / 2
+  const bay = (half: number, index: number) =>
+    -half + (index / columns) * 2 * half
+  const gap = columns > 1 ? PANEL_GAP : 0
+  const xb0 = bay(halfBottom, column) + gap
+  const xb1 = bay(halfBottom, column + 1) - gap
+  const xt0 = bay(halfTop, column) + gap
+  const xt1 = bay(halfTop, column + 1) - gap
   geometry.setAttribute(
     'position',
     new THREE.BufferAttribute(
       new Float32Array([
-        -xb,
-        yb,
+        xb0,
+        bottomY,
         halfBottom,
-        xb,
-        yb,
+        xb1,
+        bottomY,
         halfBottom,
-        xt,
-        yt,
+        xt1,
+        topY,
         halfTop,
-        -xt,
-        yt,
+        xt0,
+        topY,
         halfTop,
       ]),
       3
@@ -102,37 +128,40 @@ function wallPanel(halfBottom: number, halfTop: number, height: number) {
   return geometry
 }
 
-/**
- * One quadrant of the pitched roof: the two top-of-wall corners rising to a
- * central apex. Same local frame as a wall panel, so the same rotation places
- * it. At pitch 0 the apex sits level and the four faces form a flat roof.
- */
-function roofPanel(halfTop: number, height: number, apexHeight: number) {
-  const geometry = new THREE.BufferGeometry()
-  geometry.setAttribute(
-    'position',
-    new THREE.BufferAttribute(
-      new Float32Array([
-        -halfTop,
-        height,
-        halfTop,
-        halfTop,
-        height,
-        halfTop,
-        0,
-        apexHeight,
-        0,
-      ]),
-      3
-    )
-  )
-  geometry.computeVertexNormals()
-  return geometry
+/** The same quad as an outline: LineLoop follows the index, so drop it. */
+function frameGeometry(panel: THREE.BufferGeometry) {
+  const frame = panel.clone()
+  frame.setIndex(null)
+  return frame
 }
 
-const apexHeightFor = (halfTop: number, height: number, pitch: number) =>
+// Roof slab: it oversails the walls, then steps in to the crown deck. The rise
+// over that step is what the pitch controls, so the four quadrant faces stay
+// the sloping surfaces the backend computes a plane-of-array for.
+const roofDeckHeightFor = (
+  halfBottom: number,
+  halfTop: number,
+  height: number,
+  pitch: number
+) =>
   // Lifted a hair so a flat roof does not z-fight with the structure below it.
-  height + 0.006 + halfTop * Math.tan(THREE.MathUtils.degToRad(pitch))
+  height +
+  0.006 +
+  (halfBottom - halfTop) * Math.tan(THREE.MathUtils.degToRad(pitch))
+
+// Where the sun sits on the scene's dome. Azimuth is measured from north through
+// east, matching the backend, so -cos puts north at -z where the compass says.
+const SUN_RADIUS = 11
+
+function sunAt(azimuth: number, elevation: number) {
+  const a = THREE.MathUtils.degToRad(azimuth)
+  const e = THREE.MathUtils.degToRad(elevation)
+  return new THREE.Vector3(
+    SUN_RADIUS * Math.cos(e) * Math.sin(a),
+    SUN_RADIUS * Math.sin(e),
+    -SUN_RADIUS * Math.cos(e) * Math.cos(a)
+  )
+}
 
 const rampColor = (() => {
   const stops = HEAT_RAMP.map((hex) => new THREE.Color(hex))
@@ -201,6 +230,83 @@ function labelSprite(text: string) {
   return sprite
 }
 
+/** One zone's own readings, pinned to that zone in the 3D view. */
+function ZoneBubble({
+  wall,
+  zone,
+}: {
+  wall: FacadeHeat | undefined
+  zone: { id: string; orientation: FacadeOrientation; index: number }
+}) {
+  const reading = wall?.zones?.[zone.index]
+  return (
+    <div className='stage-panel w-48'>
+      <p className='flex items-baseline justify-between gap-2'>
+        <span className='text-[11px] font-semibold capitalize'>
+          {zone.orientation} · {zone.id}
+        </span>
+        <span className='text-[9px] uppercase tracking-wider text-muted-foreground'>
+          {reading
+            ? `row ${reading.row + 1} · bay ${reading.column + 1}`
+            : `zone ${zone.index + 1}`}
+        </span>
+      </p>
+      {reading ? (
+        <dl className='mt-1.5 space-y-0.5 font-mono text-[10px]'>
+          <div className='flex justify-between gap-2'>
+            <dt className='text-muted-foreground'>Incident</dt>
+            <dd className='tabular-nums'>{reading.incident.toFixed(0)} W/m²</dd>
+          </div>
+          <div className='flex justify-between gap-2'>
+            <dt className='text-muted-foreground'>Through louvres</dt>
+            <dd className='tabular-nums'>
+              {reading.transmitted.toFixed(0)} W/m²
+            </dd>
+          </div>
+          <div className='flex justify-between gap-2'>
+            <dt className='text-muted-foreground'>Surface</dt>
+            <dd className='tabular-nums'>
+              {reading.sol_air_temp.toFixed(1)} °C
+            </dd>
+          </div>
+          <div className='flex justify-between gap-2'>
+            <dt className='text-muted-foreground'>Sunlit</dt>
+            <dd className='tabular-nums'>
+              {(reading.sunlit_fraction * 100).toFixed(0)}%
+            </dd>
+          </div>
+          <div className='flex justify-between gap-2 border-t border-border/50 pt-0.5'>
+            <dt className='text-muted-foreground'>Louvres</dt>
+            <dd className='tabular-nums'>
+              {reading.angle.toFixed(0)}° · {reading.mode.toLowerCase()}
+            </dd>
+          </div>
+          <div className='flex justify-between gap-2'>
+            <dt className='text-muted-foreground'>Daylight</dt>
+            <dd className='tabular-nums'>{reading.lux.toFixed(0)} lx</dd>
+          </div>
+          <div className='flex justify-between gap-2'>
+            <dt className='text-muted-foreground'>Load</dt>
+            <dd className='tabular-nums'>
+              {(reading.load_relative * 100).toFixed(0)}%
+            </dd>
+          </div>
+        </dl>
+      ) : (
+        <p className='mt-1.5 text-[10px] text-muted-foreground'>
+          No reading for this zone at this tick.
+        </p>
+      )}
+      {wall && wall.sunlit === false && (
+        <p className='mt-1.5 text-[9px] leading-snug text-muted-foreground'>
+          Sun is behind this facade — the {wall.aoi?.toFixed(0)}° angle of
+          incidence means the lean shades it and only diffuse light lands.
+        </p>
+      )}
+    </div>
+  )
+}
+
 interface BuildingHeatmapProps {
   tick: TickPayload
   floors: number
@@ -210,6 +316,8 @@ interface BuildingHeatmapProps {
   locationName: string
   selected: SurfaceId
   onSelect: (surface: SurfaceId) => void
+  /** The day's solar positions as [azimuth, elevation] pairs, for the sun path. */
+  sunTrack?: Array<[number, number]>
 }
 
 export function BuildingHeatmap({
@@ -221,6 +329,7 @@ export function BuildingHeatmap({
   locationName,
   selected,
   onSelect,
+  sunTrack,
 }: BuildingHeatmapProps) {
   // pvlib surface tilt: 90 is a plain wall, 115 is the Diamond's 25 degree lean.
   const overhang = facadeTilt - 90
@@ -232,13 +341,23 @@ export function BuildingHeatmap({
     controls: OrbitControls
     panels: Map<FacadeOrientation, THREE.Mesh[]>
     roofFaces: Map<FacadeOrientation, THREE.Mesh>
-    louvres: Map<FacadeOrientation, THREE.Group>
+    louvres: Map<FacadeOrientation, THREE.Group[]>
     outline: THREE.LineLoop
     roofOutline: THREE.LineLoop
     sunlight: THREE.DirectionalLight
     sunMarker: THREE.Mesh
   } | null>(null)
   const [supported, setSupported] = useState(true)
+  // Which 4 x 4 zone was last clicked, e.g. W7. Escape clears it.
+  const [zone, setZone] = useState<{
+    id: string
+    orientation: FacadeOrientation
+    index: number
+  } | null>(null)
+  // The bubble is moved by the render loop, not by React: it has to track the
+  // zone through every orbit frame, and re-rendering at 60 fps to do that would
+  // be absurd.
+  const bubbleRef = useRef<HTMLDivElement | null>(null)
   // Kept in a ref so changing the handler never rebuilds the scene.
   const onSelectRef = useRef(onSelect)
   onSelectRef.current = onSelect
@@ -316,54 +435,95 @@ export function BuildingHeatmap({
     gridMaterial.transparent = true
     scene.add(grid)
 
+    // The tower stands on a plinth, so the facade grid starts above it.
+    const podiumHeight = height * PODIUM_FRACTION
+    const facadeBase = podiumHeight
+    const rowHeight = (height - facadeBase) / PANEL_ROWS
+
     // Structural core, lit so the massing reads as solid. The heat panels in
     // front of it stay unlit, so their colour is data rather than shading.
     // A four-sided frustum, turned so its faces land on the cardinals.
     const core = new THREE.Mesh(
       new THREE.CylinderGeometry(
         halfWidthAt(height, overhang) * Math.SQRT2 * 0.97,
-        halfWidthAt(0, overhang) * Math.SQRT2 * 0.97,
-        height,
+        halfWidthAt(facadeBase, overhang) * Math.SQRT2 * 0.97,
+        height - facadeBase,
         4
       ),
       new THREE.MeshStandardMaterial({ color: 0x9aa19d, roughness: 0.9 })
     )
-    core.position.y = height / 2
+    core.position.y = (height + facadeBase) / 2
     core.rotation.y = Math.PI / 4
     scene.add(core)
 
+    // Plinth. The tower's footprint is its narrowest point, so the base needs
+    // something to stand on or it reads as floating.
+    const podiumHalf = halfWidthAt(facadeBase, overhang) * 1.15
+    const podium = new THREE.Mesh(
+      new THREE.BoxGeometry(podiumHalf * 2, podiumHeight, podiumHalf * 2),
+      new THREE.MeshStandardMaterial({ color: 0x7d837f, roughness: 0.85 })
+    )
+    podium.position.y = podiumHeight / 2
+    scene.add(podium)
+
+    // Facade zones: 4 rows x 4 columns per wall, each its own mesh, material
+    // and zone id, indexed row-major from the bottom left as N1..N16.
     const panels = new Map<FacadeOrientation, THREE.Mesh[]>()
+    // Outline geometries live outside the scene graph, so they are disposed by hand.
+    const frames: THREE.BufferGeometry[] = []
     for (const orientation of ORIENTATIONS) {
-      const stack: THREE.Mesh[] = []
-      for (let floor = 0; floor < floors; floor += 1) {
-        const base = floor * FLOOR_HEIGHT
-        const panel = new THREE.Mesh(
-          wallPanel(
-            halfWidthAt(base, overhang),
-            halfWidthAt(base + FLOOR_HEIGHT, overhang),
-            FLOOR_HEIGHT
-          ),
-          new THREE.MeshBasicMaterial({
-            color: 0xfde3d5,
-            side: THREE.FrontSide,
-          })
-        )
-        panel.position.y = base
-        panel.rotation.y = WALLS[orientation]
-        panel.userData.surface = `wall:${orientation}` satisfies SurfaceId
-        scene.add(panel)
-        stack.push(panel)
+      const zones: THREE.Mesh[] = []
+      for (let row = 0; row < PANEL_ROWS; row += 1) {
+        const bottomY = facadeBase + row * rowHeight
+        const topY = bottomY + rowHeight
+        for (let column = 0; column < PANEL_COLUMNS; column += 1) {
+          const panel = new THREE.Mesh(
+            slopedPanel(
+              halfWidthAt(bottomY, overhang),
+              halfWidthAt(topY, overhang),
+              bottomY + PANEL_GAP / 2,
+              topY - PANEL_GAP / 2,
+              column,
+              PANEL_COLUMNS
+            ),
+            new THREE.MeshBasicMaterial({
+              color: 0xfde3d5,
+              side: THREE.FrontSide,
+            })
+          )
+          panel.rotation.y = WALLS[orientation]
+          panel.userData.surface = `wall:${orientation}` satisfies SurfaceId
+          panel.userData.zone = `${orientation[0].toUpperCase()}${
+            row * PANEL_COLUMNS + column + 1
+          }`
+          panel.userData.index = row * PANEL_COLUMNS + column
+          panel.userData.orientation = orientation
+          // Centre of the zone in world space, for the bubble to hang off.
+          panel.geometry.computeBoundingBox()
+          panel.updateMatrixWorld()
+          panel.userData.anchor = panel.localToWorld(
+            panel.geometry.boundingBox!.getCenter(new THREE.Vector3())
+          )
+          // Kept for the hover and selection frames to borrow.
+          panel.userData.frame = frameGeometry(panel.geometry)
+          frames.push(panel.userData.frame as THREE.BufferGeometry)
+          scene.add(panel)
+          zones.push(panel)
+        }
       }
-      panels.set(orientation, stack)
+      panels.set(orientation, zones)
     }
 
-    // Segmented roof: one pitched face per quadrant, each with its own POA.
-    const roofHalf = halfWidthAt(height, overhang)
-    const apexHeight = apexHeightFor(roofHalf, height, roofPitch)
+    // Roof slab: oversails the walls, then steps in to the crown deck. One
+    // sloping quadrant per cardinal, each carrying its own plane-of-array.
+    const roofHalf = halfWidthAt(height, overhang) * (1 + ROOF_OVERHANG)
+    const deckHalf = roofHalf * ROOF_DECK_RATIO
+    const deckHeight = roofDeckHeightFor(roofHalf, deckHalf, height, roofPitch)
+    const roofFaceGeometry = slopedPanel(roofHalf, deckHalf, height, deckHeight)
     const roofFaces = new Map<FacadeOrientation, THREE.Mesh>()
     for (const orientation of ORIENTATIONS) {
       const face = new THREE.Mesh(
-        roofPanel(roofHalf - PANEL_GAP, height, apexHeight),
+        roofFaceGeometry,
         new THREE.MeshBasicMaterial({
           color: 0xfde3d5,
           side: THREE.DoubleSide,
@@ -375,9 +535,36 @@ export function BuildingHeatmap({
       roofFaces.set(orientation, face)
     }
 
-    // Every wall carries its own louvres, driven by its own controller.
-    const louvres = new Map<FacadeOrientation, THREE.Group>()
-    const slatCount = floors * 3
+    // Crown deck between the four quadrants, and the diamond skylight on it.
+    const deck = new THREE.Mesh(
+      new THREE.BoxGeometry(deckHalf * 2, 0.012, deckHalf * 2),
+      new THREE.MeshStandardMaterial({ color: 0x56636a, roughness: 0.45 })
+    )
+    deck.position.y = deckHeight
+    scene.add(deck)
+
+    const crownHeight = height * CROWN_HEIGHT_FRACTION
+    const crown = new THREE.Mesh(
+      // Four-sided cone: a diamond with its corners on the cardinals.
+      new THREE.ConeGeometry(
+        halfWidthAt(height, overhang) * CROWN_RATIO * Math.SQRT2,
+        crownHeight,
+        4
+      ),
+      new THREE.MeshPhysicalMaterial({
+        color: 0x55b8c5,
+        roughness: 0.08,
+        metalness: 0.15,
+        transparent: true,
+        opacity: 0.8,
+      })
+    )
+    crown.position.y = deckHeight + crownHeight / 2
+    scene.add(crown)
+
+    // Every zone carries its own louvres, driven by its own controller: one
+    // group per cell of the grid, index-aligned with that wall's zone readings.
+    const louvres = new Map<FacadeOrientation, THREE.Group[]>()
     // Scene units are metres / 10, so these are 5 cm blades projecting 50 cm.
     // Sized against the real building: anything heavier hides the heat map the
     // blades are mounted on, which is the thing worth looking at.
@@ -387,82 +574,140 @@ export function BuildingHeatmap({
       roughness: 0.35,
       metalness: 0.45,
     })
+    const SLATS_PER_ZONE = 2
     for (const orientation of ORIENTATIONS) {
-      const group = new THREE.Group()
-      for (let slat = 0; slat < slatCount; slat += 1) {
-        const mesh = new THREE.Mesh(slatGeometry, slatMaterial)
-        // Follow the leaning facade: each slat stands off the wall it belongs to.
-        const y = ((slat + 0.5) * height) / slatCount
-        mesh.position.set(0, y, halfWidthAt(y, overhang) + 0.035)
-        mesh.scale.x = 2 * halfWidthAt(y, overhang) - 0.12
-        group.add(mesh)
+      const zoneGroups: THREE.Group[] = []
+      for (let row = 0; row < PANEL_ROWS; row += 1) {
+        for (let column = 0; column < PANEL_COLUMNS; column += 1) {
+          const group = new THREE.Group()
+          for (let slat = 0; slat < SLATS_PER_ZONE; slat += 1) {
+            const mesh = new THREE.Mesh(slatGeometry, slatMaterial)
+            // Follow the leaning facade: each blade stands off its own bay.
+            const y =
+              facadeBase +
+              ((row + (slat + 0.5) / SLATS_PER_ZONE) * (height - facadeBase)) /
+                PANEL_ROWS
+            const half = halfWidthAt(y, overhang)
+            const bay = (2 * half) / PANEL_COLUMNS
+            mesh.position.set(-half + (column + 0.5) * bay, y, half + 0.035)
+            mesh.scale.x = bay - 0.06
+            group.add(mesh)
+          }
+          group.rotation.y = WALLS[orientation]
+          scene.add(group)
+          zoneGroups.push(group)
+        }
       }
-      group.rotation.y = WALLS[orientation]
-      scene.add(group)
-      louvres.set(orientation, group)
+      louvres.set(orientation, zoneGroups)
     }
 
     // Selection frame. The plan is square, so one outline serves every wall.
-    const outlineGeometry = new THREE.BufferGeometry()
-    const hb = halfWidthAt(0, overhang)
+    const hb = halfWidthAt(facadeBase, overhang)
     const ht = halfWidthAt(height, overhang)
-    outlineGeometry.setAttribute(
-      'position',
-      new THREE.BufferAttribute(
-        new Float32Array([
-          -hb,
-          0.01,
-          hb,
-          hb,
-          0.01,
-          hb,
-          ht,
-          height,
-          ht,
-          -ht,
-          height,
-          ht,
-        ]),
-        3
-      )
-    )
     const outlineMaterial = new THREE.LineBasicMaterial({
       color: 0x0b3128,
       depthTest: false,
     })
-    const outline = new THREE.LineLoop(outlineGeometry, outlineMaterial)
+    const outline = new THREE.LineLoop(
+      frameGeometry(slopedPanel(hb, ht, facadeBase, height)),
+      outlineMaterial
+    )
     outline.renderOrder = 2
     scene.add(outline)
 
-    const roofOutlineGeometry = new THREE.BufferGeometry()
-    roofOutlineGeometry.setAttribute(
+    const roofOutline = new THREE.LineLoop(
+      frameGeometry(roofFaceGeometry),
+      outlineMaterial
+    )
+    roofOutline.renderOrder = 2
+    scene.add(roofOutline)
+
+    // Zone frames: the hovered zone and the last zone clicked. Both borrow the
+    // zone's own geometry, so they trace the leaning trapezoid exactly.
+    const zoneOutline = new THREE.LineLoop(
+      new THREE.BufferGeometry(),
+      new THREE.LineBasicMaterial({ color: 0x0b3128, depthTest: false })
+    )
+    zoneOutline.renderOrder = 3
+    zoneOutline.visible = false
+    scene.add(zoneOutline)
+
+    const hoverOutline = new THREE.LineLoop(
+      new THREE.BufferGeometry(),
+      new THREE.LineBasicMaterial({
+        color: 0x0b3128,
+        depthTest: false,
+        transparent: true,
+        opacity: 0.45,
+      })
+    )
+    hoverOutline.renderOrder = 3
+    hoverOutline.visible = false
+    scene.add(hoverOutline)
+
+    // Corner mullions, base to eave, so the lean is legible from any angle.
+    const corners: Array<[number, number]> = [
+      [1, 1],
+      [1, -1],
+      [-1, -1],
+      [-1, 1],
+    ]
+    const cornerGeometry = new THREE.BufferGeometry()
+    cornerGeometry.setAttribute(
       'position',
       new THREE.BufferAttribute(
-        new Float32Array([
-          -roofHalf,
-          height,
-          roofHalf,
-          roofHalf,
-          height,
-          roofHalf,
-          0,
-          apexHeight,
-          0,
-        ]),
+        new Float32Array(
+          corners.flatMap(([sx, sz]) => [
+            sx * hb,
+            facadeBase,
+            sz * hb,
+            sx * ht,
+            height,
+            sz * ht,
+          ])
+        ),
         3
       )
     )
-    const roofOutline = new THREE.LineLoop(roofOutlineGeometry, outlineMaterial)
-    roofOutline.renderOrder = 2
-    scene.add(roofOutline)
+    const corner = new THREE.LineSegments(
+      cornerGeometry,
+      new THREE.LineBasicMaterial({
+        color: 0x5f6b66,
+        transparent: true,
+        opacity: 0.45,
+      })
+    )
+    scene.add(corner)
 
     // Click to select a surface, but never treat the end of an orbit drag as a click.
     const pickable = [...[...panels.values()].flat(), ...roofFaces.values()]
     const raycaster = new THREE.Raycaster()
     const pointer = new THREE.Vector2()
+    const pick = (event: PointerEvent) => {
+      const rect = renderer.domElement.getBoundingClientRect()
+      pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
+      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
+      raycaster.setFromCamera(pointer, camera)
+      return raycaster.intersectObjects(pickable, false)[0]?.object
+    }
+    // A zone frame traces whichever zone it is pointed at.
+    const traceZone = (outlineFor: THREE.LineLoop, target?: THREE.Object3D) => {
+      const frame = target?.userData.frame as THREE.BufferGeometry | undefined
+      outlineFor.visible = Boolean(frame)
+      if (!frame) return
+      outlineFor.geometry = frame
+      outlineFor.rotation.y = target!.rotation.y
+    }
+    // World point the bubble hangs off, or null when nothing is selected.
+    let anchor: THREE.Vector3 | null = null
     let pressedAt: { x: number; y: number } | null = null
     const onPointerDown = (event: PointerEvent) => {
       pressedAt = { x: event.clientX, y: event.clientY }
+    }
+    const onPointerMove = (event: PointerEvent) => {
+      const target = pick(event)
+      traceZone(hoverOutline, target)
+      renderer.domElement.style.cursor = target ? 'pointer' : ''
     }
     const onPointerUp = (event: PointerEvent) => {
       if (!pressedAt) return
@@ -472,16 +717,33 @@ export function BuildingHeatmap({
       )
       pressedAt = null
       if (travelled > 5) return
-      const rect = renderer.domElement.getBoundingClientRect()
-      pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
-      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
-      raycaster.setFromCamera(pointer, camera)
-      const hit = raycaster.intersectObjects(pickable, false)[0]
-      const surface = hit?.object.userData.surface as SurfaceId | undefined
+      const target = pick(event)
+      const surface = target?.userData.surface as SurfaceId | undefined
+      // The wall is what the louvres act on; the zone is where you clicked.
+      traceZone(zoneOutline, target)
+      anchor = (target?.userData.anchor as THREE.Vector3 | undefined) ?? null
+      const id = target?.userData.zone as string | undefined
+      setZone(
+        id
+          ? {
+              id,
+              orientation: target!.userData.orientation as FacadeOrientation,
+              index: target!.userData.index as number,
+            }
+          : null
+      )
       if (surface) onSelectRef.current(surface)
     }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      zoneOutline.visible = false
+      anchor = null
+      setZone(null)
+    }
     renderer.domElement.addEventListener('pointerdown', onPointerDown)
+    renderer.domElement.addEventListener('pointermove', onPointerMove)
     renderer.domElement.addEventListener('pointerup', onPointerUp)
+    window.addEventListener('keydown', onKeyDown)
 
     const sunMarker = new THREE.Mesh(
       new THREE.SphereGeometry(0.28, 24, 24),
@@ -502,10 +764,22 @@ export function BuildingHeatmap({
     }
 
     let frame = 0
+    const projected = new THREE.Vector3()
     const animate = () => {
       frame = requestAnimationFrame(animate)
       controls.update()
       renderer.render(scene, camera)
+      // Keep the bubble pinned to its zone as the model turns.
+      const bubble = bubbleRef.current
+      if (!bubble) return
+      if (!anchor) {
+        bubble.style.visibility = 'hidden'
+        return
+      }
+      projected.copy(anchor).project(camera)
+      bubble.style.visibility = projected.z > 1 ? 'hidden' : 'visible'
+      bubble.style.left = `${((projected.x + 1) / 2) * 100}%`
+      bubble.style.top = `${((1 - projected.y) / 2) * 100}%`
     }
     animate()
 
@@ -536,10 +810,17 @@ export function BuildingHeatmap({
       cancelAnimationFrame(frame)
       observer.disconnect()
       renderer.domElement.removeEventListener('pointerdown', onPointerDown)
+      renderer.domElement.removeEventListener('pointermove', onPointerMove)
       renderer.domElement.removeEventListener('pointerup', onPointerUp)
+      window.removeEventListener('keydown', onKeyDown)
       controls.dispose()
+      frames.forEach((geometry) => geometry.dispose())
       scene.traverse((object) => {
-        if (object instanceof THREE.Mesh || object instanceof THREE.Sprite) {
+        if (
+          object instanceof THREE.Mesh ||
+          object instanceof THREE.Sprite ||
+          object instanceof THREE.Line
+        ) {
           object.geometry?.dispose?.()
           const material = object.material
           if (Array.isArray(material))
@@ -553,6 +834,34 @@ export function BuildingHeatmap({
     }
   }, [floors, overhang, roofPitch])
 
+  // The day's solar track, drawn once per run: the arc the marker rides along.
+  // Only the part above the horizon is drawn, since that is the part that heats
+  // anything. Its own effect, so a new run redraws the arc without rebuilding
+  // the building.
+  useEffect(() => {
+    const context = sceneRef.current
+    if (!context || !sunTrack?.length) return
+    const points = sunTrack
+      .filter(([, elevation]) => elevation > 0)
+      .map(([azimuth, elevation]) => sunAt(azimuth, elevation))
+    if (points.length < 2) return
+
+    const track = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints(points),
+      new THREE.LineBasicMaterial({
+        color: 0xfab219,
+        transparent: true,
+        opacity: 0.55,
+      })
+    )
+    context.scene.add(track)
+    return () => {
+      context.scene.remove(track)
+      track.geometry.dispose()
+      track.material.dispose()
+    }
+  }, [floors, overhang, roofPitch, sunTrack, supported])
+
   // Repaint for the selected tick.
   useEffect(() => {
     const context = sceneRef.current
@@ -563,25 +872,35 @@ export function BuildingHeatmap({
       const wall = walls.get(orientation)
       const stack = context.panels.get(orientation)
       if (!stack) continue
-      stack.forEach((panel, floor) => {
-        const fraction = floors > 1 ? floor / (floors - 1) : 0.5
-        const temperature = wall
-          ? floorTemperature(wall, fraction, tick.outdoor_temp, tick.wind)
-          : tick.outdoor_temp
+      stack.forEach((panel, index) => {
+        // Zones are row-major on both sides of the wire, so the panel's index is
+        // its reading's index. Rows separate on the roof overhang's shadow, the
+        // end bays on their corner exposure, and every cell on its own louvres.
+        const zone = wall?.zones?.[index]
+        const row = Math.floor(index / PANEL_COLUMNS)
+        const fraction = PANEL_ROWS > 1 ? row / (PANEL_ROWS - 1) : 0.5
+        const temperature =
+          zone?.sol_air_temp ??
+          (wall
+            ? floorTemperature(wall, fraction, tick.outdoor_temp, tick.wind)
+            : tick.outdoor_temp)
         const material = panel.material as THREE.MeshBasicMaterial
         material.color.copy(rampColor(temperature))
       })
     }
 
-    // Each wall's louvres sit at that wall's own angle.
+    // Each zone's louvres sit at that zone's own angle. Where a wall's readings
+    // predate per-zone control, every zone falls back to the wall's angle.
     for (const orientation of ORIENTATIONS) {
-      const group = context.louvres.get(orientation)
+      const groups = context.louvres.get(orientation)
       const wall = walls.get(orientation)
-      if (!group) continue
-      group.visible = Boolean(wall)
-      const angle = wall?.angle ?? 0
-      group.children.forEach((slat) => {
-        slat.rotation.x = THREE.MathUtils.degToRad(angle)
+      if (!groups) continue
+      groups.forEach((group, index) => {
+        group.visible = Boolean(wall)
+        const angle = wall?.zones?.[index]?.angle ?? wall?.angle ?? 0
+        group.children.forEach((slat) => {
+          slat.rotation.x = THREE.MathUtils.degToRad(angle)
+        })
       })
     }
     // Roof faces carry raw plane-of-array gain: no louvres up there.
@@ -602,15 +921,9 @@ export function BuildingHeatmap({
     context.outline.rotation.y = WALLS[orientation]
     context.roofOutline.rotation.y = WALLS[orientation]
 
-    const azimuth = THREE.MathUtils.degToRad(tick.solar_azimuth)
-    const elevation = THREE.MathUtils.degToRad(
+    const sunPosition = sunAt(
+      tick.solar_azimuth,
       Math.max(tick.solar_elevation, -5)
-    )
-    const radius = 11
-    const sunPosition = new THREE.Vector3(
-      radius * Math.cos(elevation) * Math.sin(azimuth),
-      radius * Math.sin(elevation),
-      -radius * Math.cos(elevation) * Math.cos(azimuth)
     )
     context.sunlight.position.copy(sunPosition)
     context.sunlight.intensity = tick.solar_elevation > 0 ? 1.4 : 0.2
@@ -634,6 +947,15 @@ export function BuildingHeatmap({
         </p>
       )}
 
+      {/* Zone bubble. The render loop positions it; React only fills it in. */}
+      <div
+        ref={bubbleRef}
+        className='pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-full pb-2'
+        style={{ visibility: 'hidden' }}
+      >
+        {zone && <ZoneBubble wall={walls.get(zone.orientation)} zone={zone} />}
+      </div>
+
       <div className='pointer-events-none absolute inset-x-3 top-3 z-10 flex flex-wrap items-start justify-between gap-2'>
         <div className='stage-panel'>
           <p className='flex items-center gap-1.5 text-[11px] font-semibold'>
@@ -655,7 +977,10 @@ export function BuildingHeatmap({
             </span>
           </div>
           <p className='mt-1 text-[9px] text-muted-foreground'>
-            Sol-air surface temperature · drag to orbit · click any surface
+            Sol-air surface temperature · drag to orbit ·{' '}
+            {zone
+              ? `zone ${zone.id} selected · esc to clear`
+              : 'click any zone'}
           </p>
         </div>
 
@@ -709,12 +1034,18 @@ export function FacadeReadout({
       return {
         id: `wall:${orientation}` as SurfaceId,
         label: orientation,
-        tag: wall?.primary ? 'primary' : null,
+        tag: wall?.primary
+          ? 'primary'
+          : wall && wall.sunlit === false
+            ? 'self-shaded'
+            : null,
         angle: `${(wall?.angle ?? 0).toFixed(0)}°`,
         incident: wall?.incident ?? 0,
-        temperature: wall
-          ? floorTemperature(wall, 0.5, tick.outdoor_temp, tick.wind)
-          : tick.outdoor_temp,
+        temperature:
+          wall?.sol_air_temp ??
+          (wall
+            ? floorTemperature(wall, 0.5, tick.outdoor_temp, tick.wind)
+            : tick.outdoor_temp),
       }
     }),
     ...ORIENTATIONS.map((orientation) => {

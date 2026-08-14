@@ -12,13 +12,17 @@ from app.domain.facade import (
     poa_series,
     roof_segments,
     wall_gains,
+    zone_gains,
+    zone_heat,
 )
 from app.domain.types import (
     ControllerWeights,
     Environment,
     Site,
     SolarState,
+    WallGain,
     WallState,
+    ZoneHeat,
 )
 from app.schemas import (
     ComparisonMetric,
@@ -274,6 +278,8 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
     annotations: list[EventAnnotation] = []
     # Every wall keeps its own actuator position between ticks.
     wall_angles = dict.fromkeys(ORIENTATIONS, 0.0)
+    # Every zone keeps its own actuator position too, keyed (wall, zone id).
+    zone_angles: dict[tuple[str, str], float] = {}
     # A window rather than one tick: the moment the primary facade actually wants
     # to move depends on which wall it is and where the sun is, so let the run
     # find it instead of hard-coding a clock time that only suits one facade.
@@ -319,6 +325,56 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
         result = wall_results[request.facade_orientation]
         decision = result.decision
         breakdown = CostBreakdown(**decision.cost_breakdown)
+
+        # Under each wall's controller sits one controller per zone of its 4 x 4
+        # grid, each holding its own actuator position between ticks. They run
+        # the same optimiser on their own gain, so a corner bay answering for two
+        # facades lands on a different angle from the bays beside it.
+        grid = zone_gains(
+            gains,
+            solar_elevation=result.solar_elevation,
+            solar_azimuth=result.solar_azimuth,
+        )
+        zones: dict[str, list[ZoneHeat]] = {}
+        for orientation, cells in grid.items():
+            heats: list[ZoneHeat] = []
+            for cell in cells:
+                key = (orientation, cell.zone)
+                zone_result = run_tick(
+                    env,
+                    zone_angles.get(key, 0.0),
+                    weights,
+                    power_ok=power_ok,
+                    movement_threshold=movement_threshold,
+                    site=site,
+                    solar=solar,
+                    gain=WallGain(
+                        orientation=orientation,
+                        azimuth=cell.azimuth,
+                        incident=cell.daylight,
+                        sky_diffuse=cell.sky_diffuse,
+                        ground_diffuse=cell.ground_diffuse,
+                        aoi=cell.aoi,
+                    ),
+                )
+                zone_angles[key] = zone_result.decision.angle_final
+                heats.append(
+                    zone_heat(
+                        cell,
+                        WallState(
+                            angle=zone_result.decision.angle_final,
+                            mode=zone_result.decision.mode,
+                            moved=zone_result.decision.moved,
+                            lux=zone_result.lux,
+                            load_relative=zone_result.load_relative,
+                            reason=zone_result.decision.reason,
+                        ),
+                        outdoor_temp=env.outdoor_temp,
+                        wind=env.wind,
+                    )
+                )
+            zones[orientation] = heats
+
         walls = facade_heat(
             gains,
             {
@@ -335,6 +391,7 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
             outdoor_temp=env.outdoor_temp,
             wind=env.wind,
             primary=request.facade_orientation,
+            zones=zones,
         )
         roof = roof_segments(
             roof_poa,
@@ -368,7 +425,12 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
             sensor_trusted=decision.sensor_trusted,
             reason=decision.reason,
             cost_breakdown=breakdown,
-            facade=[FacadeHeatPayload(**vars(wall)) for wall in walls],
+            facade=[
+                FacadeHeatPayload(
+                    **{**vars(wall), "zones": [vars(zone) for zone in wall.zones]}
+                )
+                for wall in walls
+            ],
             roof=[RoofSegmentPayload(**vars(segment)) for segment in roof],
         )
         ticks.append(payload)

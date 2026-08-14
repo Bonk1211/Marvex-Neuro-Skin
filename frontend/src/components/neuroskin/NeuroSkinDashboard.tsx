@@ -1,18 +1,18 @@
 'use client'
 
 import Link from 'next/link'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity,
   AlertTriangle,
   ArrowLeft,
-  BrainCircuit,
+  BatteryCharging,
   CheckCircle2,
-  Layers3,
   Leaf,
   LoaderCircle,
+  Pause,
+  Play,
   ShieldCheck,
-  SunMedium,
 } from 'lucide-react'
 import { runSimulation } from '@/lib/api-client'
 import type {
@@ -27,6 +27,8 @@ import type { SurfaceId } from './BuildingHeatmap'
 import { ControllerPanel } from './ControllerPanel'
 import { SimulationCharts } from './SimulationCharts'
 import { SimulationControls } from './SimulationControls'
+import { TIER_STEPS, TierCard, TierRunner } from './TierAnalysis'
+import type { TierStatus } from './TierAnalysis'
 
 const DEFAULT_REQUEST: SimulationRunRequest = {
   scenario: 'overview',
@@ -54,37 +56,72 @@ const sourceLabels: Record<SimulationRunRequest['environment_source'], string> =
     open_meteo: 'Open-Meteo',
   }
 
-const tabs: Array<{
-  value: ScenarioName
+/** How long a finished tier stays on screen before the next one starts. */
+const STEP_PAUSE_MS = 700
+
+// One tick every 45 ms walks the 144-tick day in about 6.5 seconds, which is
+// slow enough to read the sun across the sky and fast enough to sit through.
+const PLAY_INTERVAL_MS = 45
+
+const pause = (ms: number, signal: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    signal.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer)
+        resolve()
+      },
+      { once: true }
+    )
+  })
+
+/** Drag bar between a rail and the stage. Writes the width straight to CSS. */
+function RailHandle({
+  side,
+  label,
+}: {
+  side: 'left' | 'right'
   label: string
-  shortLabel: string
-  icon: React.ElementType
-}> = [
-  {
-    value: 'overview',
-    label: 'Overview',
-    shortLabel: 'Overview',
-    icon: Layers3,
-  },
-  {
-    value: 'lie_detector',
-    label: 'Sensor Trust',
-    shortLabel: 'Trust',
-    icon: SunMedium,
-  },
-  {
-    value: 'co_optimization',
-    label: 'Optimisation',
-    shortLabel: 'Optimise',
-    icon: BrainCircuit,
-  },
-  {
-    value: 'budget_failsafe',
-    label: 'Safety',
-    shortLabel: 'Safety',
-    icon: ShieldCheck,
-  },
-]
+}) {
+  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    const handle = event.currentTarget
+    const rail =
+      side === 'left'
+        ? handle.previousElementSibling
+        : handle.nextElementSibling
+    const shell = handle.closest('.console-shell')
+    if (!(rail instanceof HTMLElement) || !(shell instanceof HTMLElement))
+      return
+    const edge = rail.getBoundingClientRect()
+    handle.setPointerCapture(event.pointerId)
+
+    const move = (pointer: PointerEvent) => {
+      const width =
+        side === 'left'
+          ? pointer.clientX - edge.left
+          : edge.right - pointer.clientX
+      const clamped = Math.min(Math.max(width, 240), window.innerWidth * 0.45)
+      shell.style.setProperty(`--rail-${side}`, `${Math.round(clamped)}px`)
+    }
+    const stop = () => {
+      handle.removeEventListener('pointermove', move)
+      handle.removeEventListener('pointerup', stop)
+    }
+    handle.addEventListener('pointermove', move)
+    handle.addEventListener('pointerup', stop)
+  }
+
+  return (
+    <div
+      aria-label={label}
+      aria-orientation='vertical'
+      className='rail-handle'
+      onPointerDown={onPointerDown}
+      role='separator'
+    />
+  )
+}
 
 const timeLabel = (timestamp: string, timeZone = 'Asia/Kuala_Lumpur') =>
   new Intl.DateTimeFormat('en-MY', {
@@ -103,49 +140,192 @@ export function NeuroSkinDashboard() {
   const [selectedWall, setSelectedWall] = useState<SurfaceId>(
     `wall:${DEFAULT_REQUEST.facade_orientation}`
   )
+  // The three-tier run: one stored result per tier, so a finished tier can be
+  // revisited without paying for it again.
+  const [tierStatus, setTierStatus] = useState<
+    Partial<Record<ScenarioName, TierStatus>>
+  >({})
+  const [tierResults, setTierResults] = useState<
+    Partial<Record<ScenarioName, SimulationRunResponse>>
+  >({})
+  const [activeTier, setActiveTier] = useState<ScenarioName | null>(null)
+  const [tierRunning, setTierRunning] = useState(false)
+  const [cardDismissed, setCardDismissed] = useState(false)
+  // Clock playback: walks the timeline so the sun crosses the sky on the real
+  // solar positions the run returned.
+  const [playing, setPlaying] = useState(false)
   const requestController = useRef<AbortController | null>(null)
 
-  const execute = useCallback(async (nextRequest: SimulationRunRequest) => {
+  const tickCount = data?.ticks.length ?? 0
+  useEffect(() => {
+    if (!playing || tickCount < 2) return
+    const timer = setInterval(
+      () => setTimelineIndex((index) => (index + 1) % tickCount),
+      PLAY_INTERVAL_MS
+    )
+    return () => clearInterval(timer)
+  }, [playing, tickCount])
+
+  /** Point the stage, timeline and charts at one run's result. */
+  const focusOn = useCallback((response: SimulationRunResponse) => {
+    setData(response)
+    const focusTime = response.annotations[0]?.timestamp
+    const focusIndex = focusTime
+      ? response.ticks.findIndex((tick) => tick.timestamp === focusTime)
+      : Math.floor(response.ticks.length / 2)
+    setTimelineIndex(Math.max(0, focusIndex))
+  }, [])
+
+  const execute = useCallback(
+    async (nextRequest: SimulationRunRequest) => {
+      requestController.current?.abort()
+      const controller = new AbortController()
+      requestController.current = controller
+      setLoading(true)
+      setError(null)
+      try {
+        const response = await runSimulation(nextRequest, controller.signal)
+        focusOn(response)
+        return response
+      } catch (cause) {
+        if (cause instanceof DOMException && cause.name === 'AbortError') return
+        setError(
+          cause instanceof Error
+            ? cause.message
+            : 'The simulation could not be loaded.'
+        )
+      } finally {
+        if (!controller.signal.aborted) setLoading(false)
+      }
+    },
+    [focusOn]
+  )
+
+  useEffect(() => {
+    // The first load is the sensor read, so the analysis opens with that step
+    // already banked and the three tiers waiting on the run button.
+    void execute(DEFAULT_REQUEST).then((response) => {
+      if (!response) return
+      setTierResults((prev) => ({ ...prev, overview: response }))
+      setTierStatus((prev) => ({ ...prev, overview: 'done' }))
+    })
+    return () => requestController.current?.abort()
+  }, [execute])
+
+  /**
+   * The three-tier analysis: one run per tier, in order, with the dashboard
+   * following each result as it lands. Sequential on purpose — the point is to
+   * watch the tiers happen, and they read the same day so a reader can compare.
+   */
+  const runTiers = useCallback(async () => {
     requestController.current?.abort()
     const controller = new AbortController()
     requestController.current = controller
-    setLoading(true)
+    setTierRunning(true)
+    setCardDismissed(false)
     setError(null)
+    setTierResults({})
+    setTierStatus({})
+    // Run the clock for the whole analysis: the sun keeps crossing the sky on
+    // each tier's own solar data while the next tier is still being computed.
+    setTimelineIndex(0)
+    setPlaying(true)
+
     try {
-      const response = await runSimulation(nextRequest, controller.signal)
-      setData(response)
-      const focusTime = response.annotations[0]?.timestamp
-      const focusIndex = focusTime
-        ? response.ticks.findIndex((tick) => tick.timestamp === focusTime)
-        : Math.floor(response.ticks.length / 2)
-      setTimelineIndex(Math.max(0, focusIndex))
+      let last: SimulationRunResponse | null = null
+      for (const step of TIER_STEPS) {
+        setActiveTier(step.scenario)
+        setTierStatus((prev) => ({ ...prev, [step.scenario]: 'running' }))
+        setLoading(true)
+        const response = await runSimulation(
+          { ...request, scenario: step.scenario },
+          controller.signal
+        )
+        if (controller.signal.aborted) return
+        last = response
+        setTierResults((prev) => ({ ...prev, [step.scenario]: response }))
+        setTierStatus((prev) => ({ ...prev, [step.scenario]: 'done' }))
+        setRequest((prev) => ({ ...prev, scenario: step.scenario }))
+        // Swap the data under the running clock rather than jumping the time.
+        setData(response)
+        setLoading(false)
+        // Let the step land on screen before the next one starts.
+        await pause(STEP_PAUSE_MS, controller.signal)
+      }
+      // Settle on the last tier's own event once the day has been walked.
+      setPlaying(false)
+      if (last) focusOn(last)
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === 'AbortError') return
+      setTierStatus((prev) => {
+        const failed = TIER_STEPS.find(
+          (step) => prev[step.scenario] === 'running'
+        )
+        return failed ? { ...prev, [failed.scenario]: 'failed' } : prev
+      })
       setError(
         cause instanceof Error
           ? cause.message
           : 'The simulation could not be loaded.'
       )
     } finally {
-      if (!controller.signal.aborted) setLoading(false)
+      if (!controller.signal.aborted) {
+        setTierRunning(false)
+        setPlaying(false)
+        setLoading(false)
+      }
     }
-  }, [])
+  }, [focusOn, request])
 
-  useEffect(() => {
-    void execute(DEFAULT_REQUEST)
-    return () => requestController.current?.abort()
-  }, [execute])
-
-  const switchTab = useCallback(
+  const focusTier = useCallback(
     (scenario: ScenarioName) => {
+      setActiveTier(
+        TIER_STEPS.some((step) => step.scenario === scenario) ? scenario : null
+      )
+      setCardDismissed(false)
+      // A tier already run is shown from its stored result, not fetched again.
+      const stored = tierResults[scenario]
+      if (stored) {
+        setRequest((prev) => ({ ...prev, scenario }))
+        focusOn(stored)
+        return
+      }
       if (request.scenario === scenario) return
+      // A tier opened before the full analysis has run banks its result too, so
+      // the run list always reflects everything that has actually been computed.
       const next = { ...request, scenario }
       setRequest(next)
-      void execute(next)
+      setTierStatus((prev) => ({ ...prev, [scenario]: 'running' }))
+      void execute(next).then((response) => {
+        setTierStatus((prev) => ({
+          ...prev,
+          [scenario]: response ? 'done' : 'failed',
+        }))
+        if (response)
+          setTierResults((prev) => ({ ...prev, [scenario]: response }))
+      })
     },
-    [execute, request]
+    [execute, focusOn, request, tierResults]
   )
 
+  const activeStep = TIER_STEPS.find((step) => step.scenario === activeTier)
+  // Every tier that has run, with its own charts. The sensor read is left out:
+  // its chart set is the same load-and-position pair the tiers already carry.
+  const tierCharts = TIER_STEPS.filter(
+    (step) => step.scenario !== 'overview'
+  ).flatMap((step) => {
+    const response = tierResults[step.scenario]
+    return response ? [{ step, response }] : []
+  })
+
+  // The sun's real path for this run, drawn as an arc the marker rides along.
+  const sunTrack = useMemo(
+    () =>
+      data?.ticks.map(
+        (tick) => [tick.solar_azimuth, tick.solar_elevation] as [number, number]
+      ),
+    [data]
+  )
   const selectedTick =
     data?.ticks[Math.min(timelineIndex, Math.max(0, data.ticks.length - 1))]
   const trustedPercent = data?.ticks.length
@@ -177,30 +357,14 @@ export function NeuroSkinDashboard() {
         <div className='brand-mark h-10 w-10 shrink-0 rounded-xl'>
           <Leaf className='h-4 w-4' />
         </div>
-        <div
-          className='flex flex-row gap-1 xl:mt-4 xl:flex-col'
-          data-tour='scenario-tabs'
+        <Link
+          aria-label='Predictive slab charging'
+          className='console-nav-button'
+          href='/slab'
+          title='7.1 Predictive radiant-slab charging'
         >
-          {tabs.map((tab) => {
-            const Icon = tab.icon
-            const active = request.scenario === tab.value
-            return (
-              <button
-                key={tab.value}
-                aria-label={tab.label}
-                aria-current={active ? 'page' : undefined}
-                title={tab.label}
-                className={
-                  active ? 'console-nav-button-active' : 'console-nav-button'
-                }
-                onClick={() => switchTab(tab.value)}
-                type='button'
-              >
-                <Icon className='h-4 w-4' />
-              </button>
-            )
-          })}
-        </div>
+          <BatteryCharging className='h-4 w-4' />
+        </Link>
         <div className='ml-auto xl:ml-0 xl:mt-auto'>
           <Link
             aria-label='Project overview'
@@ -222,8 +386,13 @@ export function NeuroSkinDashboard() {
           <div>
             <p className='eyebrow'>24-hour result</p>
             <h1 className='mt-0.5 font-display text-lg font-semibold tracking-tight'>
-              {tabs.find((tab) => tab.value === request.scenario)?.label}
+              Three-tier analysis
             </h1>
+            {activeStep && (
+              <p className='text-[10px] text-muted-foreground'>
+                Stage showing {activeStep.tier} · {activeStep.label}
+              </p>
+            )}
           </div>
           <div className='flex flex-col items-end gap-1 text-[9px] text-muted-foreground'>
             <span className='flex items-center gap-1.5'>
@@ -244,6 +413,17 @@ export function NeuroSkinDashboard() {
             )}
           </div>
         </header>
+
+        <div data-tour='scenario-tabs'>
+          <TierRunner
+            statuses={tierStatus}
+            results={tierResults}
+            active={activeTier}
+            running={tierRunning}
+            onRun={() => void runTiers()}
+            onSelect={focusTier}
+          />
+        </div>
 
         {data && (
           <>
@@ -310,16 +490,53 @@ export function NeuroSkinDashboard() {
               </section>
             )}
 
-            <SimulationCharts
-              scenario={request.scenario}
-              ticks={data.ticks}
-              annotations={data.annotations}
-            />
+            {/* Each tier keeps its own charts on the page. One clock drives all
+                of them, so the three read side by side instead of one chart
+                area swapping its contents as the analysis moves on. */}
+            {tierCharts.length > 0 ? (
+              tierCharts.map(({ step, response }) => (
+                <section
+                  aria-label={`${step.tier} charts`}
+                  className='grid gap-2'
+                  key={step.scenario}
+                >
+                  <p className='console-card-title'>
+                    {step.tier} · {step.label}
+                  </p>
+                  <SimulationCharts
+                    scenario={step.scenario}
+                    ticks={response.ticks}
+                    annotations={response.annotations}
+                    cursor={Math.min(timelineIndex, response.ticks.length - 1)}
+                    revealing={playing}
+                  />
+                </section>
+              ))
+            ) : (
+              <SimulationCharts
+                scenario={request.scenario}
+                ticks={data.ticks}
+                annotations={data.annotations}
+                cursor={Math.min(timelineIndex, data.ticks.length - 1)}
+                revealing={playing}
+              />
+            )}
           </>
         )}
       </aside>
 
+      <RailHandle side='left' label='Resize results panel' />
+
       <section className='console-stage' aria-label='Building model'>
+        {activeStep && !cardDismissed && (
+          <TierCard
+            step={activeStep}
+            status={tierStatus[activeStep.scenario] ?? 'pending'}
+            response={tierResults[activeStep.scenario]}
+            onDismiss={() => setCardDismissed(true)}
+          />
+        )}
+
         {error ? (
           <ErrorState message={error} onRetry={() => void execute(request)} />
         ) : loading && !data ? (
@@ -335,13 +552,32 @@ export function NeuroSkinDashboard() {
               timeLabel={timeLabel(selectedTick.timestamp, zone)}
               selected={selectedWall}
               onSelect={setSelectedWall}
+              sunTrack={sunTrack}
             />
 
             <div className='stage-toolbar' data-tour='timeline-inspector'>
               <div className='flex flex-wrap items-center gap-2'>
+                <button
+                  aria-label={
+                    playing ? 'Pause sun movement' : 'Play sun movement'
+                  }
+                  aria-pressed={playing}
+                  className='play-button'
+                  onClick={() => setPlaying((value) => !value)}
+                  type='button'
+                >
+                  {playing ? (
+                    <Pause className='h-3 w-3 fill-current' />
+                  ) : (
+                    <Play className='h-3 w-3 fill-current' />
+                  )}
+                </button>
                 <p className='font-mono text-sm font-semibold'>
                   {timeLabel(selectedTick.timestamp, zone)}
                 </p>
+                <span className='text-[10px] text-muted-foreground'>
+                  {`sun ${selectedTick.solar_elevation.toFixed(0)}° elev · ${selectedTick.solar_azimuth.toFixed(0)}° az`}
+                </span>
                 <span className='text-[11px] font-semibold capitalize'>
                   {selectedKind === 'roof'
                     ? `${selectedOrientation} roof face`
@@ -442,6 +678,8 @@ export function NeuroSkinDashboard() {
           </>
         ) : null}
       </section>
+
+      <RailHandle side='right' label='Resize settings panel' />
 
       <aside className='console-rail console-rail-right'>
         <SimulationControls

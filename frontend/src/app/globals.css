@@ -123,6 +123,24 @@
     @apply xl:w-[310px] xl:border-l;
   }
 
+  /* Drag bar between a rail and the stage. ponytail: width lives in a CSS
+     variable set by the pointer handler, so dragging never re-renders React.
+     Not persisted; add localStorage if someone asks. */
+  .rail-handle {
+    @apply hidden xl:block xl:w-1.5 xl:shrink-0 xl:cursor-col-resize xl:bg-border/60 xl:transition hover:xl:bg-primary/50;
+    touch-action: none;
+  }
+
+  @media (min-width: 1280px) {
+    .console-rail-left {
+      width: var(--rail-left, 380px);
+    }
+
+    .console-rail-right {
+      width: var(--rail-right, 310px);
+    }
+  }
+
   .console-stage {
     @apply relative min-h-[540px] min-w-0 flex-1 overflow-hidden;
     background-image:
@@ -635,6 +653,32 @@
   }
   .retry-button {
     @apply rounded-full bg-forest px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-forest/90;
+  }
+
+  .run-button {
+    @apply flex w-full items-center justify-center gap-2 rounded-xl bg-forest px-3 py-2 text-[11px] font-semibold text-white transition hover:bg-forest/90 disabled:cursor-not-allowed disabled:opacity-70;
+  }
+
+  .play-button {
+    @apply grid h-6 w-6 shrink-0 place-items-center rounded-full bg-forest text-white transition hover:bg-forest/90;
+  }
+
+  .tier-step {
+    @apply flex w-full items-center gap-2 rounded-xl border border-transparent px-2 py-1.5 text-left transition hover:bg-secondary/60 disabled:pointer-events-none disabled:opacity-55;
+  }
+
+  .tier-step-active {
+    @apply flex w-full items-center gap-2 rounded-xl border border-primary/40 bg-secondary/70 px-2 py-1.5 text-left;
+  }
+
+  .tier-step-icon {
+    @apply grid h-5 w-5 shrink-0 place-items-center rounded-lg bg-secondary text-primary;
+  }
+
+  /* Floating explanation over the 3D stage. Sits clear of the toolbar below. */
+  .tier-card {
+    @apply pointer-events-auto absolute bottom-32 left-3 z-20 rounded-xl border border-border/60 bg-white/90 px-3 py-2 shadow-[0_14px_36px_rgba(15,45,38,.14)] backdrop-blur-md;
+    width: min(19rem, calc(100% - 1.5rem));
   }
 
   .tour-layer {

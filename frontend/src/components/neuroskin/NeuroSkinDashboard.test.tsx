@@ -252,17 +252,45 @@ describe('NeuroSkinDashboard', () => {
     ).toBeInTheDocument()
   })
 
-  it('serializes the selected scenario when changing tabs', async () => {
+  it('keeps the three tiers on one page instead of separate scenario views', async () => {
     render(<NeuroSkinDashboard />)
     await screen.findByText('Mean load')
-    fireEvent.click(screen.getByRole('button', { name: 'Sensor Trust' }))
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    const options = fetchMock.mock.calls[1][1] as RequestInit
-    expect(JSON.parse(String(options.body))).toMatchObject({
-      scenario: 'lie_detector',
-      seed: 42,
-    })
-  })
+
+    // No scenario sub-pages to switch between.
+    expect(
+      screen.queryByRole('button', { name: 'Sensor Trust' })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Optimisation' })
+    ).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run simulation' }))
+    await waitFor(
+      () => expect(screen.getByText('4/4 complete')).toBeInTheDocument(),
+      { timeout: 6000 }
+    )
+
+    // Every tier's findings stay on the page together.
+    const panel = screen.getByRole('region', { name: 'Three-tier analysis' })
+    expect(panel).toHaveTextContent('0 readings rejected as impossible')
+    expect(panel).toHaveTextContent('Lux compliance: 90% vs 60% naive')
+    expect(panel).toHaveTextContent('1 louvre movements across the day')
+
+    // And so do all three sets of charts, rather than one area swapping.
+    expect(
+      screen.getByRole('region', { name: 'Tier 1 charts' })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('region', { name: 'Tier 2 charts' })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('region', { name: 'Tier 3 charts' })
+    ).toBeInTheDocument()
+    // Tier 1's sensor cross-check and Tier 3's safety chart coexist.
+    expect(screen.getByText('Sensor cross-check')).toBeInTheDocument()
+    expect(screen.getByText('Safety response')).toBeInTheDocument()
+    expect(screen.getByText('Daylight compliance')).toBeInTheDocument()
+  }, 15000)
 
   it('shows only the compact MET source status in the operating view', async () => {
     const anchored: SimulationRunResponse = {
@@ -316,13 +344,115 @@ describe('NeuroSkinDashboard', () => {
     render(<NeuroSkinDashboard />)
     await screen.findByText('Mean load')
     fireEvent.click(screen.getByRole('button', { name: 'MET-anchored' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Run simulation' }))
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Apply settings and re-run' })
+    )
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
     const options = fetchMock.mock.calls[1][1] as RequestInit
     expect(JSON.parse(String(options.body))).toMatchObject({
       environment_source: 'met_anchored',
     })
   })
+
+  it('runs the three tiers in order and explains each one on the stage', async () => {
+    render(<NeuroSkinDashboard />)
+    await screen.findByText('Mean load')
+    fetchMock.mockClear()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run simulation' }))
+
+    // The floating card names the step that is running.
+    expect(
+      await screen.findByLabelText('Input explanation')
+    ).toBeInTheDocument()
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4), {
+      timeout: 6000,
+    })
+    const scenarios = fetchMock.mock.calls.map(
+      (call) => JSON.parse(String((call[1] as RequestInit).body)).scenario
+    )
+    expect(scenarios).toEqual([
+      'overview',
+      'lie_detector',
+      'co_optimization',
+      'budget_failsafe',
+    ])
+
+    await waitFor(() =>
+      expect(screen.getByText('4/4 complete')).toBeInTheDocument()
+    )
+    expect(
+      await screen.findByLabelText('Tier 3 explanation')
+    ).toBeInTheDocument()
+  }, 15000)
+
+  it('shows a finished tier from its stored result instead of re-running it', async () => {
+    render(<NeuroSkinDashboard />)
+    await screen.findByText('Mean load')
+    fireEvent.click(screen.getByRole('button', { name: 'Run simulation' }))
+    await waitFor(
+      () => expect(screen.getByText('4/4 complete')).toBeInTheDocument(),
+      { timeout: 6000 }
+    )
+    fetchMock.mockClear()
+
+    fireEvent.click(screen.getByRole('button', { name: /Sensor trust/ }))
+
+    expect(
+      await screen.findByLabelText('Tier 1 explanation')
+    ).toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalled()
+  }, 15000)
+
+  it('walks the sun across the day while the analysis runs', async () => {
+    const day: SimulationRunResponse = {
+      ...response,
+      ticks: [
+        response.ticks[0],
+        {
+          ...response.ticks[0],
+          timestamp: '2026-03-21T15:00:00+08:00',
+          solar_azimuth: 280,
+          solar_elevation: 40,
+        },
+        {
+          ...response.ticks[0],
+          timestamp: '2026-03-21T18:00:00+08:00',
+          solar_azimuth: 292,
+          solar_elevation: 8,
+        },
+      ],
+    }
+    fetchMock.mockResolvedValue({ ok: true, json: async () => day })
+    render(<NeuroSkinDashboard />)
+    await screen.findByText('Mean load')
+
+    // The toolbar reads the sun's real position for the tick on screen.
+    const timeline = screen.getByRole('slider', { name: 'Simulation timeline' })
+    expect(screen.getByText(/^sun \d+° elev · \d+° az$/)).toBeInTheDocument()
+    const started = (timeline as HTMLInputElement).value
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run simulation' }))
+    expect(
+      await screen.findByRole('button', { name: 'Pause sun movement' })
+    ).toBeInTheDocument()
+
+    // The clock moves the sun on its own once the run starts.
+    await waitFor(
+      () => expect((timeline as HTMLInputElement).value).not.toEqual(started),
+      { timeout: 4000 }
+    )
+
+    // And it stops when the analysis finishes.
+    await waitFor(
+      () =>
+        expect(
+          screen.getByRole('button', { name: 'Play sun movement' })
+        ).toBeInTheDocument(),
+      { timeout: 8000 }
+    )
+  }, 20000)
 
   it('links to the project overview and excludes tutorial chrome', async () => {
     render(<NeuroSkinDashboard />)

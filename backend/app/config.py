@@ -33,6 +33,19 @@ class SimulationDefaults:
     # array tilt, so this is an assumption shaped like a real low-latitude array.
     # Set 0 for a flat roof, where every segment reads the same by definition.
     roof_pitch: float = 10.0
+    floor_height_m: float = 3.6
+    # The roof slab oversails the top of the facade. That lip is what shades the
+    # upper facade zones first as the sun climbs, so zone readings vary by row.
+    roof_overhang_m: float = 1.6
+    # Facade zones per wall: the 4 x 4 grid the 3D view draws, each cell with its
+    # own louvre controller. Rows are numbered from the bottom, columns from the
+    # wall's left edge seen from outside.
+    facade_zone_rows: int = 4
+    facade_zone_columns: int = 4
+    # The bay at each end of a wall wraps a corner of the building, so the room
+    # behind it is glazed on two sides. This is the share of the neighbouring
+    # facade's gain that its controller has to answer for as well.
+    corner_daylight_coupling: float = 0.45
 
 
 DEFAULTS = SimulationDefaults()

@@ -171,7 +171,7 @@ export function ControllerPanel({
             ) : (
               <Play className='h-3.5 w-3.5 fill-current' />
             )}
-            {loading ? 'Simulating day…' : 'Run simulation'}
+            {loading ? 'Simulating day…' : 'Apply settings and re-run'}
           </button>
           <p className='mt-2 text-center text-[9px] leading-4 text-muted-foreground'>
             144 decisions · 10-minute intervals · repeatable

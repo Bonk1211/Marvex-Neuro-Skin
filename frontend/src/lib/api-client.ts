@@ -1,23 +1,44 @@
-import type { SimulationRunRequest, SimulationRunResponse } from './types'
+import type {
+  SimulationRunRequest,
+  SimulationRunResponse,
+  SlabPlanRequest,
+  SlabPlanResponse,
+} from './types'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
-export async function runSimulation(
-  request: SimulationRunRequest,
+async function post<T>(
+  path: string,
+  body: unknown,
+  label: string,
   signal?: AbortSignal
-): Promise<SimulationRunResponse> {
-  const response = await fetch(`${API_URL}/api/v1/simulations/run`, {
+): Promise<T> {
+  const response = await fetch(`${API_URL}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(request),
+    body: JSON.stringify(body),
     signal,
   })
 
   if (!response.ok) {
-    const body = await response.json().catch(() => null)
-    const detail = typeof body?.detail === 'string' ? body.detail : null
-    throw new Error(detail || `Simulation API returned ${response.status}.`)
+    const payload = await response.json().catch(() => null)
+    const detail = typeof payload?.detail === 'string' ? payload.detail : null
+    throw new Error(detail || `${label} API returned ${response.status}.`)
   }
 
-  return response.json() as Promise<SimulationRunResponse>
+  return response.json() as Promise<T>
+}
+
+export function runSimulation(
+  request: SimulationRunRequest,
+  signal?: AbortSignal
+): Promise<SimulationRunResponse> {
+  return post('/api/v1/simulations/run', request, 'Simulation', signal)
+}
+
+export function planSlab(
+  request: SlabPlanRequest,
+  signal?: AbortSignal
+): Promise<SlabPlanResponse> {
+  return post('/api/v1/slab/plan', request, 'Slab plan', signal)
 }

@@ -68,6 +68,12 @@ export function NeuroSkinLanding() {
             >
               The model
             </a>
+            <Link
+              className='hidden text-xs font-medium text-white/55 transition hover:text-white md:block'
+              href='/slab'
+            >
+              Slab charging
+            </Link>
             <Link className='landing-nav-cta' href='/dashboard'>
               Open dashboard <ArrowRight className='h-3.5 w-3.5' />
             </Link>
@@ -98,6 +104,9 @@ export function NeuroSkinLanding() {
               <a className='landing-secondary-cta' href='#how-it-works'>
                 Understand the logic
               </a>
+              <Link className='landing-secondary-cta' href='/slab'>
+                7.1 Predictive slab charging
+              </Link>
             </div>
             <div className='mt-10 flex flex-wrap gap-x-7 gap-y-3 text-[11px] text-white/45'>
               {[

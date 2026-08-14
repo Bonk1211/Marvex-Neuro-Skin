@@ -17,6 +17,36 @@ interface SimulationChartsProps {
   scenario: ScenarioName
   ticks: TickPayload[]
   annotations: EventAnnotation[]
+  /** Tick the timeline sits on. Drawn as a playhead across every chart. */
+  cursor?: number
+  /** While the clock runs, the curves are drawn only as far as the playhead. */
+  revealing?: boolean
+}
+
+/** The playhead travels with the clock, so it is not one of the run's events. */
+const PLAYHEAD = 'playhead'
+
+/**
+ * The day's rows, with everything past the playhead blanked while the clock is
+ * running. The slots stay, so the axis holds still and the curves draw
+ * themselves left to right instead of the whole chart rescaling every tick.
+ * Recharts skips null points, which is what leaves the right-hand side empty.
+ */
+export function revealUpTo(
+  ticks: TickPayload[],
+  cursor: number | undefined,
+  revealing: boolean
+) {
+  return ticks.map((tick, index) => {
+    const row = { ...tick, time: timeLabel(tick.timestamp) }
+    if (!revealing || cursor === undefined || index <= cursor) return row
+    return Object.fromEntries(
+      Object.entries(row).map(([key, value]) =>
+        typeof value === 'number' ? [key, null] : [key, value]
+      )
+      // Only the numbers change; the cast keeps the row's declared shape.
+    ) as unknown as typeof row
+  })
 }
 
 const COLORS = {
@@ -40,15 +70,24 @@ export function SimulationCharts({
   scenario,
   ticks,
   annotations,
+  cursor,
+  revealing = false,
 }: SimulationChartsProps) {
-  const chartData = ticks.map((tick) => ({
-    ...tick,
-    time: timeLabel(tick.timestamp),
-  }))
+  const chartData = revealUpTo(ticks, cursor, revealing)
   const referenceTimes = annotations.map((event) => ({
     ...event,
     time: timeLabel(event.timestamp),
   }))
+  const head = cursor === undefined ? undefined : ticks[cursor]
+  if (head) {
+    referenceTimes.push({
+      kind: PLAYHEAD,
+      timestamp: head.timestamp,
+      title: 'Now',
+      detail: '',
+      time: timeLabel(head.timestamp),
+    })
+  }
 
   if (scenario === 'lie_detector') {
     return (
@@ -59,6 +98,7 @@ export function SimulationCharts({
         >
           <BaseChart data={chartData} annotations={referenceTimes}>
             <Line
+              isAnimationActive={false}
               type='monotone'
               dataKey='expected_ghi'
               name='Almanac expected'
@@ -67,6 +107,7 @@ export function SimulationCharts({
               strokeWidth={2}
             />
             <Line
+              isAnimationActive={false}
               type='monotone'
               dataKey='measured_irradiance'
               name='Sensor measured'
@@ -87,6 +128,7 @@ export function SimulationCharts({
             unit='°'
           >
             <Line
+              isAnimationActive={false}
               type='stepAfter'
               dataKey='angle_final'
               name='NeuroSkin'
@@ -95,6 +137,7 @@ export function SimulationCharts({
               strokeWidth={2.5}
             />
             <Line
+              isAnimationActive={false}
               type='stepAfter'
               dataKey='naive_angle'
               name='Naive'
@@ -120,6 +163,7 @@ export function SimulationCharts({
             unit='°'
           >
             <Line
+              isAnimationActive={false}
               type='stepAfter'
               dataKey='angle_target'
               name='Brain target'
@@ -128,6 +172,7 @@ export function SimulationCharts({
               strokeDasharray='4 4'
             />
             <Line
+              isAnimationActive={false}
               type='stepAfter'
               dataKey='angle_final'
               name='Final angle'
@@ -144,6 +189,7 @@ export function SimulationCharts({
             domain={[0, 1.2]}
           >
             <Line
+              isAnimationActive={false}
               type='monotone'
               dataKey='load_relative'
               name='Total relative load'
@@ -152,6 +198,7 @@ export function SimulationCharts({
               strokeWidth={2}
             />
             <Line
+              isAnimationActive={false}
               type='monotone'
               dataKey='latent_load'
               name='Unshadeable latent floor'
@@ -175,8 +222,13 @@ export function SimulationCharts({
         }
         caption='NeuroSkin vs baseline · relative index'
       >
-        <BaseChart data={chartData} domain={[0, 1.2]}>
+        <BaseChart
+          data={chartData}
+          annotations={referenceTimes}
+          domain={[0, 1.2]}
+        >
           <Line
+            isAnimationActive={false}
             type='monotone'
             dataKey='load_relative'
             name='NeuroSkin'
@@ -185,6 +237,7 @@ export function SimulationCharts({
             strokeWidth={2.5}
           />
           <Line
+            isAnimationActive={false}
             type='monotone'
             dataKey='naive_load_relative'
             name='Naive'
@@ -193,6 +246,7 @@ export function SimulationCharts({
             strokeDasharray='5 5'
           />
           <Line
+            isAnimationActive={false}
             type='monotone'
             dataKey='latent_load'
             name='Latent floor'
@@ -214,7 +268,12 @@ export function SimulationCharts({
         }
       >
         {scenario === 'co_optimization' ? (
-          <BaseChart data={chartData} domain={[0, 1100]} unit=' lux'>
+          <BaseChart
+            data={chartData}
+            annotations={referenceTimes}
+            domain={[0, 1100]}
+            unit=' lux'
+          >
             <ReferenceLine
               y={300}
               stroke={COLORS.muted}
@@ -226,6 +285,7 @@ export function SimulationCharts({
               strokeDasharray='3 3'
             />
             <Line
+              isAnimationActive={false}
               type='monotone'
               dataKey='lux'
               name='NeuroSkin lux'
@@ -234,6 +294,7 @@ export function SimulationCharts({
               strokeWidth={2.5}
             />
             <Line
+              isAnimationActive={false}
               type='monotone'
               dataKey='naive_lux'
               name='Naive lux'
@@ -243,8 +304,14 @@ export function SimulationCharts({
             />
           </BaseChart>
         ) : (
-          <BaseChart data={chartData} domain={[0, 60]} unit='°'>
+          <BaseChart
+            data={chartData}
+            annotations={referenceTimes}
+            domain={[0, 60]}
+            unit='°'
+          >
             <Line
+              isAnimationActive={false}
               type='stepAfter'
               dataKey='angle_final'
               name='NeuroSkin'
@@ -253,6 +320,7 @@ export function SimulationCharts({
               strokeWidth={2.5}
             />
             <Line
+              isAnimationActive={false}
               type='stepAfter'
               dataKey='naive_angle'
               name='Naive'
@@ -336,18 +404,28 @@ function BaseChart({
           labelStyle={{ color: '#b8c8c3', marginBottom: 6 }}
         />
         <Legend wrapperStyle={{ fontSize: 11, color: COLORS.muted }} />
-        {annotations.map((annotation) => (
-          <ReferenceLine
-            key={`${annotation.kind}-${annotation.timestamp}`}
-            x={annotation.time}
-            stroke={
-              annotation.kind === 'power_loss' || annotation.kind === 'fault'
-                ? COLORS.rose
-                : COLORS.amber
-            }
-            strokeDasharray='3 3'
-          />
-        ))}
+        {annotations.map((annotation) =>
+          annotation.kind === PLAYHEAD ? (
+            <ReferenceLine
+              key={PLAYHEAD}
+              x={annotation.time}
+              stroke={COLORS.mint}
+              strokeWidth={1.5}
+              ifOverflow='extendDomain'
+            />
+          ) : (
+            <ReferenceLine
+              key={`${annotation.kind}-${annotation.timestamp}`}
+              x={annotation.time}
+              stroke={
+                annotation.kind === 'power_loss' || annotation.kind === 'fault'
+                  ? COLORS.rose
+                  : COLORS.amber
+              }
+              strokeDasharray='3 3'
+            />
+          )
+        )}
         {children}
       </LineChart>
     </ResponsiveContainer>
