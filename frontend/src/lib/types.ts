@@ -32,6 +32,13 @@ export interface SimulationRunRequest {
   facade_orientation: FacadeOrientation
   facade_tilt: number
   roof_pitch: number
+  glare_limit_w_m2?: number
+  glazing_shgc?: number
+  actuator_speed_deg_per_min?: number
+  zone_sensor_overrides?: Record<
+    string,
+    { tick_index: number; irradiance: number; illuminance: number }
+  >
 }
 
 export type CostBreakdown = ControllerWeights
@@ -55,6 +62,8 @@ export interface ZoneHeat {
   zone: string
   incident: number
   transmitted: number
+  diffuse_incident?: number
+  diffuse_transmitted?: number
   /** Share of the row the roof overhang has not shaded yet. */
   sunlit_fraction: number
   sol_air_temp: number
@@ -64,6 +73,24 @@ export interface ZoneHeat {
   moved: boolean
   lux: number
   load_relative: number
+  sensors?: {
+    sensor_id: string
+    irradiance: number
+    illuminance: number
+    source: 'simulated' | 'override'
+  }
+  angle_target?: number
+  reason?: string
+  sensor_trusted?: boolean
+  conditions?: {
+    daylight_status: 'low' | 'useful' | 'high'
+    transmitted: number
+    solar_heat_gain: number
+    direct_sun: number
+    glare_risk: boolean
+    glare_limit_w_m2: number
+    glazing_shgc: number
+  }
 }
 
 export interface FacadeHeat {

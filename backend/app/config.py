@@ -10,11 +10,16 @@ class SimulationDefaults:
     seed: int = 42
     angle_min: float = 0.0
     angle_max: float = 60.0
-    angle_step: float = 5.0
+    angle_step: float = 5.0  # Search brackets, not a mechanical angle increment.
     shaded_default: float = 60.0
     retract_flat: float = 0.0
     critical_wind: float = 15.0
-    movement_threshold: float = 0.025
+    movement_threshold: float = 0.0002
+    # Commissioning assumptions, not measured hardware/glazing specifications.
+    actuator_speed_deg_per_min: float = 1.2
+    glazing_shgc: float = 0.4
+    # Direct solar exposure screen, not an occupant-view glare index (DGP).
+    glare_limit_w_m2: float = 25.0
     min_elevation: float = 8.0
     expected_irradiance_threshold: float = 250.0
     near_zero_irradiance: float = 25.0

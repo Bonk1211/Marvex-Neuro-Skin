@@ -1,5 +1,6 @@
 from datetime import date, datetime, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -14,6 +15,8 @@ def test_health_and_config() -> None:
     assert config["synthetic"] is True
     assert config["simulation"]["tick_minutes"] == 10
     assert config["simulation"]["daylight_evaluation_ghi"] == 200
+    assert config["simulation"]["continuous_angles"] is True
+    assert config["simulation"]["actuator_speed_deg_per_min"] == 1.2
 
 
 def test_simulation_is_reproducible_and_complete() -> None:
@@ -26,6 +29,148 @@ def test_simulation_is_reproducible_and_complete() -> None:
     assert first.json()["metadata"]["load_unit"] == "relative cooling-load index"
     assert first.json()["metadata"]["environment_source"] == "synthetic"
     assert first.json()["metadata"]["weather_context"] is None
+
+
+def test_default_facade_actuators_follow_the_sun_and_reopen() -> None:
+    response = client.post(
+        "/api/v1/simulations/run", json={"scenario": "overview", "wind_override": 3}
+    )
+    assert response.status_code == 200
+    ticks = response.json()["ticks"]
+    walls = {
+        orientation: [
+            next(wall for wall in tick["facade"] if wall["orientation"] == orientation)
+            for tick in ticks
+        ]
+        for orientation in ("east", "west")
+    }
+    moves = {
+        orientation: [index for index, wall in enumerate(series) if wall["moved"]]
+        for orientation, series in walls.items()
+    }
+    # Diffuse daylight can move a rear-facing wall too; direct sun need not
+    # be the trigger for its first adjustment.
+    assert any(ticks[index]["solar_azimuth"] < 180 for index in moves["east"])
+    assert any(ticks[index]["solar_azimuth"] > 180 for index in moves["west"])
+    assert walls["west"][moves["west"][0]]["angle"] > 0
+    assert walls["west"][moves["west"][-1]]["angle"] == 0
+    for orientation, series in walls.items():
+        assert len({tuple(zone["angle"] for zone in wall["zones"]) for wall in series}) > 1
+        assert any(len({zone["angle"] for zone in wall["zones"]}) > 1 for wall in series)
+        for index in moves[orientation]:
+            # Night parking is also a gradual normal movement.
+            assert ticks[index]["solar_elevation"] < 90
+            assert series[index]["mode"] == "NORMAL"
+            assert series[index]["angle"] != series[index - 1]["angle"]
+        for previous, current in zip(series, series[1:]):
+            for before, after in zip(previous["zones"], current["zones"]):
+                assert after["moved"] == (after["angle"] != before["angle"])
+                if after["mode"] != "SAFE":
+                    assert abs(after["angle"] - before["angle"]) <= 12.000001
+                comfort = after["conditions"]
+                assert comfort["solar_heat_gain"] == pytest.approx(
+                    comfort["transmitted"] * comfort["glazing_shgc"], abs=0.02
+                )
+                assert 0 <= comfort["direct_sun"] <= comfort["transmitted"] + 0.01
+                assert comfort["daylight_status"] in {"low", "useful", "high"}
+        angles = [zone["angle"] for wall in series for zone in wall["zones"]]
+        # Targets are genuinely refined, not the old 5-degree mechanical grid.
+        assert any(0 < angle < 60 and abs(angle / 5 - round(angle / 5)) > 0.01 for angle in angles)
+
+
+def test_one_sensor_override_changes_only_its_own_zone_and_future_state() -> None:
+    request = {"scenario": "overview", "wind_override": 3}
+    baseline = client.post("/api/v1/simulations/run", json=request).json()
+    override = client.post(
+        "/api/v1/simulations/run",
+        json={
+            **request,
+            "zone_sensor_overrides": {
+                "W2": {"tick_index": 96, "irradiance": 900, "illuminance": 1200}
+            },
+        },
+    )
+    assert override.status_code == 200
+    changed = override.json()
+    own = []
+    for before, after in zip(baseline["ticks"], changed["ticks"]):
+        pairs = {}
+        assert {key: value for key, value in before.items() if key != "facade"} == {
+            key: value for key, value in after.items() if key != "facade"
+        }
+        for old_wall, new_wall in zip(before["facade"], after["facade"]):
+            assert {key: value for key, value in old_wall.items() if key != "zones"} == {
+                key: value for key, value in new_wall.items() if key != "zones"
+            }
+            for old, new in zip(old_wall["zones"], new_wall["zones"]):
+                pairs[old["zone"]] = (old, new)
+                assert old["sensors"]["sensor_id"] == old["zone"]
+                assert old["sensors"]["source"] == "simulated"
+                if old["zone"] != "W2":
+                    assert old == new
+        assert len(pairs) == 64
+        own.append(pairs["W2"])
+    assert all(old == new for old, new in own[:96])
+    old, new = own[96]
+    assert new["angle_target"] > old["angle_target"]
+    assert new["angle"] > old["angle"] and new["moved"]
+    assert new["sensor_trusted"] and "Injected" in new["reason"]
+    assert new["sensors"] == {
+        "sensor_id": "W2",
+        "irradiance": 900,
+        "illuminance": 1200,
+        "source": "override",
+    }
+    assert any(old["angle"] != new["angle"] for old, new in own[97:])
+    assert all(new["sensors"]["source"] == "simulated" for _, new in own[97:])
+    assert baseline["comparison"] == changed["comparison"]
+
+
+@pytest.mark.parametrize(
+    "zone,reading",
+    [
+        ("W17", {}),
+        ("w2", {}),
+        ("N0", {}),
+        ("W2", {"tick_index": -1}),
+        ("W2", {"tick_index": 144}),
+        ("W2", {"tick_index": 1.5}),
+        ("W2", {"irradiance": -1}),
+        ("W2", {"irradiance": 1601}),
+        ("W2", {"illuminance": -1}),
+        ("W2", {"illuminance": 10001}),
+        ("W2", {"irradiance": "NaN"}),
+        ("W2", {"illuminance": "Infinity"}),
+    ],
+)
+def test_zone_sensor_override_rejects_invalid_ids_indices_and_readings(zone, reading) -> None:
+    response = client.post(
+        "/api/v1/simulations/run",
+        json={
+            "zone_sensor_overrides": {
+                zone: {"tick_index": 96, "irradiance": 500, "illuminance": 400, **reading}
+            }
+        },
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("glazing_shgc", -0.01),
+        ("glazing_shgc", 1.01),
+        ("glazing_shgc", "NaN"),
+        ("glare_limit_w_m2", -1),
+        ("glare_limit_w_m2", 2001),
+        ("glare_limit_w_m2", "Infinity"),
+        ("actuator_speed_deg_per_min", 0),
+        ("actuator_speed_deg_per_min", 12.1),
+        ("actuator_speed_deg_per_min", "NaN"),
+    ],
+)
+def test_comfort_calibration_rejects_out_of_range_or_nonfinite_values(field, value) -> None:
+    assert client.post("/api/v1/simulations/run", json={field: value}).status_code == 422
 
 
 def test_met_anchored_run_exposes_provenance(monkeypatch) -> None:
@@ -111,7 +256,8 @@ def test_lie_detector_contains_fault_and_cloud_gate() -> None:
 
 def test_co_optimization_returns_three_comparable_metrics() -> None:
     response = client.post("/api/v1/simulations/run", json={"scenario": "co_optimization"})
-    metrics = response.json()["comparison"]
+    payload = response.json()
+    metrics = payload["comparison"]
     assert {metric["metric"] for metric in metrics} == {
         "lux_compliance",
         "relative_load",
@@ -119,13 +265,28 @@ def test_co_optimization_returns_three_comparable_metrics() -> None:
     }
     by_name = {metric["metric"]: metric for metric in metrics}
     assert by_name["lux_compliance"]["label"] == "Daylight lux compliance"
-    # With per-facade control the two strategies sit on a genuine trade-off
-    # rather than one dominating. The naive controller shades off a horizontal
-    # roof sensor, so it over-shades walls the sun is not on: that does lower
-    # cooling load, and it destroys the daylight it was supposed to protect.
-    assert by_name["lux_compliance"]["ours"] > 3 * by_name["lux_compliance"]["naive"]
-    assert by_name["relative_load"]["ours"] < 1.3 * by_name["relative_load"]["naive"]
-    assert by_name["movement_count"]["ours"] < by_name["movement_count"]["naive"]
+    # Report the real trade-off, not a promised win over a binary controller:
+    # continuous tracking makes more small moves and glare can limit daylight.
+    ticks = payload["ticks"]
+    occupied = [tick for tick in ticks if tick["occupancy"] >= 0.2]
+    daylight = [
+        tick for tick in occupied
+        if next(wall for wall in tick["facade"] if wall["primary"])["incident"] >= 200
+    ] or occupied
+    for strategy, lux_key, load_key in [
+        ("ours", "lux", "load_relative"),
+        ("naive", "naive_lux", "naive_load_relative"),
+    ]:
+        compliance = round(
+            100 * sum(300 <= tick[lux_key] <= 700 for tick in daylight) / len(daylight), 1
+        )
+        assert by_name["lux_compliance"][strategy] == compliance
+        mean_load = sum(tick[load_key] for tick in occupied) / len(occupied)
+        assert by_name["relative_load"][strategy] == pytest.approx(mean_load, abs=0.0006)
+    assert by_name["movement_count"]["ours"] == sum(tick["moved"] for tick in ticks)
+    assert by_name["movement_count"]["naive"] == sum(
+        before["naive_angle"] != after["naive_angle"] for before, after in zip(ticks, ticks[1:])
+    )
 
 
 def test_budget_scenario_contains_hold_and_fail_shaded_events() -> None:

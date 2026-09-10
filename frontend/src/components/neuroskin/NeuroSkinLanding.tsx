@@ -25,7 +25,7 @@ const proofs = [
     label: 'One objective',
     title: 'Balance four impacts together.',
     body: 'Thermal load, daylight comfort, movement, and wind risk are evaluated for every allowable facade angle.',
-    result: '0°–60° search · 5° increments',
+    result: '0°–60° continuous targets · limited travel rate',
   },
   {
     number: '03',
@@ -218,12 +218,13 @@ export function NeuroSkinLanding() {
               The controller is the formula.
             </h2>
             <p className='mt-5 max-w-md text-sm leading-6 text-white/50'>
-              Every five-degree candidate is scored. The lowest-cost safe angle
-              wins; a movement budget prevents low-value actuator cycles.
+              Each zone balances daylight and solar heat while screening direct
+              sun. Fractional-angle targets and a travel-rate limit keep normal
+              tracking gradual; hardware safety takes priority.
             </p>
             <div className='mt-8 space-y-3'>
               <ModelRule icon={Gauge} text='Comfort band: 300–700 lux' />
-              <ModelRule icon={Move3d} text='Angles: 0°, 5°, … 60°' />
+              <ModelRule icon={Move3d} text='Continuous targets: 0°–60°' />
               <ModelRule icon={ShieldCheck} text='Critical wind: 15 m/s' />
             </div>
           </div>

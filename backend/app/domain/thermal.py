@@ -23,7 +23,10 @@ class DeterministicLoadPredictor:
             np.clip(0.16 + 0.13 * env.occupancy + 0.004 * (env.indoor_rh - 55), 0.12, 0.42)
         )
         return LoadEstimate(
-            total=shadeable + internal + latent, shadeable=shadeable + internal, latent=latent
+            total=shadeable + internal + latent,
+            shadeable=max(0.0, shadeable - 0.08),
+            latent=latent,
+            internal=internal + 0.08,
         )
 
 
@@ -41,5 +44,6 @@ def shade_transmittance(angle: float) -> float:
     return float(1.0 - 0.78 * shade_fraction)
 
 
-def load_at_angle(load: LoadEstimate, angle: float) -> float:
-    return float(load.latent + load.shadeable * shade_transmittance(angle))
+def load_at_angle(load: LoadEstimate, angle: float, *, transmittance: float | None = None) -> float:
+    transmission = shade_transmittance(angle) if transmittance is None else transmittance
+    return float(load.latent + load.internal + load.shadeable * transmission)

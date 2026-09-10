@@ -31,6 +31,6 @@ def movement_budget(
     *,
     threshold: float = DEFAULTS.movement_threshold,
 ) -> tuple[float, bool]:
-    if abs(target - current) < DEFAULTS.angle_step or predicted_gain < threshold:
+    if abs(target - current) < 0.1 or predicted_gain < threshold:
         return current, False
     return target, True

@@ -142,7 +142,7 @@
   }
 
   .console-stage {
-    @apply relative min-h-[540px] min-w-0 flex-1 overflow-hidden;
+    @apply relative min-h-[700px] min-w-0 flex-1 overflow-hidden sm:min-h-[640px] xl:min-h-[540px];
     background-image:
       radial-gradient(
         circle at 50% 12%,

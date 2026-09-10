@@ -12,14 +12,17 @@ import pandas as pd
 import pvlib
 
 from app.config import DEFAULTS
+from app.domain.optics import FacadeOptics
 from app.domain.thermal import shade_transmittance
 from app.domain.types import (
+    ComfortState,
     FacadeHeat,
     RoofSegment,
     WallGain,
     WallState,
     ZoneGain,
     ZoneHeat,
+    ZoneSensors,
 )
 
 ORIENTATIONS: dict[str, float] = {
@@ -270,7 +273,10 @@ def zone_gains(
                         column=column,
                         zone=f"{gain.orientation[0].upper()}{row * columns + column + 1}",
                         incident=incident,
-                        sky_diffuse=gain.sky_diffuse,
+                        sky_diffuse=max(
+                            0.0,
+                            incident - gain.direct * sunlit_fraction - gain.ground_diffuse,
+                        ),
                         ground_diffuse=gain.ground_diffuse,
                         sunlit_fraction=sunlit_fraction,
                         daylight=incident + shared,
@@ -290,10 +296,24 @@ def zone_heat(
     *,
     outdoor_temp: float,
     wind: float,
+    sensors: ZoneSensors | None = None,
+    angle_target: float | None = None,
+    sensor_trusted: bool = True,
+    optics: FacadeOptics | None = None,
+    conditions: ComfortState | None = None,
 ) -> ZoneHeat:
     """One zone's heat state once its own louvres have taken their angle."""
 
-    transmitted = zone.incident * shade_transmittance(state.angle)
+    transmittance = (
+        shade_transmittance(state.angle)
+        if optics is None
+        else optics.solar_transmittance(state.angle)
+    )
+    transmitted = zone.incident * transmittance
+    diffuse = zone.sky_diffuse + zone.ground_diffuse
+    diffuse_transmittance = (
+        transmittance if optics is None else optics.diffuse_transmittance(state.angle)
+    )
     return ZoneHeat(
         row=zone.row,
         column=zone.column,
@@ -307,6 +327,13 @@ def zone_heat(
         moved=state.moved,
         lux=round(state.lux, 1),
         load_relative=round(state.load_relative, 4),
+        sensors=sensors,
+        angle_target=state.angle if angle_target is None else angle_target,
+        reason=state.reason,
+        sensor_trusted=sensor_trusted,
+        conditions=conditions,
+        diffuse_incident=round(diffuse, 2),
+        diffuse_transmitted=round(diffuse * diffuse_transmittance, 2),
     )
 
 
@@ -318,13 +345,19 @@ def facade_heat(
     wind: float,
     primary: str,
     zones: dict[str, list[ZoneHeat]] | None = None,
+    optics: dict[str, FacadeOptics] | None = None,
 ) -> list[FacadeHeat]:
     """Heat state of every wall once its own louvres have acted."""
 
     walls: list[FacadeHeat] = []
     for gain in gains:
         state = decisions[gain.orientation]
-        transmitted = gain.incident * shade_transmittance(state.angle)
+        transmittance = (
+            shade_transmittance(state.angle)
+            if optics is None
+            else optics[gain.orientation].solar_transmittance(state.angle)
+        )
+        transmitted = gain.incident * transmittance
         wall_zones = (zones or {}).get(gain.orientation, [])
         walls.append(
             FacadeHeat(

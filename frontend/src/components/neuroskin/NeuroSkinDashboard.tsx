@@ -24,9 +24,15 @@ import type {
 } from '@/lib/types'
 import { BuildingHeatmap, FacadeReadout } from './BuildingHeatmap'
 import type { SurfaceId } from './BuildingHeatmap'
+import {
+  baselineSurfaceTemperature,
+  surfaceIrradianceComparison,
+  type BuildingVariant,
+} from './buildingComparison'
 import { ControllerPanel } from './ControllerPanel'
 import { SimulationCharts } from './SimulationCharts'
 import { SimulationControls } from './SimulationControls'
+import { ZoneSensorPanel } from './ZoneSensorPanel'
 import { TIER_STEPS, TierCard, TierRunner } from './TierAnalysis'
 import type { TierStatus } from './TierAnalysis'
 
@@ -39,7 +45,7 @@ const DEFAULT_REQUEST: SimulationRunRequest = {
   occupancy_scale: 1,
   wind_override: 3,
   power_ok: true,
-  weights: { thermal: 0.45, lux: 0.35, movement: 0.15, risk: 0.05 },
+  weights: { thermal: 0.45, lux: 0.45, movement: 0.05, risk: 0.05 },
   latitude: 2.922,
   longitude: 101.6885,
   timezone: 'Asia/Kuala_Lumpur',
@@ -47,6 +53,9 @@ const DEFAULT_REQUEST: SimulationRunRequest = {
   facade_orientation: 'west',
   facade_tilt: 115,
   roof_pitch: 10,
+  glare_limit_w_m2: 25,
+  glazing_shgc: 0.4,
+  actuator_speed_deg_per_min: 1.2,
 }
 
 const sourceLabels: Record<SimulationRunRequest['environment_source'], string> =
@@ -59,9 +68,8 @@ const sourceLabels: Record<SimulationRunRequest['environment_source'], string> =
 /** How long a finished tier stays on screen before the next one starts. */
 const STEP_PAUSE_MS = 700
 
-// One tick every 45 ms walks the 144-tick day in about 6.5 seconds, which is
-// slow enough to read the sun across the sky and fast enough to sit through.
-const PLAY_INTERVAL_MS = 45
+// Leave time to see the actuator response; a full day takes about 43 seconds.
+const PLAY_INTERVAL_MS = 300
 
 const pause = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve) => {
@@ -140,6 +148,14 @@ export function NeuroSkinDashboard() {
   const [selectedWall, setSelectedWall] = useState<SurfaceId>(
     `wall:${DEFAULT_REQUEST.facade_orientation}`
   )
+  const [selectedZone, setSelectedZone] = useState<string | null>(null)
+  const [buildingVariant, setBuildingVariant] =
+    useState<BuildingVariant>('controlled')
+  const isControlled = buildingVariant === 'controlled'
+  const selectSurface = useCallback((surface: SurfaceId) => {
+    setSelectedWall(surface)
+    setSelectedZone(null)
+  }, [])
   // The three-tier run: one stored result per tier, so a finished tier can be
   // revisited without paying for it again.
   const [tierStatus, setTierStatus] = useState<
@@ -155,6 +171,7 @@ export function NeuroSkinDashboard() {
   // solar positions the run returned.
   const [playing, setPlaying] = useState(false)
   const requestController = useRef<AbortController | null>(null)
+  const appliedRequest = useRef(DEFAULT_REQUEST)
 
   const tickCount = data?.ticks.length ?? 0
   useEffect(() => {
@@ -177,7 +194,7 @@ export function NeuroSkinDashboard() {
   }, [])
 
   const execute = useCallback(
-    async (nextRequest: SimulationRunRequest) => {
+    async (nextRequest: SimulationRunRequest, preserveTick?: number) => {
       requestController.current?.abort()
       const controller = new AbortController()
       requestController.current = controller
@@ -185,7 +202,14 @@ export function NeuroSkinDashboard() {
       setError(null)
       try {
         const response = await runSimulation(nextRequest, controller.signal)
-        focusOn(response)
+        appliedRequest.current = nextRequest
+        if (preserveTick === undefined) focusOn(response)
+        else {
+          setData(response)
+          setTimelineIndex(
+            Math.max(0, Math.min(preserveTick, response.ticks.length - 1))
+          )
+        }
         return response
       } catch (cause) {
         if (cause instanceof DOMException && cause.name === 'AbortError') return
@@ -237,16 +261,15 @@ export function NeuroSkinDashboard() {
         setActiveTier(step.scenario)
         setTierStatus((prev) => ({ ...prev, [step.scenario]: 'running' }))
         setLoading(true)
-        const response = await runSimulation(
-          { ...request, scenario: step.scenario },
-          controller.signal
-        )
+        const stepRequest = { ...request, scenario: step.scenario }
+        const response = await runSimulation(stepRequest, controller.signal)
         if (controller.signal.aborted) return
         last = response
         setTierResults((prev) => ({ ...prev, [step.scenario]: response }))
         setTierStatus((prev) => ({ ...prev, [step.scenario]: 'done' }))
         setRequest((prev) => ({ ...prev, scenario: step.scenario }))
         // Swap the data under the running clock rather than jumping the time.
+        appliedRequest.current = stepRequest
         setData(response)
         setLoading(false)
         // Let the step land on screen before the next one starts.
@@ -286,6 +309,7 @@ export function NeuroSkinDashboard() {
       // A tier already run is shown from its stored result, not fetched again.
       const stored = tierResults[scenario]
       if (stored) {
+        appliedRequest.current = { ...appliedRequest.current, scenario }
         setRequest((prev) => ({ ...prev, scenario }))
         focusOn(stored)
         return
@@ -350,6 +374,36 @@ export function NeuroSkinDashboard() {
           (segment) => segment.quadrant === selectedOrientation
         )
       : undefined
+  const selectedZoneState = selectedWallState?.zones?.find(
+    (zone) => zone.zone === selectedZone
+  )
+  const selectedController = selectedZoneState ?? selectedWallState
+  const irradianceComparison = selectedTick
+    ? surfaceIrradianceComparison(selectedTick, selectedWall, selectedZone)
+    : null
+  const sensorTrusted =
+    selectedZoneState?.sensor_trusted ?? selectedTick?.sensor_trusted
+  const updateZoneSensor = async (
+    zoneId: string,
+    reading: { irradiance: number; illuminance: number } | null
+  ) => {
+    const sensorTick = Math.min(timelineIndex, Math.max(0, tickCount - 1))
+    const overrides = { ...appliedRequest.current.zone_sensor_overrides }
+    if (reading) overrides[zoneId] = { ...reading, tick_index: sensorTick }
+    else delete overrides[zoneId]
+    const nextRequest = {
+      ...appliedRequest.current,
+      zone_sensor_overrides: overrides,
+    }
+    setPlaying(false)
+    // Testing one sensor must not also apply unrelated, unsaved global settings.
+    setRequest((draft) => ({ ...draft, zone_sensor_overrides: overrides }))
+    // Cached tier results describe the old sensor inputs.
+    setTierResults({})
+    setTierStatus({})
+    setActiveTier(null)
+    await execute(nextRequest, sensorTick)
+  }
 
   return (
     <div className='console-shell'>
@@ -386,9 +440,9 @@ export function NeuroSkinDashboard() {
           <div>
             <p className='eyebrow'>24-hour result</p>
             <h1 className='mt-0.5 font-display text-lg font-semibold tracking-tight'>
-              Three-tier analysis
+              {isControlled ? 'Three-tier analysis' : 'No external facade'}
             </h1>
-            {activeStep && (
+            {isControlled && activeStep && (
               <p className='text-[10px] text-muted-foreground'>
                 Stage showing {activeStep.tier} · {activeStep.label}
               </p>
@@ -414,44 +468,93 @@ export function NeuroSkinDashboard() {
           </div>
         </header>
 
-        <div data-tour='scenario-tabs'>
-          <TierRunner
-            statuses={tierStatus}
-            results={tierResults}
-            active={activeTier}
-            running={tierRunning}
-            onRun={() => void runTiers()}
-            onSelect={focusTier}
-          />
-        </div>
+        {isControlled && (
+          <div data-tour='scenario-tabs'>
+            <TierRunner
+              statuses={tierStatus}
+              results={tierResults}
+              active={activeTier}
+              running={tierRunning}
+              onRun={() => void runTiers()}
+              onSelect={focusTier}
+            />
+          </div>
+        )}
 
         {data && (
           <>
-            <div className='grid grid-cols-3 gap-2' data-tour='kpi-grid'>
-              <GaugeCard
-                icon={Activity}
-                label='Mean load'
-                display={Number(data.summary.mean_relative_load).toFixed(3)}
-                fraction={Number(data.summary.mean_relative_load)}
-                detail='Lower better'
-              />
-              <GaugeCard
-                icon={CheckCircle2}
-                label='Sensor trust'
-                display={`${trustedPercent.toFixed(0)}%`}
-                fraction={trustedPercent / 100}
-                detail={`${data.summary.sensor_fault_ticks} rejected`}
-              />
-              <GaugeCard
-                icon={ShieldCheck}
-                label='Movements'
-                display={String(data.summary.movement_count)}
-                fraction={Number(data.summary.movement_count) / 144}
-                detail={`${data.summary.safe_mode_ticks} SAFE`}
-              />
-            </div>
+            {irradianceComparison && (
+              <section
+                className='console-card'
+                aria-label='Building irradiance comparison'
+              >
+                <p className='console-card-title'>Facade comparison</p>
+                <p className='mt-1 text-xs font-semibold'>
+                  {irradianceComparison.label}
+                </p>
+                <dl className='mt-3 grid grid-cols-2 gap-3'>
+                  <div>
+                    <dt className='text-[10px] text-muted-foreground'>
+                      Controlled
+                    </dt>
+                    <dd className='font-mono text-base font-semibold'>
+                      {irradianceComparison.controlled.toFixed(0)}{' '}
+                      <span className='text-[10px]'>W/m²</span>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className='text-[10px] text-muted-foreground'>
+                      No external facade
+                    </dt>
+                    <dd className='font-mono text-base font-semibold'>
+                      {irradianceComparison.baseline.toFixed(0)}{' '}
+                      <span className='text-[10px]'>W/m²</span>
+                    </dd>
+                  </div>
+                </dl>
+                <p className='mt-2 text-xs font-semibold text-primary'>
+                  {selectedKind === 'roof'
+                    ? 'Same roof · unchanged exposure'
+                    : irradianceComparison.reduction === null
+                      ? 'No solar exposure at this tick'
+                      : `${irradianceComparison.reduction.toFixed(1)}% less irradiance with louvres`}
+                </p>
+                <p className='mt-2 text-[10px] leading-4 text-muted-foreground'>
+                  Same sun, weather and colour scale.{' '}
+                  {selectedKind === 'roof'
+                    ? 'Modelled roof irradiance.'
+                    : 'Modelled zone irradiance before glazing; wall means weight zones equally.'}{' '}
+                  The heatmap shows local mesh shadows.
+                </p>
+              </section>
+            )}
+            {isControlled && (
+              <div className='grid grid-cols-3 gap-2' data-tour='kpi-grid'>
+                <GaugeCard
+                  icon={Activity}
+                  label='Mean load'
+                  display={Number(data.summary.mean_relative_load).toFixed(3)}
+                  fraction={Number(data.summary.mean_relative_load)}
+                  detail='Lower better'
+                />
+                <GaugeCard
+                  icon={CheckCircle2}
+                  label='Sensor trust'
+                  display={`${trustedPercent.toFixed(0)}%`}
+                  fraction={trustedPercent / 100}
+                  detail={`${data.summary.sensor_fault_ticks} rejected`}
+                />
+                <GaugeCard
+                  icon={ShieldCheck}
+                  label='Movements'
+                  display={String(data.summary.movement_count)}
+                  fraction={Number(data.summary.movement_count) / 144}
+                  detail={`${data.summary.safe_mode_ticks} SAFE`}
+                />
+              </div>
+            )}
 
-            {data.comparison.length > 0 && (
+            {isControlled && data.comparison.length > 0 && (
               <ImpactStrip metrics={data.comparison} />
             )}
 
@@ -459,11 +562,32 @@ export function NeuroSkinDashboard() {
               <FacadeReadout
                 tick={selectedTick}
                 selected={selectedWall}
-                onSelect={setSelectedWall}
+                onSelect={selectSurface}
+                buildingVariant={buildingVariant}
               />
             )}
 
-            {data.annotations.length > 0 && (
+            {selectedWallState &&
+              (selectedWallState.zones?.length ?? 0) > 0 && (
+                <ZoneSensorPanel
+                  buildingVariant={buildingVariant}
+                  wall={selectedWallState}
+                  selectedZone={selectedZone}
+                  onSelectZone={setSelectedZone}
+                  onOverride={(zoneId, reading) =>
+                    void updateZoneSensor(zoneId, reading)
+                  }
+                  onClearOverride={(zoneId) =>
+                    void updateZoneSensor(zoneId, null)
+                  }
+                  overriddenZoneIds={Object.keys(
+                    request.zone_sensor_overrides ?? {}
+                  )}
+                  loading={loading || tierRunning}
+                />
+              )}
+
+            {isControlled && data.annotations.length > 0 && (
               <section className='console-card' data-tour='events'>
                 <p className='console-card-title'>Events</p>
                 <div className='mt-2 flex flex-col gap-1.5'>
@@ -493,34 +617,38 @@ export function NeuroSkinDashboard() {
             {/* Each tier keeps its own charts on the page. One clock drives all
                 of them, so the three read side by side instead of one chart
                 area swapping its contents as the analysis moves on. */}
-            {tierCharts.length > 0 ? (
-              tierCharts.map(({ step, response }) => (
-                <section
-                  aria-label={`${step.tier} charts`}
-                  className='grid gap-2'
-                  key={step.scenario}
-                >
-                  <p className='console-card-title'>
-                    {step.tier} · {step.label}
-                  </p>
-                  <SimulationCharts
-                    scenario={step.scenario}
-                    ticks={response.ticks}
-                    annotations={response.annotations}
-                    cursor={Math.min(timelineIndex, response.ticks.length - 1)}
-                    revealing={playing}
-                  />
-                </section>
-              ))
-            ) : (
-              <SimulationCharts
-                scenario={request.scenario}
-                ticks={data.ticks}
-                annotations={data.annotations}
-                cursor={Math.min(timelineIndex, data.ticks.length - 1)}
-                revealing={playing}
-              />
-            )}
+            {isControlled &&
+              (tierCharts.length > 0 ? (
+                tierCharts.map(({ step, response }) => (
+                  <section
+                    aria-label={`${step.tier} charts`}
+                    className='grid gap-2'
+                    key={step.scenario}
+                  >
+                    <p className='console-card-title'>
+                      {step.tier} · {step.label}
+                    </p>
+                    <SimulationCharts
+                      scenario={step.scenario}
+                      ticks={response.ticks}
+                      annotations={response.annotations}
+                      cursor={Math.min(
+                        timelineIndex,
+                        response.ticks.length - 1
+                      )}
+                      revealing={playing}
+                    />
+                  </section>
+                ))
+              ) : (
+                <SimulationCharts
+                  scenario={request.scenario}
+                  ticks={data.ticks}
+                  annotations={data.annotations}
+                  cursor={Math.min(timelineIndex, data.ticks.length - 1)}
+                  revealing={playing}
+                />
+              ))}
           </>
         )}
       </aside>
@@ -528,7 +656,7 @@ export function NeuroSkinDashboard() {
       <RailHandle side='left' label='Resize results panel' />
 
       <section className='console-stage' aria-label='Building model'>
-        {activeStep && !cardDismissed && (
+        {isControlled && activeStep && !cardDismissed && (
           <TierCard
             step={activeStep}
             status={tierStatus[activeStep.scenario] ?? 'pending'}
@@ -544,6 +672,8 @@ export function NeuroSkinDashboard() {
         ) : data && selectedTick ? (
           <>
             <BuildingHeatmap
+              buildingVariant={buildingVariant}
+              onBuildingVariantChange={setBuildingVariant}
               tick={selectedTick}
               floors={data.metadata.floors}
               facadeTilt={data.metadata.facade_tilt}
@@ -551,8 +681,11 @@ export function NeuroSkinDashboard() {
               locationName={data.metadata.location}
               timeLabel={timeLabel(selectedTick.timestamp, zone)}
               selected={selectedWall}
-              onSelect={setSelectedWall}
+              onSelect={selectSurface}
+              selectedZone={selectedZone}
+              onSelectZone={setSelectedZone}
               sunTrack={sunTrack}
+              ticks={data.ticks}
             />
 
             <div className='stage-toolbar' data-tour='timeline-inspector'>
@@ -581,20 +714,22 @@ export function NeuroSkinDashboard() {
                 <span className='text-[11px] font-semibold capitalize'>
                   {selectedKind === 'roof'
                     ? `${selectedOrientation} roof face`
-                    : `${selectedOrientation} facade`}
+                    : `${selectedOrientation} facade${selectedZoneState ? ` · ${selectedZoneState.zone}` : ''}`}
                 </span>
-                {selectedKind === 'wall' && (
+                {isControlled && selectedKind === 'wall' && (
                   <StatusBadge
-                    mode={selectedWallState?.mode ?? selectedTick.mode}
+                    mode={selectedController?.mode ?? selectedTick.mode}
                   />
                 )}
-                <span
-                  className={
-                    selectedTick.sensor_trusted ? 'trust-badge' : 'fault-badge'
-                  }
-                >
-                  {selectedTick.sensor_trusted ? 'Trusted' : 'Rejected'}
-                </span>
+                {isControlled ? (
+                  <span
+                    className={sensorTrusted ? 'trust-badge' : 'fault-badge'}
+                  >
+                    {sensorTrusted ? 'Trusted' : 'Rejected'}
+                  </span>
+                ) : (
+                  <span className='stage-chip'>No controller</span>
+                )}
                 <span className='ml-auto text-[10px] uppercase tracking-wider text-muted-foreground'>
                   Selected tick
                 </span>
@@ -628,28 +763,50 @@ export function NeuroSkinDashboard() {
                       {selectedRoofState.sol_air_temp.toFixed(1)} °C surface
                     </span>
                   </>
+                ) : !isControlled ? (
+                  <>
+                    <span className='stage-chip'>
+                      {(
+                        irradianceComparison?.baseline ??
+                        selectedWallState?.incident ??
+                        0
+                      ).toFixed(0)}{' '}
+                      W/m² before glazing
+                    </span>
+                    <span className='stage-chip'>
+                      {baselineSurfaceTemperature(
+                        irradianceComparison?.baseline ??
+                          selectedWallState?.incident ??
+                          0,
+                        selectedTick.outdoor_temp,
+                        selectedTick.wind
+                      ).toFixed(1)}{' '}
+                      °C surface estimate
+                    </span>
+                  </>
                 ) : (
                   <>
                     <span className='stage-chip'>
                       {(
-                        selectedWallState?.angle ?? selectedTick.angle_final
-                      ).toFixed(0)}
+                        selectedController?.angle ?? selectedTick.angle_final
+                      ).toFixed(1)}
                       ° angle
                     </span>
                     <span className='stage-chip'>
-                      {(selectedWallState?.lux ?? selectedTick.lux).toFixed(0)}{' '}
+                      {(selectedController?.lux ?? selectedTick.lux).toFixed(0)}{' '}
                       lux
                     </span>
                     <span className='stage-chip'>
                       {(
-                        selectedWallState?.incident ??
+                        selectedZoneState?.sensors?.irradiance ??
+                        selectedController?.incident ??
                         selectedTick.measured_irradiance
                       ).toFixed(0)}{' '}
-                      W/m² on wall
+                      W/m² {selectedZoneState ? 'zone sensor' : 'on wall'}
                     </span>
                     <span className='stage-chip'>
                       {(
-                        selectedWallState?.load_relative ??
+                        selectedController?.load_relative ??
                         selectedTick.load_relative
                       ).toFixed(3)}{' '}
                       load
@@ -665,7 +822,9 @@ export function NeuroSkinDashboard() {
               </div>
               {selectedWallState && (
                 <p className='text-[10px] leading-4 text-muted-foreground'>
-                  {selectedWallState.reason}
+                  {isControlled
+                    ? (selectedZoneState?.reason ?? selectedWallState.reason)
+                    : 'Same structure, glazing and roof; external louvres, actuators and mechatronic controller removed.'}
                 </p>
               )}
               {selectedRoofState && (
@@ -683,6 +842,7 @@ export function NeuroSkinDashboard() {
 
       <aside className='console-rail console-rail-right'>
         <SimulationControls
+          buildingVariant={buildingVariant}
           value={request}
           onChange={setRequest}
           onReset={() => {
@@ -691,12 +851,30 @@ export function NeuroSkinDashboard() {
             void execute(reset)
           }}
         />
-        <ControllerPanel
-          value={request}
-          loading={loading}
-          onChange={setRequest}
-          onRun={() => void execute(request)}
-        />
+        {isControlled ? (
+          <ControllerPanel
+            value={request}
+            loading={loading}
+            onChange={setRequest}
+            onRun={() => void execute(request)}
+          />
+        ) : (
+          <section className='console-card'>
+            <p className='console-card-title'>Uncontrolled building</p>
+            <p className='mt-2 text-xs leading-5 text-muted-foreground'>
+              No external louvres or mechatronic brain. Weather and geometry
+              settings apply to both buildings for a like-for-like comparison.
+            </p>
+            <button
+              className='retry-button mt-3'
+              type='button'
+              disabled={loading || tierRunning}
+              onClick={() => void execute(request)}
+            >
+              {loading ? 'Running…' : 'Run simulation'}
+            </button>
+          </section>
+        )}
       </aside>
     </div>
   )
@@ -769,12 +947,12 @@ function ImpactStrip({ metrics }: { metrics: ComparisonMetric[] }) {
   return (
     <section
       className='console-card'
-      aria-label='Impact versus baseline'
+      aria-label='Impact versus binary controller'
       data-tour='comparison'
     >
       <div className='flex items-center justify-between'>
         <p className='console-card-title'>Impact</p>
-        <p className='text-[9px] text-muted-foreground'>vs baseline</p>
+        <p className='text-[9px] text-muted-foreground'>vs binary controller</p>
       </div>
       <div className='mt-2 grid gap-1.5'>
         {metrics.map((metric) => {
@@ -797,7 +975,7 @@ function ImpactStrip({ metrics }: { metrics: ComparisonMetric[] }) {
                   {formatMetric(metric.ours, metric.unit)}
                 </span>
                 <span className='text-[9px] text-muted-foreground'>
-                  base {formatMetric(metric.naive, metric.unit)}
+                  binary {formatMetric(metric.naive, metric.unit)}
                 </span>
               </div>
             </div>

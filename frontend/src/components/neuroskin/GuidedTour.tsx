@@ -67,7 +67,7 @@ const steps: TourStep[] = [
       'Click a tab at any time. Changing tabs immediately runs that scenario with your current controls.',
     notice: [
       'Tier 1 is the sensor-trust USP.',
-      'Tier 2 compares NeuroSkin with the naive baseline.',
+      'Tier 2 compares NeuroSkin with the naive binary controller.',
       'Tier 3 demonstrates movement restraint and fail-safe priority.',
     ],
     target: '[data-tour="scenario-tabs"]',
@@ -147,12 +147,12 @@ const steps: TourStep[] = [
   {
     section: 'Configure',
     title: 'Tell the controller what to prioritize.',
-    body: 'The four sliders shape the single cost function used to rank every allowable angle from 0° to 60°.',
+    body: 'Each zone balances daylight and solar heat over continuous 0°–60° targets. Direct-sun screening and hardware safety constrain that choice; the actuator travel rate limits normal motion.',
     action:
       'Raise Daylight to favor the 300–700 lux band, Thermal to favor shade, Movement to preserve actuator life, or Risk to avoid exposed angles in wind.',
     notice: [
       'Weights are normalized automatically, so they do not need to total 1.',
-      'The selected tick later shows each normalized cost contribution.',
+      'Select a zone to inspect daylight, estimated heat gain and direct-sun exposure. The glare screen is a calibration assumption, not a DGP assessment.',
     ],
     target: '[data-tour="controller-weights"]',
     scenario: 'overview',

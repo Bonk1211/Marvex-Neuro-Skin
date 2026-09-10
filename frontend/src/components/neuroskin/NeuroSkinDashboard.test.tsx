@@ -1,8 +1,14 @@
 import React from 'react'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NeuroSkinDashboard } from './NeuroSkinDashboard'
-import type { SimulationRunResponse } from '@/lib/types'
+import type { SimulationRunResponse, ZoneHeat } from '@/lib/types'
 
 const response: SimulationRunResponse = {
   scenario: 'overview',
@@ -197,6 +203,14 @@ describe('NeuroSkinDashboard', () => {
   it('renders direct impact metrics without narrative explanation', async () => {
     render(<NeuroSkinDashboard />)
     expect(await screen.findByText('Mean load')).toBeInTheDocument()
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body)).weights).toEqual(
+      {
+        thermal: 0.45,
+        lux: 0.45,
+        movement: 0.05,
+        risk: 0.05,
+      }
+    )
     expect(screen.getAllByText('0.420').length).toBeGreaterThan(0)
     expect(screen.getByText('Impact')).toBeInTheDocument()
     expect(screen.getByText('Selected tick')).toBeInTheDocument()
@@ -453,6 +467,245 @@ describe('NeuroSkinDashboard', () => {
       { timeout: 8000 }
     )
   }, 20000)
+
+  it('advances actuator angles with ordinary sun playback and scrubbing', async () => {
+    const ticks = [0, 30.4, 0].map((angle, index) => ({
+      ...response.ticks[0],
+      timestamp: `2026-03-21T${15 + index}:00:00+08:00`,
+      solar_elevation: 50 - index * 15,
+      facade: response.ticks[0].facade.map((wall) => ({ ...wall, angle })),
+    }))
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ ...response, ticks }),
+    })
+    render(<NeuroSkinDashboard />)
+    await screen.findByText('Mean load')
+    const timeline = screen.getByRole('slider', { name: 'Simulation timeline' })
+    fireEvent.change(timeline, { target: { value: '0' } })
+    expect(screen.getByText('0.0° angle')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Play sun movement' }))
+    await screen.findByText('30.4° angle')
+    fireEvent.click(screen.getByRole('button', { name: 'Pause sun movement' }))
+    expect(screen.getByText('sun 35° elev · 264° az')).toBeInTheDocument()
+
+    fireEvent.change(timeline, { target: { value: '2' } })
+    expect(screen.getByText('0.0° angle')).toBeInTheDocument()
+    expect(screen.getByText('sun 20° elev · 264° az')).toBeInTheDocument()
+  })
+
+  it('preserves the selected zone and clock across building variants and edits only that sensor', async () => {
+    const zones: ZoneHeat[] = Array.from({ length: 16 }, (_, index) => ({
+      zone: `W${index + 1}`,
+      row: Math.floor(index / 4),
+      column: index % 4,
+      incident: 300,
+      transmitted: 220,
+      sunlit_fraction: 1,
+      sol_air_temp: 35,
+      angle: 20,
+      angle_target: 20,
+      mode: 'HOLD',
+      moved: false,
+      lux: 400,
+      load_relative: 0.4,
+      reason: 'Local W sensor reading.',
+      sensor_trusted: true,
+      sensors: {
+        sensor_id: `W${index + 1}`,
+        irradiance: 300,
+        illuminance: 400,
+        source: 'simulated',
+      },
+    }))
+    fetchMock.mockImplementation(async (_url, options: RequestInit) => {
+      const input = JSON.parse(String(options.body))
+      const override = input.zone_sensor_overrides?.W2
+      return {
+        ok: true,
+        json: async () => ({
+          ...response,
+          ticks: [0, 1, 2].map((index) => ({
+            ...response.ticks[0],
+            facade: response.ticks[0].facade.map((wall) =>
+              wall.orientation === 'west'
+                ? {
+                    ...wall,
+                    zones: zones.map((zone) =>
+                      override &&
+                      index === override.tick_index &&
+                      zone.zone === 'W2'
+                        ? {
+                            ...zone,
+                            angle: 60,
+                            angle_target: 60,
+                            sensors: {
+                              ...zone.sensors,
+                              ...override,
+                              source: 'override',
+                            },
+                          }
+                        : zone
+                    ),
+                  }
+                : wall
+            ),
+          })),
+        }),
+      }
+    })
+    render(<NeuroSkinDashboard />)
+    await screen.findByRole('region', { name: 'west zone sensors' })
+    const timeline = screen.getByRole('slider', { name: 'Simulation timeline' })
+    fireEvent.change(timeline, { target: { value: '1' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Zone W2,/ }))
+    expect(screen.getByText('20.0° angle')).toBeInTheDocument()
+
+    const building = screen.getByRole('combobox', {
+      name: 'Monitored building',
+    })
+    const comparison = screen.getByRole('region', {
+      name: 'Building irradiance comparison',
+    })
+    expect(comparison).toHaveTextContent('West · W2')
+    expect(
+      within(comparison).getByText('Controlled').nextElementSibling
+    ).toHaveTextContent('220 W/m²')
+    expect(
+      within(comparison).getByText('No external facade').nextElementSibling
+    ).toHaveTextContent('300 W/m²')
+    expect(comparison).toHaveTextContent('26.7% less irradiance with louvres')
+    const wallComparison = comparison.textContent
+
+    fireEvent.change(building, { target: { value: 'baseline' } })
+    expect(building).toHaveValue('baseline')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(timeline).toHaveValue('1')
+    expect(comparison).toHaveTextContent(wallComparison!)
+    expect(screen.getByRole('button', { name: /^Zone W2,/ })).toHaveAttribute(
+      'aria-pressed',
+      'true'
+    )
+    const surfaceZones = screen.getByRole('region', {
+      name: 'west surface zones',
+    })
+    expect(within(surfaceZones).getByText('300.0 W/m²')).toBeInTheDocument()
+    expect(screen.getByText('300 W/m² before glazing')).toBeInTheDocument()
+    // 31 + 0.6 × 300 / (5.7 + 3.8 × 3); not controlled transmitted irradiance.
+    expect(screen.getByText('41.5 °C surface estimate')).toBeInTheDocument()
+    const baselineWallRow = within(
+      screen.getByRole('region', { name: 'Surface readings' })
+    )
+      .getByRole('button', { name: /^west/i })
+      .closest('tr')
+    expect(baselineWallRow).toHaveTextContent('41.5')
+    expect(baselineWallRow).not.toHaveTextContent('53.5')
+    expect(
+      screen.queryByRole('complementary', {
+        name: 'Controller settings and formulas',
+      })
+    ).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Sensor irradiance')).not.toBeInTheDocument()
+    expect(
+      screen.queryByLabelText('Sensor illuminance')
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText('Mean load')).not.toBeInTheDocument()
+    expect(screen.queryByText('Impact')).not.toBeInTheDocument()
+    expect(screen.queryByText('Movements')).not.toBeInTheDocument()
+    expect(screen.queryByText('20.0° angle')).not.toBeInTheDocument()
+    expect(screen.queryByText('400 lux')).not.toBeInTheDocument()
+    expect(screen.queryByText('0.400 load')).not.toBeInTheDocument()
+    expect(screen.queryByText('Facade power')).not.toBeInTheDocument()
+    expect(screen.queryByText(/controller active/)).not.toBeInTheDocument()
+    expect(
+      screen.queryByText(/16 independent sensor-controlled zones/)
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByText(/64 independent sensor loops/)
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByText(/Each side has 16 surface zones/)
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('slider', { name: 'Occupancy' })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('slider', { name: 'Wind override' })
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', {
+        name: 'Show formula for Wind exposure cost',
+      })
+    ).not.toBeInTheDocument()
+
+    fireEvent.change(building, { target: { value: 'controlled' } })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(timeline).toHaveValue('1')
+    expect(screen.getByRole('button', { name: /^Zone W2,/ })).toHaveAttribute(
+      'aria-pressed',
+      'true'
+    )
+    expect(screen.getByText('20.0° angle')).toBeInTheDocument()
+    expect(screen.getByText('Mean load')).toBeInTheDocument()
+    expect(
+      screen.getByRole('complementary', {
+        name: 'Controller settings and formulas',
+      })
+    ).toBeInTheDocument()
+    expect(screen.getByLabelText('Sensor irradiance')).toHaveValue(300)
+    expect(screen.getByText('Facade power')).toBeInTheDocument()
+    expect(screen.getByText('Powered · controller active')).toBeInTheDocument()
+    expect(
+      screen.getByText(/16 independent sensor-controlled zones/)
+    ).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Overcast' }))
+    fireEvent.change(screen.getByLabelText('Sensor irradiance'), {
+      target: { value: '900' },
+    })
+    fireEvent.change(screen.getByLabelText('Sensor illuminance'), {
+      target: { value: '1200' },
+    })
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Apply only this sensor' })
+    )
+    await screen.findByText('60.0° angle')
+    const submitted = JSON.parse(String(fetchMock.mock.calls[1][1].body))
+    expect(submitted.zone_sensor_overrides).toEqual({
+      W2: { tick_index: 1, irradiance: 900, illuminance: 1200 },
+    })
+    expect(submitted.cloud_profile).toBe('scattered')
+    expect(timeline).toHaveValue('1')
+    expect(screen.getByRole('button', { name: /^Zone W3,/ })).toHaveTextContent(
+      '20.0°'
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Clear override' }))
+    await screen.findByText('20.0° angle')
+    expect(
+      JSON.parse(String(fetchMock.mock.calls[2][1].body)).zone_sensor_overrides
+    ).toEqual({})
+    expect(timeline).toHaveValue('1')
+
+    fireEvent.click(screen.getByRole('button', { name: /^roof west$/i }))
+    expect(comparison).toHaveTextContent('West roof')
+    expect(
+      within(comparison).getByText('Controlled').nextElementSibling
+    ).toHaveTextContent('828 W/m²')
+    expect(
+      within(comparison).getByText('No external facade').nextElementSibling
+    ).toHaveTextContent('828 W/m²')
+    expect(comparison).toHaveTextContent('Same roof · unchanged exposure')
+    const roofComparison = comparison.textContent
+    for (const variant of ['baseline', 'controlled']) {
+      fireEvent.change(building, { target: { value: variant } })
+      expect(comparison).toHaveTextContent(roofComparison!)
+      expect(screen.getByText('828 W/m² on roof')).toBeInTheDocument()
+      expect(screen.getByText('60.1 °C surface')).toBeInTheDocument()
+      expect(timeline).toHaveValue('1')
+      expect(fetchMock).toHaveBeenCalledTimes(3)
+    }
+  })
 
   it('links to the project overview and excludes tutorial chrome', async () => {
     render(<NeuroSkinDashboard />)

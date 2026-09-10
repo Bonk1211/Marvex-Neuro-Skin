@@ -119,7 +119,7 @@ export function SimulationCharts({
         </ChartCard>
         <ChartCard
           title='Facade response'
-          caption='NeuroSkin vs baseline · degrees'
+          caption='Actual position interpolated between samples · degrees'
         >
           <BaseChart
             data={chartData}
@@ -129,7 +129,7 @@ export function SimulationCharts({
           >
             <Line
               isAnimationActive={false}
-              type='stepAfter'
+              type='linear'
               dataKey='angle_final'
               name='NeuroSkin'
               stroke={COLORS.mint}
@@ -155,7 +155,10 @@ export function SimulationCharts({
   if (scenario === 'budget_failsafe') {
     return (
       <div className='grid gap-4'>
-        <ChartCard title='Safety response' caption='Target vs final · degrees'>
+        <ChartCard
+          title='Safety response'
+          caption='Target vs final · final position interpolated'
+        >
           <BaseChart
             data={chartData}
             annotations={referenceTimes}
@@ -173,7 +176,7 @@ export function SimulationCharts({
             />
             <Line
               isAnimationActive={false}
-              type='stepAfter'
+              type='linear'
               dataKey='angle_final'
               name='Final angle'
               stroke={COLORS.mint}
@@ -220,7 +223,7 @@ export function SimulationCharts({
             ? 'Cooling-load comparison'
             : 'Relative cooling load'
         }
-        caption='NeuroSkin vs baseline · relative index'
+        caption='NeuroSkin vs binary controller · relative index'
       >
         <BaseChart
           data={chartData}
@@ -264,7 +267,7 @@ export function SimulationCharts({
         caption={
           scenario === 'co_optimization'
             ? 'Target band · 300–700 lux'
-            : 'NeuroSkin vs baseline · degrees'
+            : 'Actual position interpolated between 10-minute samples · degrees'
         }
       >
         {scenario === 'co_optimization' ? (
@@ -312,7 +315,7 @@ export function SimulationCharts({
           >
             <Line
               isAnimationActive={false}
-              type='stepAfter'
+              type='linear'
               dataKey='angle_final'
               name='NeuroSkin'
               stroke={COLORS.mint}
@@ -395,6 +398,12 @@ function BaseChart({
           axisLine={false}
         />
         <Tooltip
+          formatter={
+            unit === '°'
+              ? (value) =>
+                  typeof value === 'number' ? `${value.toFixed(1)}°` : value
+              : undefined
+          }
           contentStyle={{
             background: '#10231f',
             border: '1px solid rgba(255,255,255,.12)',

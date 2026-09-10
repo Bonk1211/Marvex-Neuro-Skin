@@ -36,7 +36,7 @@ NeuroSkin is a stateless, deterministic proof of an explainable adaptive-facade 
 
 1. A solar-almanac cross-check that catches a failed irradiance sensor.
 2. A multi-objective angle controller compared with a naive reactive baseline.
-3. Movement rationing and a passive fail-shaded power-loss response.
+3. Rate-limited continuous-angle tracking, direct-sun screening and safety overrides.
 
 All environmental and sensor data are synthetic. Cooling load is reported only as a relative proxy; the application does not infer HVAC energy savings.
 
@@ -112,7 +112,9 @@ directly to any component; event cards move the inspector to their evidence.
 
 Lux compliance is evaluated during occupied ticks with at least 200 W/m² of
 available daylight. Relative cooling load is averaged across every occupied
-tick, and movement counts cover the full synthetic day.
+tick, and movement counts cover the full synthetic day. Continuous tracking can
+make more small adjustments than the binary baseline; move count alone is not
+actuator travel, wear or energy consumption.
 
 ### Docker Compose
 
@@ -175,6 +177,62 @@ ids `W1`…`W16`. **Every zone runs its own louvre controller**, 16 per wall and
 on the building, each holding its own actuator position between ticks and each
 reporting its own `angle`, `mode`, `moved`, `lux` and `load_relative`.
 
+Each zone now has its own simulated irradiance and indoor-illuminance sensor
+pair (`sensors.sensor_id`, e.g. `W2`), independent seeded measurement noise and
+a fixed, assumed local daylight-transfer factor. The shared mechatronic brain
+uses these readings to choose that zone's `angle_target`; movement restraint
+and wind/rain/power safety determine its final `angle`. Sensor streams are
+synthetic even when the outdoor weather is measured; no hardware is connected.
+
+Normal motion is solar-responsive, not a timed 0°/60° switch. The controller
+refines fractional-angle targets over 0–60°, then limits travel to
+`actuator_speed_deg_per_min` (default 1.2°/min, or 12° per 10-minute sample).
+The 3D actuator interpolates the achieved samples. This is sampled simulation,
+not a live hardware control loop; stable conditions can legitimately hold an
+angle. Wind/rain/power safety bypasses the normal travel limit.
+Movement cost is quadratic in angular change, making small corrections cheap;
+daylight cost is piecewise linear outside the comfort band. After sunset the
+actuators return gradually to the flat parking position.
+
+Each zone evaluates three conditions at its **achieved** angle:
+
+- Indoor daylight: the existing 300–700 lux target band, using its own sensor.
+- Solar heat: direct beam projected against the actual blade pitch/chord/tilt,
+  plus an approximate diffuse transmission. `conditions.solar_heat_gain` is
+  estimated W/m² of glazing: post-louvre irradiance × `glazing_shgc` (default
+  0.4, an assumption to replace with the installed glass rating). Internal and
+  latent loads are not reduced by moving the blades.
+- Potential glare: `conditions.direct_sun` is direct irradiance reaching the
+  glazing, screened against `glare_limit_w_m2` (default 25 W/m², a tunable
+  screening assumption, **not a glare standard**). A failing screen can justify
+  movement despite the normal movement budget; a rate-limited or safety-forced
+  pose still reports any remaining exposure.
+
+The beam model averages repeated blades; finite ends, side gaps, reflections,
+occupant eye position and view-dependent luminance are not resolved by this
+controller. A larger blade angle does **not** always block more direct sun.
+Diffuse transmission integrates separate isotropic sky and ground hemispheres
+against the same blade geometry, weighted by each zone's sky/ground irradiance.
+The assumed daylight-transfer factor is unchanged: deeper blades can leave a
+zone below its daylight target even at the best available angle. The inspector
+reports that shortfall rather than inventing sufficient daylight.
+Glare screening must not be read as “glare-free”: a full
+[Radiance evalglare assessment](https://www.radiance-online.org/learning/documentation/manual-pages/pdfs/evalglare.pdf)
+uses occupant-view luminance imagery. SHGC is the admitted solar heat fraction,
+not visible-light transmission ([US DOE](https://bsesc.energy.gov/energy-basics/energy-star-windows)).
+The existing `transmitted` field remains **pre-glazing** W/m² for the slab model;
+zone comfort predictions use the local sensor, while the spatial heat map uses
+modelled physical irradiance. The slab's separate `solar_to_floor` factor still
+contains its own glazing/area calibration and is not changed by this control.
+
+Select a zone in the dashboard's 4 × 4 sensor matrix (or in the 3D model), then
+use **Apply only this sensor** to inject irradiance and illuminance at the
+selected tick. The request's `zone_sensor_overrides` maps a zone ID to
+`{tick_index, irradiance, illuminance}`. Only that zone's subsequent state can
+change; **Clear override** restores its seeded stream. Equal readings can
+legitimately produce equal angles, and building-wide safety can move all zones
+together. The mesh never substitutes a wall-level target for a missing zone.
+
 Zones separate on two pieces of geometry:
 
 - **Rows** — the roof slab oversails the top of the facade, and its shadow starts
@@ -183,23 +241,18 @@ Zones separate on two pieces of geometry:
   it.
 - **Columns** — the bay at each end of a wall wraps a corner of the building, so
   the room behind it is glazed on two sides and its controller answers for the
-  neighbouring facade too (`corner_daylight_coupling`, 0.45). On a clear 21 March
-  at `facade_tilt: 90`, the east wall's top row settles at 55°, 20°, 20°, 55° —
-  corner bays closed, middle bays open. The two middle bays of a wall see one
-  facade only, so they read alike; that is the truth about a flat piece of wall,
-  not a gap in the model.
+  neighbouring facade too (`corner_daylight_coupling`, 0.45). This contributes
+  to the corner's indoor-light sensor model, not a shared actuator command.
+  Middle bays can receive the same outdoor irradiance while their local
+  daylight-transfer factors and sensor readings differ.
 
 The wall-level entry keeps its own supervisory controller, which is what the
 headline comparison metrics are measured on.
 
-**Once the sun climbs past about 65°, `sunlit` goes false on every wall and all
-four read the same.** That is the overhang doing its job, not a bug: at a 25°
-lean the outward normal sits 25° below horizontal, so a sun higher than 65° is
-behind every facade (`aoi > 90`) and each wall is left with diffuse only, which
-carries no orientation. In Putrajaya that covers roughly 11:00–15:00. Outside
-that window the walls separate properly — on 21 June at 10:00 the north wall
-reads 189 W/m² against the south wall's 144, and at 17:00 west reads 388 against
-east's 124. Set `facade_tilt: 90` to see upright-wall behaviour instead.
+Once the sun climbs past about 65°, direct beam cannot reach the outward-leaning
+115° facade planes. Diffuse irradiance can still vary with orientation, sky
+conditions and roof obstruction, so neither sensor readings nor actuator
+angles must become identical. Set `facade_tilt: 90` to see upright-wall behaviour.
 
 Every tick also carries a `roof` array: the same calculation at `roof_pitch`
 instead of `facade_tilt`, giving one entry per roof quadrant. Roof faces carry
@@ -209,10 +262,32 @@ distinguish — and the spread grows with pitch (about 125 W/m² at 10°, 305 W/
 at 25°, late afternoon).
 
 The dashboard renders all of this as an orbitable 3D building: seven storeys
-with walls leaning 25°, four pitched roof faces, every surface shaded on a
-single-hue temperature ramp. Click any zone or roof face to inspect it, or use
+with walls leaning 25°, four pitched roof faces and a fixed multicolour
+irradiance ramp (0–1,000 W/m²), with temperature and architectural views available.
+Click any zone or roof face to inspect it, or use
 the surface-readings table for the keyboard equivalent. Every zone runs its own
 controller and carries its own louvres at its own angle.
+
+### Compare the same building without external shading
+
+Use **Monitored building** above the centre model to switch between
+**NeuroSkin — Controlled Facade** and **Baseline — No External Facade**.
+The baseline removes the complete external louvre/actuator assemblies and
+their raycast shadows, not just their rotation. Both variants retain the same
+glazing, tilted walls, roof, skylight, weather, sun position, selected zone and
+camera. The fixed 0–1,000 W/m² irradiance scale also stays unchanged.
+
+The comparison card shows both buildings at the displayed tick: a selected
+zone, an equal-weight mean of the wall's 16 zones, or the unchanged roof.
+Wall values estimate irradiance before glazing: passive-roof-adjusted
+`zone.incident` without louvres versus `zone.transmitted` with louvres. The mesh
+heatmap resolves local direct-beam shadows, with per-zone diffuse shading;
+point probes need not equal the analytical zone means. This is not a measured
+energy-savings or indoor-comfort comparison. Baseline mode therefore hides
+controller/sensor-editing and controlled-building comfort results.
+
+The separate **Impact · vs binary controller** benchmark still compares two
+controllers with external louvres; it is not this no-external-facade building.
 
 ## Three-tier analysis
 
