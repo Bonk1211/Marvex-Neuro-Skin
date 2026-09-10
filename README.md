@@ -32,6 +32,63 @@ Sources: [Diamond Building, Suruhanjaya Tenaga](https://www.st.gov.my/about-us/d
 
 ## Overview
 
+### CCTV cloud vision and controller updates
+
+The dashboard automatically loops `frontend/public/sky-camera.mp4`, supplied
+from `clould video sample.mp4`, at 0.2× speed (five times slower), with no playback controls. The CCTV overlay shows
+the current date and time in Malaysia (MYT). It samples a JPEG immediately after
+playback begins, then every 15 seconds; select 5, 15, 30 or 60 seconds in the panel.
+Sampling runs while the dashboard is open, with one inference request at a time,
+30-second client timeout and automatic retry on the next scheduled scan.
+
+Frames run the real Roboflow workflow
+`jias-workspace-tnv49/general-segmentation-api` with `classes=cloud` and header
+authentication. The backend decodes its COCO RLE masks and unions clouds with
+confidence >= 0.5, counting overlaps once. Full-frame cloud area is a **demo sky
+estimate**, not calibrated hemispheric cloud cover. This sample has an all-sky
+view. An empty or low-confidence result is uncertain and keeps the weather input.
+The latest annotated scan remains tied to its captured frame.
+
+The 3D model also shows rounded cloud volumes above the building, with cluster
+size and distribution driven by the latest mask. The default view leaves room
+above the roof, and the “Clouds overhead” readout shows coverage and source. Its
+projected shadows drift across the roof and facades, updating both architectural
+lighting and the instantaneous irradiance heatmap. Diffuse light is preserved.
+The canopy checkbox hides the layer and its shadows; the source label identifies
+AI coverage versus weather/simulation fallback. Camera orientation, cloud height
+and drift are illustrative, so these are projected demo shadows, not measured
+shadow locations or additional controller/energy predictions. Daily exposure and
+temperature reports retain their original calculations. Reduced-motion mode
+stops cloud drift while still accepting new observations.
+
+Fresh observations update the controller at the dashboard's selected simulation
+tick. The controller uses vision in its solar/irradiance sensor-trust check;
+local lux/irradiance readings, wind safety and motion limits retain their roles.
+A new sky estimate need not change an angle when local readings support holding.
+Other ticks keep their environmental input. Future-dated or >60-second-old samples
+are ignored, and vision failure/expiry requests a weather-only refresh. Status
+shows the acknowledged controller mode, angle and simulation time; the CCTV clock
+is the current presentation time. This drives the simulation brain, not hardware.
+
+Set `ROBOFLOW_API_KEY` in `backend/.env` or the backend environment (never a
+`NEXT_PUBLIC_` variable). `make backend` loads `.env` when present. Alternatively,
+from `backend/` run:
+
+```sh
+uv run uvicorn app.main:app --reload --port 8000 --env-file .env
+```
+
+Internet and Roboflow credits/access are required. Only sampled JPEGs are sent
+to Roboflow. A camera can later use the same `POST /api/v1/vision/clouds` endpoint
+with `{"image": "<base64 JPEG>", "width": 960, "height": 540}`. Calibrate the sky
+region, confidence threshold and freshness against that camera before hardware
+control. Protect this account-backed endpoint before exposing it publicly.
+
+The backend uses the standard library and existing NumPy dependency for the
+[Roboflow Workflow HTTP contract](https://inference.roboflow.com/workflows/modes_of_running/)
+and [COCO mask format](https://github.com/cocodataset/cocoapi/blob/master/common/maskApi.c).
+
+
 NeuroSkin is a stateless, deterministic proof of an explainable adaptive-facade controller. It models one synthetic tropical day and demonstrates:
 
 1. A solar-almanac cross-check that catches a failed irradiance sensor.

@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 from app.config import DEFAULTS
 
@@ -36,12 +36,19 @@ class WeightInput(BaseModel):
         return value
 
 
+class VisionObservation(BaseModel):
+    tick_index: int = Field(ge=0, le=143, strict=True)
+    captured_at: AwareDatetime
+    cloud_cover: float = Field(ge=0, le=1, allow_inf_nan=False)
+
+
 class SimulationRunRequest(BaseModel):
     scenario: ScenarioName = "overview"
     date: Date = Date(2026, 3, 21)
     seed: int = Field(42, ge=0, le=2_147_483_647)
     environment_source: EnvironmentSource = "synthetic"
     cloud_profile: CloudProfile = "scattered"
+    vision_observation: VisionObservation | None = None
     occupancy_scale: float = Field(1.0, ge=0, le=1.5)
     wind_override: float | None = Field(None, ge=0, le=40)
     power_ok: bool = True
@@ -163,6 +170,8 @@ class RoofSegmentPayload(BaseModel):
 
 
 class TickPayload(BaseModel):
+    environment_cloud: float | None = None
+    cloud_source: Literal["environment", "vision"] = "environment"
     timestamp: datetime
     ghi: float
     expected_ghi: float

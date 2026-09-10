@@ -30,6 +30,7 @@ import {
   type BuildingVariant,
 } from './buildingComparison'
 import { ControllerPanel } from './ControllerPanel'
+import { CloudVisionPanel, type SkyObservation } from './CloudVisionPanel'
 import { SimulationCharts } from './SimulationCharts'
 import { SimulationControls } from './SimulationControls'
 import { ZoneSensorPanel } from './ZoneSensorPanel'
@@ -172,6 +173,7 @@ export function NeuroSkinDashboard() {
   const [playing, setPlaying] = useState(false)
   const requestController = useRef<AbortController | null>(null)
   const appliedRequest = useRef(DEFAULT_REQUEST)
+  const [visionSky, setVisionSky] = useState<SkyObservation | null>(null)
 
   const tickCount = data?.ticks.length ?? 0
   useEffect(() => {
@@ -194,7 +196,11 @@ export function NeuroSkinDashboard() {
   }, [])
 
   const execute = useCallback(
-    async (nextRequest: SimulationRunRequest, preserveTick?: number) => {
+    async (
+      nextRequest: SimulationRunRequest,
+      preserveTick?: number,
+      keepClock = false
+    ) => {
       requestController.current?.abort()
       const controller = new AbortController()
       requestController.current = controller
@@ -202,13 +208,15 @@ export function NeuroSkinDashboard() {
       setError(null)
       try {
         const response = await runSimulation(nextRequest, controller.signal)
+        if (controller.signal.aborted) return
         appliedRequest.current = nextRequest
         if (preserveTick === undefined) focusOn(response)
         else {
           setData(response)
-          setTimelineIndex(
-            Math.max(0, Math.min(preserveTick, response.ticks.length - 1))
-          )
+          if (!keepClock)
+            setTimelineIndex(
+              Math.max(0, Math.min(preserveTick, response.ticks.length - 1))
+            )
         }
         return response
       } catch (cause) {
@@ -405,6 +413,27 @@ export function NeuroSkinDashboard() {
     await execute(nextRequest, sensorTick)
   }
 
+  const updateSkyObservation = async (observation: SkyObservation | null) => {
+    if (loading || tierRunning || !tickCount) return null
+    const sensorTick = Math.min(timelineIndex, tickCount - 1)
+    const vision_observation = observation
+      ? {
+          captured_at: observation.captured_at,
+          cloud_cover: observation.cloud_cover,
+          tick_index: sensorTick,
+        }
+      : null
+    const nextRequest = { ...appliedRequest.current, vision_observation }
+    const response = await execute(nextRequest, sensorTick, true)
+    if (!response) return null
+    setRequest((draft) => ({ ...draft, vision_observation }))
+    setTierResults({})
+    setTierStatus({})
+    setActiveTier(null)
+    const tick = response.ticks[sensorTick]
+    return `Brain updated · ${timeLabel(tick.timestamp, response.metadata.timezone)} · ${tick.mode} → ${tick.angle_final.toFixed(1)}° · ${tick.cloud_source === 'vision' ? 'vision + light sensors + weather' : 'weather fallback'}`
+  }
+
   return (
     <div className='console-shell'>
       <nav className='console-nav' aria-label='Console'>
@@ -558,6 +587,11 @@ export function NeuroSkinDashboard() {
               <ImpactStrip metrics={data.comparison} />
             )}
 
+            <CloudVisionPanel
+              onObservation={updateSkyObservation}
+              onSkyChange={setVisionSky}
+            />
+
             {selectedTick && (
               <FacadeReadout
                 tick={selectedTick}
@@ -672,6 +706,7 @@ export function NeuroSkinDashboard() {
         ) : data && selectedTick ? (
           <>
             <BuildingHeatmap
+              visionSky={visionSky}
               buildingVariant={buildingVariant}
               onBuildingVariantChange={setBuildingVariant}
               tick={selectedTick}

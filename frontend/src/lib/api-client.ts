@@ -7,6 +7,29 @@ import type {
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
+export interface CloudResult {
+  cloud_mask?: number[][] | null
+  cloud_cover: number | null
+  width: number
+  height: number
+  detections: { confidence: number }[]
+  annotated_image?: string | null
+}
+
+export function detectClouds(
+  image: string,
+  width: number,
+  height: number,
+  signal?: AbortSignal
+): Promise<CloudResult> {
+  return post(
+    '/api/v1/vision/clouds',
+    { image, width, height },
+    'Cloud vision',
+    signal
+  )
+}
+
 async function post<T>(
   path: string,
   body: unknown,

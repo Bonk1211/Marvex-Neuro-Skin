@@ -1,5 +1,5 @@
 from dataclasses import asdict, replace
-from datetime import time
+from datetime import datetime, time, timezone
 
 import numpy as np
 
@@ -252,6 +252,11 @@ def _metric_payload(ticks: list[TickPayload]) -> list[ComparisonMetric]:
 def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
     site = _site(request)
     environments, weather_context, open_meteo = _prepare_environment(request, site)
+    observation = request.vision_observation
+    if observation and not 0 <= (
+        datetime.now(timezone.utc) - observation.captured_at
+    ).total_seconds() <= 60:
+        observation = None
     times, position, _location = solar_frame(request.date, site=site)
     # Heat map runs on the irradiance the walls actually see, doctored ticks included.
     poa = poa_series(
@@ -302,6 +307,10 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
     power_loss_end = time(14, 30)
 
     for index, env in enumerate(environments):
+        vision_cloud = (
+            observation.cloud_cover
+            if observation is not None and observation.tick_index == index else None
+        )
         local_time = env.t.time()
         power_ok = request.power_ok
         movement_threshold = DEFAULTS.movement_threshold
@@ -333,6 +342,7 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
                 env,
                 wall_angles[gain.orientation],
                 weights,
+                vision_cloud=vision_cloud,
                 power_ok=power_ok,
                 movement_threshold=movement_threshold,
                 site=site,
@@ -410,6 +420,7 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
                     env,
                     current_angle,
                     weights,
+                    vision_cloud=vision_cloud,
                     power_ok=power_ok,
                     movement_threshold=movement_threshold,
                     site=site,
@@ -484,7 +495,9 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
             solar_azimuth=round(result.solar_azimuth, 2),
             solar_elevation=round(result.solar_elevation, 2),
             measured_irradiance=round(env.measured_irradiance, 2),
-            cloud=round(env.cloud, 3),
+            cloud=round(env.cloud if vision_cloud is None else vision_cloud, 3),
+            cloud_source="environment" if vision_cloud is None else "vision",
+            environment_cloud=round(env.cloud, 3),
             outdoor_temp=round(env.outdoor_temp, 2),
             occupancy=round(env.occupancy, 3),
             wind=round(env.wind, 2),
@@ -592,7 +605,10 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
         roof_pitch=request.roof_pitch,
         floors=DEFAULTS.floors,
         synthetic=True,
-        data_notice=_data_notice(weather_context, open_meteo, site),
+        data_notice=_data_notice(weather_context, open_meteo, site) + (
+            " AI vision supplies a demo sky estimate at one selected tick."
+            if observation is not None else ""
+        ),
         load_unit="relative cooling-load index",
         weather_context=(
             _open_meteo_payload(open_meteo, request, site)

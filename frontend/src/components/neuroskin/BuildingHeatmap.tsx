@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
+import { createCloudCanopy } from './cloudCanopy'
+import type { SkyObservation } from './CloudVisionPanel'
 import { Box, Focus, RotateCcw, Sun } from 'lucide-react'
 import type {
   FacadeHeat,
@@ -392,6 +394,7 @@ function ZoneBubble({
 }
 
 interface BuildingHeatmapProps {
+  visionSky?: SkyObservation | null
   tick: TickPayload
   floors: number
   facadeTilt: number
@@ -411,6 +414,7 @@ interface BuildingHeatmapProps {
 }
 
 export function BuildingHeatmap({
+  visionSky = null,
   tick,
   floors,
   facadeTilt,
@@ -448,6 +452,8 @@ export function BuildingHeatmap({
     louvres: Map<FacadeOrientation, LouvreAssembly[]>
     posed: boolean
     repaintWalls: ((orientations: Set<FacadeOrientation>) => void) | null
+    repaintClouds: (() => void) | null
+    cloudCanopy: ReturnType<typeof createCloudCanopy>
     refreshProbe: () => void
     highlightZone: (zone: string | null) => void
     outline: THREE.LineLoop
@@ -457,6 +463,10 @@ export function BuildingHeatmap({
   } | null>(null)
   const [supported, setSupported] = useState(true)
   const [surfaceMode, setSurfaceMode] = useState<SurfaceMode>('irradiance')
+  const [showClouds, setShowClouds] = useState(true)
+  const cloudCover =
+    visionSky?.cloud_cover ?? tick.environment_cloud ?? tick.cloud
+  const cloudMask = visionSky?.cloud_mask
   const surfaceModeRef = useRef(surfaceMode)
   surfaceModeRef.current = surfaceMode
   const probeRef = useRef<HTMLDivElement | null>(null)
@@ -532,8 +542,8 @@ export function BuildingHeatmap({
     const context = sceneRef.current
     if (!context) return
     context.controls.minDistance = 7
-    context.controls.target.set(0, floors * FLOOR_HEIGHT * 0.45, 0)
-    context.camera.position.set(-8.5, floors * FLOOR_HEIGHT * 2.6, 8.5)
+    context.controls.target.set(0, floors * FLOOR_HEIGHT * 0.95, 0)
+    context.camera.position.set(-10.5, floors * FLOOR_HEIGHT * 3.3, 10.5)
     context.controls.update()
     setDetailedView(false)
   }
@@ -587,10 +597,10 @@ export function BuildingHeatmap({
       100
     )
     // Show the default west facade and its afternoon actuator response.
-    camera.position.set(-8.5, height * 2.6, 8.5)
+    camera.position.set(-10.5, height * 3.3, 10.5)
 
     const controls = new OrbitControls(camera, renderer.domElement)
-    controls.target.set(0, height * 0.45, 0)
+    controls.target.set(0, height * 0.95, 0)
     controls.enableDamping = true
     controls.enablePan = false
     controls.minDistance = 7
@@ -1153,6 +1163,9 @@ export function BuildingHeatmap({
       }
     })
 
+    const cloudCanopy = createCloudCanopy(height + 3)
+    scene.add(cloudCanopy.mesh)
+
     let frame = 0
     const projected = new THREE.Vector3()
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
@@ -1160,12 +1173,23 @@ export function BuildingHeatmap({
     let previousTime = performance.now()
     let lastBake = 0
     let lastReadout = 0
+    let lastCloudPaint = 0
     const animate = () => {
       frame = requestAnimationFrame(animate)
       const now = performance.now()
       const delta = Math.min((now - previousTime) / 1000, 0.1)
       previousTime = now
       const context = sceneRef.current
+      if (cloudCanopy.mesh.visible && !reducedMotion.matches) {
+        cloudCanopy.mesh.position.x = Math.sin(now / 30000) * 1.5
+        cloudCanopy.mesh.position.z = Math.cos(now / 45000) * 0.8
+      }
+      // Reuse cached building shadows; cloud movement needs only a mask lookup.
+      if (cloudCanopy.mesh.visible && now - lastCloudPaint >= 200) {
+        context?.repaintClouds?.()
+        renderer.shadowMap.needsUpdate = true
+        lastCloudPaint = now
+      }
       let moving = false
       let activeMoving = false
       if (context?.posed && buildingVariantRef.current === 'controlled') {
@@ -1254,6 +1278,8 @@ export function BuildingHeatmap({
       louvres,
       posed: false,
       repaintWalls: null,
+      repaintClouds: null,
+      cloudCanopy,
       refreshProbe,
       highlightZone,
       outline,
@@ -1280,6 +1306,7 @@ export function BuildingHeatmap({
       roofMaterial.dispose()
       environmentMap.dispose()
       irradianceTexture.dispose()
+      cloudCanopy.dispose()
       sunlight.shadow.dispose()
       scene.traverse((object) => {
         if (object instanceof THREE.InstancedMesh) object.dispose()
@@ -1303,6 +1330,17 @@ export function BuildingHeatmap({
       sceneRef.current = null
     }
   }, [floors, overhang, roofPitch])
+
+  useEffect(() => {
+    const context = sceneRef.current
+    if (!context) return
+    context.cloudCanopy.update(
+      showClouds ? cloudCover : 0,
+      showClouds ? cloudMask : null
+    )
+    context.repaintClouds?.()
+    context.renderer.shadowMap.needsUpdate = true
+  }, [cloudCover, cloudMask, showClouds, floors, overhang, roofPitch])
 
   // The day's solar track, drawn once per run: the arc the marker rides along.
   // Only the part above the horizon is drawn, since that is the part that heats
@@ -1425,6 +1463,54 @@ export function BuildingHeatmap({
       Math.max(tick.solar_elevation, -5)
     )
     const direction = sunPosition.clone().normalize()
+    const cloudReceivers = new Map<
+      THREE.Mesh,
+      { values: Float32Array; diffuse: number }
+    >()
+    const shadeClouds = (
+      mesh: THREE.Mesh,
+      values: Float32Array,
+      diffuse: number
+    ) => {
+      let points = mesh.userData.cloudPoints as Float32Array | undefined
+      if (!points) {
+        mesh.updateWorldMatrix(true, false)
+        const positions = mesh.geometry.getAttribute('position')
+        const point = new THREE.Vector3()
+        points = new Float32Array(values.length * 3)
+        for (let index = 0; index < values.length; index++) {
+          point
+            .fromBufferAttribute(positions, index)
+            .applyMatrix4(mesh.matrixWorld)
+          point.toArray(points, index * 3)
+        }
+        mesh.userData.cloudPoints = points
+      }
+      const uv = mesh.geometry.getAttribute('uv') as THREE.BufferAttribute
+      const shaded =
+        (mesh.userData.irradiance as Float32Array | undefined) ??
+        new Float32Array(values.length)
+      for (let vertex = 0; vertex < values.length; vertex++) {
+        const index = vertex * 3
+        const transmission = context.cloudCanopy.transmission(
+          points[index],
+          points[index + 1],
+          points[index + 2],
+          direction
+        )
+        // A cloud blocks beam; diffuse light remains in building/louvre shade.
+        shaded[vertex] =
+          Math.min(values[vertex], diffuse) +
+          Math.max(0, values[vertex] - diffuse) * transmission
+        uv.setXY(
+          vertex,
+          ((shaded[vertex] / IRRADIANCE_MAX) * 255 + 0.5) / 256,
+          0.5
+        )
+      }
+      uv.needsUpdate = true
+      mesh.userData.irradiance = shaded
+    }
     const paintIrradiance = (
       mesh: THREE.Mesh,
       reading: FacadeHeat | RoofSegment | undefined,
@@ -1452,17 +1538,12 @@ export function BuildingHeatmap({
         uv = new THREE.BufferAttribute(new Float32Array(values.length * 2), 2)
         mesh.geometry.setAttribute('uv', uv)
       }
-      for (let vertex = 0; vertex < values.length; vertex += 1) {
-        // Clamp in the texture lookup after interpolation, so a >1000 W/m²
-        // vertex still contributes its full value at the edge of a shadow.
-        uv.setXY(
-          vertex,
-          ((values[vertex] / IRRADIANCE_MAX) * 255 + 0.5) / 256,
-          0.5
-        )
-      }
-      uv.needsUpdate = true
-      mesh.userData.irradiance = values
+      const diffuse = Math.max(
+        0,
+        diffuseOverride ?? reading.sky_diffuse + reading.ground_diffuse
+      )
+      cloudReceivers.set(mesh, { values, diffuse })
+      shadeClouds(mesh, values, diffuse)
     }
 
     const wallOccludersFor = (orientation: FacadeOrientation) =>
@@ -1555,6 +1636,14 @@ export function BuildingHeatmap({
       }
     }
 
+    context.repaintClouds =
+      surfaceMode === 'irradiance'
+        ? () => {
+            for (const [mesh, { values, diffuse }] of cloudReceivers)
+              shadeClouds(mesh, values, diffuse)
+            context.refreshProbe()
+          }
+        : null
     context.sunlight.position.copy(sunPosition)
     context.sunlight.intensity = tick.solar_elevation > 0 ? 3 : 0.2
     context.sunMarker.position.copy(sunPosition)
@@ -1677,6 +1766,20 @@ export function BuildingHeatmap({
               </button>
             ))}
           </div>
+          <label className='mt-3 flex items-center gap-2 text-[10px]'>
+            <input
+              type='checkbox'
+              checked={showClouds}
+              onChange={(event) => setShowClouds(event.target.checked)}
+            />
+            Clouds overhead · {Math.round(cloudCover * 100)}% ·{' '}
+            {visionSky ? 'AI vision' : 'weather / simulation'}
+          </label>
+          {showClouds && (
+            <p className='mt-1 text-[9px] text-muted-foreground'>
+              Projected cloud shadows · placement and drift modelled
+            </p>
+          )}
           {surfaceMode !== 'model' && (
             <div className='mt-3'>
               <p className='mb-1.5 flex justify-between text-[9px] font-semibold uppercase tracking-wider text-muted-foreground'>

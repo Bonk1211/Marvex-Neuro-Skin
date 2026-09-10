@@ -17,6 +17,7 @@ from app.schemas import (
     SlabPlanRequest,
     SlabPlanResponse,
 )
+from app.vision import router as vision_router
 
 configure_logging()
 logger = logging.getLogger("neuroskin.api")
@@ -26,9 +27,10 @@ app = FastAPI(
     version="0.1.0",
     description=(
         "Stateless deterministic simulation for the NeuroSkin decision-brain proof. "
-        "Cooling load is always a relative proxy and all inputs are synthetic."
+        "Cooling load is a relative proxy, with optional weather and AI sky inputs."
     ),
 )
+app.include_router(vision_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],

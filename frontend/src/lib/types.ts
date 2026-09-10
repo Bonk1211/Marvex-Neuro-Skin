@@ -16,6 +16,11 @@ export interface ControllerWeights {
 }
 
 export interface SimulationRunRequest {
+  vision_observation?: {
+    tick_index: number
+    captured_at: string
+    cloud_cover: number
+  } | null
   scenario: ScenarioName
   date: string
   seed: number
@@ -116,6 +121,8 @@ export interface FacadeHeat {
 }
 
 export interface TickPayload {
+  environment_cloud?: number | null
+  cloud_source?: 'environment' | 'vision'
   timestamp: string
   ghi: number
   expected_ghi: number

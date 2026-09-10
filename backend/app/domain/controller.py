@@ -63,7 +63,10 @@ def run_tick(
     glare_limit_w_m2: float = DEFAULTS.glare_limit_w_m2,
     glazing_shgc: float = DEFAULTS.glazing_shgc,
     actuator_speed_deg_per_min: float = DEFAULTS.actuator_speed_deg_per_min,
+    vision_cloud: float | None = None,
 ) -> TickResult:
+    if vision_cloud is not None:
+        env = replace(env, cloud=vision_cloud)
     if solar is None:
         solar = (
             sun_position(env.t, site.latitude, site.longitude, site.timezone)
@@ -107,6 +110,8 @@ def run_tick(
             available_lux = env.indoor_lux if gain is None else wall_open_lux(gain)
             trust_reason += "out-of-range reading; use this zone's modelled incident and daylight."
         open_lux = available_lux
+    if vision_cloud is not None:
+        trust_reason = f"AI vision sky estimate {vision_cloud:.0%}. {trust_reason}"
     load = predict_load(replace(env, ghi=incident), solar)
 
     def conditions_at(angle: float) -> ComfortState:
