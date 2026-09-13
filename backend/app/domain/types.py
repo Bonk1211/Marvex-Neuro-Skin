@@ -111,6 +111,9 @@ class ComfortState:
     glare_risk: bool
     glare_limit_w_m2: float
     glazing_shgc: float
+    task_illuminance: float | None = None
+    eye_illuminance: float | None = None
+    daylight_probes: tuple[dict, ...] | None = None
 
 
 @dataclass(frozen=True)

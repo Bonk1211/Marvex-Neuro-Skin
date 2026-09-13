@@ -19,6 +19,10 @@ LOG_FIELDS = (
     "movement_count",
     "sensor_fault_ticks",
     "safe_mode_ticks",
+    # Occupant-plane daylight.
+    "ev_exceedance_ticks",
+    "et_in_band_ticks",
+    "daylight_model",
     # Predictive slab charging.
     "planned_date",
     "forecast_status",

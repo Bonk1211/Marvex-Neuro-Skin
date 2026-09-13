@@ -3,6 +3,7 @@ from math import isfinite
 
 from app.config import DEFAULTS
 from app.domain.brain import daylight_transmittance, lux_at_angle, naive_angle, optimise_angle
+from app.domain.daylight.surrogate import at_angle
 from app.domain.optics import FacadeOptics
 from app.domain.safety import movement_budget, safety_gate
 from app.domain.solar import sun_position
@@ -64,6 +65,7 @@ def run_tick(
     glazing_shgc: float = DEFAULTS.glazing_shgc,
     actuator_speed_deg_per_min: float = DEFAULTS.actuator_speed_deg_per_min,
     vision_cloud: float | None = None,
+    daylight_curves: tuple | None = None,
 ) -> TickResult:
     if vision_cloud is not None:
         env = replace(env, cloud=vision_cloud)
@@ -114,7 +116,7 @@ def run_tick(
         trust_reason = f"AI vision sky estimate {vision_cloud:.0%}. {trust_reason}"
     load = predict_load(replace(env, ghi=incident), solar)
 
-    def conditions_at(angle: float) -> ComfortState:
+    def conditions_at(angle: float, *, observe: bool = False) -> ComfortState:
         transmission = optics.solar_transmittance(angle) if optics else shade_transmittance(angle)
         lux = (
             max(20.0, open_lux * optics.daylight_transmittance(angle))
@@ -125,7 +127,29 @@ def run_tick(
         direct = (
             incident * optics.beam_fraction * optics.beam_transmittance(angle) if optics else 0.0
         )
+        probes = (
+            tuple(
+                {
+                    "index": index,
+                    "kind": kind,
+                    "task_illuminance": at_angle(curves[0], angle) if curves is not None else None,
+                    "eye_illuminance": (
+                        at_angle(curves[1], angle)
+                        if curves is not None and kind == "seat"
+                        else None
+                    ),
+                }
+                for index, kind, curves in daylight_curves
+            )
+            if observe and daylight_curves is not None
+            else None
+        )
+        task = [p["task_illuminance"] for p in probes or () if p["task_illuminance"] is not None]
+        eye = [p["eye_illuminance"] for p in probes or () if p["eye_illuminance"] is not None]
         return ComfortState(
+            task_illuminance=sum(task) / len(task) if task else None,
+            eye_illuminance=max(eye) if eye else None,
+            daylight_probes=probes,
             daylight_status="low"
             if round(lux, 1) < 300
             else "high"
@@ -160,7 +184,7 @@ def run_tick(
     gate = safety_gate(env, power_ok)
     if gate:
         mode, angle, safety_reason = gate
-        conditions = conditions_at(angle)
+        conditions = conditions_at(angle, observe=True)
         if conditions.glare_risk:
             safety_reason += " Mechanical safety overrides the direct-sun screen; exposure remains."
         decision = Decision(
@@ -224,7 +248,7 @@ def run_tick(
     if abs(final_angle - current_angle) < 1e-8:
         final_angle = current_angle
     moved = final_angle != current_angle
-    conditions = conditions_at(final_angle)
+    conditions = conditions_at(final_angle, observe=True)
     if night_park:
         mode = "NORMAL" if moved else "HOLD"
         movement_reason = "Sun below the horizon; park the louvres at 0 degrees."

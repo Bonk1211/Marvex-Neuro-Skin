@@ -43,6 +43,7 @@ class VisionObservation(BaseModel):
 
 
 class SimulationRunRequest(BaseModel):
+    daylight_model_enabled: bool = DEFAULTS.daylight_model_enabled
     scenario: ScenarioName = "overview"
     date: Date = Date(2026, 3, 21)
     seed: int = Field(42, ge=0, le=2_147_483_647)
@@ -58,9 +59,7 @@ class SimulationRunRequest(BaseModel):
     )
     # Calibrate against the installed glazing, actuator and occupant assessment.
     glazing_shgc: float = Field(DEFAULTS.glazing_shgc, ge=0, le=1, allow_inf_nan=False)
-    glare_limit_w_m2: float = Field(
-        DEFAULTS.glare_limit_w_m2, ge=0, le=2000, allow_inf_nan=False
-    )
+    glare_limit_w_m2: float = Field(DEFAULTS.glare_limit_w_m2, ge=0, le=2000, allow_inf_nan=False)
     actuator_speed_deg_per_min: float = Field(
         DEFAULTS.actuator_speed_deg_per_min, ge=0.1, le=12, allow_inf_nan=False
     )
@@ -123,6 +122,13 @@ class ZoneHeatPayload(BaseModel):
     diffuse_transmitted: float
 
 
+class DaylightProbePayload(BaseModel):
+    index: int
+    kind: Literal["seat", "desk"]
+    task_illuminance: float | None
+    eye_illuminance: float | None
+
+
 class ComfortStatePayload(BaseModel):
     daylight_status: Literal["low", "useful", "high"]
     transmitted: float
@@ -131,6 +137,9 @@ class ComfortStatePayload(BaseModel):
     glare_risk: bool
     glare_limit_w_m2: float
     glazing_shgc: float
+    task_illuminance: float | None = Field(None, exclude_if=lambda v: v is None)
+    eye_illuminance: float | None = Field(None, exclude_if=lambda v: v is None)
+    daylight_probes: list[DaylightProbePayload] | None = Field(None, exclude_if=lambda v: v is None)
 
 
 class FacadeHeatPayload(BaseModel):
@@ -169,7 +178,17 @@ class RoofSegmentPayload(BaseModel):
     sol_air_temp: float
 
 
+class DaylightStatusPayload(BaseModel):
+    model: str = "extra trees · modelled"
+    night: bool
+    ev_cap_lux: float = DEFAULTS.ev_cap_lux
+    et_band_low_lux: float = DEFAULTS.et_band_low_lux
+    et_band_high_lux: float = DEFAULTS.et_band_high_lux
+    occupied: bool
+
+
 class TickPayload(BaseModel):
+    daylight: DaylightStatusPayload | None = Field(None, exclude_if=lambda v: v is None)
     environment_cloud: float | None = None
     cloud_source: Literal["environment", "vision"] = "environment"
     timestamp: datetime
@@ -339,9 +358,7 @@ class SlabPlanRequest(BaseModel):
     roof_pitch: float = Field(DEFAULTS.roof_pitch, ge=0, le=60)
     model: SlabModelInput = Field(default_factory=SlabModelInput)
     history: list[SlabObservationInput] = Field(default_factory=list, max_length=8760)
-    baseline_nights: list[BaselineNightInput] = Field(
-        default_factory=list, max_length=1000
-    )
+    baseline_nights: list[BaselineNightInput] = Field(default_factory=list, max_length=1000)
 
     @field_validator("timezone")
     @classmethod

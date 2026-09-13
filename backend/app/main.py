@@ -188,6 +188,30 @@ def run_simulation(request: SimulationRunRequest, http_request: Request) -> Simu
             "movement_count": result.summary["movement_count"],
             "sensor_fault_ticks": result.summary["sensor_fault_ticks"],
             "safe_mode_ticks": result.summary["safe_mode_ticks"],
+            "daylight_model": "extra trees" if any(t.daylight for t in result.ticks) else "off",
+            "ev_exceedance_ticks": sum(
+                any(
+                    p.eye_illuminance is not None and p.eye_illuminance > tick.daylight.ev_cap_lux
+                    for wall in tick.facade
+                    for zone in wall.zones
+                    for p in zone.conditions.daylight_probes or ()
+                )
+                for tick in result.ticks
+                if tick.daylight and tick.daylight.occupied
+            ),
+            "et_in_band_ticks": sum(
+                any(
+                    p.task_illuminance is not None
+                    and tick.daylight.et_band_low_lux
+                    <= p.task_illuminance
+                    <= tick.daylight.et_band_high_lux
+                    for wall in tick.facade
+                    for zone in wall.zones
+                    for p in zone.conditions.daylight_probes or ()
+                )
+                for tick in result.ticks
+                if tick.daylight and tick.daylight.occupied
+            ),
         },
     )
     return result

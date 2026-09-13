@@ -5,6 +5,8 @@ import numpy as np
 
 from app.config import DEFAULTS
 from app.domain.controller import WALL_LUX_PER_IRRADIANCE, run_tick
+from app.domain.daylight.room import RoomGeometry, probes_for, zone_for
+from app.domain.daylight.surrogate import curves_for, models
 from app.domain.environment import generate_day, inject_sensor_fault, solar_frame
 from app.domain.facade import (
     ORIENTATIONS,
@@ -29,6 +31,7 @@ from app.domain.types import (
 from app.schemas import (
     ComparisonMetric,
     CostBreakdown,
+    DaylightStatusPayload,
     EventAnnotation,
     FacadeHeatPayload,
     RoofSegmentPayload,
@@ -249,13 +252,68 @@ def _metric_payload(ticks: list[TickPayload]) -> list[ComparisonMetric]:
     ]
 
 
+def _prepare_daylight(request, environments, suns, grids, observation=None):
+    """Observe aperture flux at each registered probe, independently of sensor noise."""
+    if not request.daylight_model_enabled:
+        return None
+    # Fixed geometry/site were evaluated offline; other sites/tilts have no evidence.
+    if (request.latitude, request.longitude, request.facade_tilt) != (
+        DEFAULTS.latitude,
+        DEFAULTS.longitude,
+        DEFAULTS.facade_tilt,
+    ):
+        return None
+    artifacts = models()
+    if artifacts is None:
+        return None
+    scope = set(artifacts[0]["orientations"]) & set(artifacts[1]["orientations"])
+    room, inputs, keys = RoomGeometry(), [], []
+    for index, (env, solar, grid) in enumerate(zip(environments, suns, grids)):
+        for orientation in ORIENTATIONS:
+            if orientation not in scope:
+                continue
+            for band in range(DEFAULTS.facade_zone_rows):
+                gain = grid[orientation][band * DEFAULTS.facade_zone_columns]
+                diffuse = gain.sky_diffuse + gain.ground_diffuse
+                optics = FacadeOptics(
+                    beam_fraction=max(0, gain.incident - diffuse) / gain.incident
+                    if gain.incident
+                    else 0,
+                    sky_fraction=gain.sky_diffuse / diffuse if diffuse else 1,
+                    solar_elevation=solar.elevation,
+                    solar_azimuth=solar.azimuth,
+                    wall_azimuth=gain.azimuth,
+                    facade_tilt=request.facade_tilt,
+                )
+                local_env = replace(
+                    env,
+                    ghi=gain.incident,
+                    cloud=observation.cloud_cover
+                    if observation is not None and observation.tick_index == index
+                    else env.cloud,
+                )
+                for probe_index, probe in enumerate(probes_for(orientation, band)):
+                    keys.append(
+                        (index, zone_for(probe, orientation, band, room), probe_index, probe.kind)
+                    )
+                    inputs.append((probe, optics, solar, local_env, room))
+    curves = curves_for(tuple(inputs), DEFAULTS.daylight_angle_step)
+    if curves is None:
+        return None
+    result = {}
+    for (index, zone, probe_index, kind), curve in zip(keys, curves):
+        result.setdefault((index, zone), []).append((probe_index, kind, curve))
+    return result
+
+
 def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
     site = _site(request)
     environments, weather_context, open_meteo = _prepare_environment(request, site)
     observation = request.vision_observation
-    if observation and not 0 <= (
-        datetime.now(timezone.utc) - observation.captured_at
-    ).total_seconds() <= 60:
+    if (
+        observation
+        and not 0 <= (datetime.now(timezone.utc) - observation.captured_at).total_seconds() <= 60
+    ):
         observation = None
     times, position, _location = solar_frame(request.date, site=site)
     # Heat map runs on the irradiance the walls actually see, doctored ticks included.
@@ -276,6 +334,14 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
         np.array([env.dhi for env in environments]),
         tilt=request.roof_pitch,
     )
+    suns = [
+        sun_position(env.t, site.latitude, site.longitude, site.timezone) for env in environments
+    ]
+    grids = [
+        zone_gains(wall_gains(poa, i), solar_elevation=s.elevation, solar_azimuth=s.azimuth)
+        for i, s in enumerate(suns)
+    ]
+    daylight = _prepare_daylight(request, environments, suns, grids, observation)
     weights = ControllerWeights(**request.weights.model_dump())
     ticks: list[TickPayload] = []
     annotations: list[EventAnnotation] = []
@@ -309,7 +375,8 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
     for index, env in enumerate(environments):
         vision_cloud = (
             observation.cloud_cover
-            if observation is not None and observation.tick_index == index else None
+            if observation is not None and observation.tick_index == index
+            else None
         )
         local_time = env.t.time()
         power_ok = request.power_ok
@@ -321,13 +388,14 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
                 power_ok = False
         # Resolve the sun once; each controller projects it onto its own aperture.
         gains = wall_gains(poa, index)
-        solar = sun_position(env.t, site.latitude, site.longitude, site.timezone)
+        solar = suns[index]
         wall_optics = {
             gain.orientation: FacadeOptics(
                 beam_fraction=gain.direct / gain.incident if gain.incident > 0 else 0,
                 sky_fraction=(
                     gain.sky_diffuse / (gain.sky_diffuse + gain.ground_diffuse)
-                    if gain.sky_diffuse + gain.ground_diffuse > 0 else 1.0
+                    if gain.sky_diffuse + gain.ground_diffuse > 0
+                    else 1.0
                 ),
                 solar_elevation=solar.elevation,
                 solar_azimuth=solar.azimuth,
@@ -364,11 +432,7 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
         # Under each wall's controller sits one controller per zone of its 4 x 4
         # grid, each holding its own actuator position and independent local
         # sensor stream. One shared brain applies the same policy to every zone.
-        grid = zone_gains(
-            gains,
-            solar_elevation=result.solar_elevation,
-            solar_azimuth=result.solar_azimuth,
-        )
+        grid = grids[index]
         zones: dict[str, list[ZoneHeat]] = {}
         for orientation, cells in grid.items():
             heats: list[ZoneHeat] = []
@@ -383,7 +447,8 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
                     beam_fraction=direct / cell.incident if cell.incident > 0 else 0,
                     sky_fraction=(
                         cell.sky_diffuse / (cell.sky_diffuse + cell.ground_diffuse)
-                        if cell.sky_diffuse + cell.ground_diffuse > 0 else 1.0
+                        if cell.sky_diffuse + cell.ground_diffuse > 0
+                        else 1.0
                     ),
                 )
                 stream = sensor_streams[cell.zone]
@@ -426,6 +491,11 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
                     site=site,
                     solar=solar,
                     local_sensors=sensors,
+                    daylight_curves=(
+                        tuple(daylight.get((index, cell.zone), ()))
+                        if daylight is not None
+                        else None
+                    ),
                     optics=optics,
                     glazing_shgc=request.glazing_shgc,
                     glare_limit_w_m2=request.glare_limit_w_m2,
@@ -489,6 +559,12 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
             pitch=request.roof_pitch,
         )
         payload = TickPayload(
+            daylight=DaylightStatusPayload(
+                night=solar.elevation <= DEFAULTS.min_elevation,
+                occupied=env.occupancy >= DEFAULTS.daylight_occupied_min,
+            )
+            if daylight is not None
+            else None,
             timestamp=env.t,
             ghi=round(env.ghi, 2),
             expected_ghi=round(result.expected_ghi, 2),
@@ -605,9 +681,11 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
         roof_pitch=request.roof_pitch,
         floors=DEFAULTS.floors,
         synthetic=True,
-        data_notice=_data_notice(weather_context, open_meteo, site) + (
+        data_notice=_data_notice(weather_context, open_meteo, site)
+        + (
             " AI vision supplies a demo sky estimate at one selected tick."
-            if observation is not None else ""
+            if observation is not None
+            else ""
         ),
         load_unit="relative cooling-load index",
         weather_context=(

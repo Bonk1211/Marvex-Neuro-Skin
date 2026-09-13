@@ -157,6 +157,8 @@ builtins.__import__ = unavailable
 import app.domain.daylight
 from app.domain.daylight import training
 assert training.ExtraTreesRegressor is None
+from app.domain.daylight import surrogate
+assert surrogate.models() is None
 """,
         ],
         check=True,
@@ -190,3 +192,111 @@ def test_exceedance_counts_union_ticks_and_weight_seat_hours() -> None:
     assert result["seat_exceedance_percent"] == 15
     assert result["et_in_band_percent"] == 45
     assert result["mean_relative_load"] == 0.5
+
+
+def test_training_serving_parity_includes_every_column_and_every_angle(monkeypatch) -> None:
+    from app.domain.daylight.surrogate import at_angle, feature_grid
+    from scripts.generate_daylight_dataset import day_inputs, generate_frame, optics_for
+
+    day = date(2026, 1, 21)
+    frame = generate_frame(day, ("west",), role="train")
+    envs, suns, grids = day_inputs(day, DEFAULTS.seed)
+    sample = frame.iloc[len(frame) // 2]
+    tick, band, index = int(sample.tick), int(sample.band), int(sample.probe_index)
+    probe = probes_for("west", band)[index]
+    gain = grids[tick]["west"][band * DEFAULTS.facade_zone_columns]
+    env, solar, optics = (
+        replace(envs[tick], ghi=gain.incident),
+        suns[tick],
+        optics_for(gain, suns[tick]),
+    )
+    matrix = feature_grid(probe, optics, solar, env, RoomGeometry(), tuple(range(61)))
+    for angle in range(61):
+        np.testing.assert_array_equal(
+            matrix[angle], build_features(probe, optics, angle, solar, env, RoomGeometry())
+        )
+    np.testing.assert_array_equal(
+        sample.loc[list(FEATURE_NAMES)].to_numpy(dtype=float), matrix[int(sample.theta_deg)]
+    )
+    from app.domain import scenarios
+    from app.schemas import SimulationRunRequest
+
+    captured = []
+
+    def capture(inputs, step):
+        captured.extend(inputs)
+        return tuple(range(len(inputs)))
+
+    monkeypatch.setattr(scenarios, "models", lambda: ({"orientations": ORIENTATIONS},) * 2)
+    monkeypatch.setattr(scenarios, "curves_for", capture)
+    prepared = scenarios._prepare_daylight(
+        SimulationRunRequest(daylight_model_enabled=True), [envs[tick]], [solar], [grids[tick]]
+    )
+    row = next(row for i, _kind, row in prepared[(0, sample.zone)] if i == index)
+    np.testing.assert_array_equal(feature_grid(*captured[row], tuple(range(61))), matrix)
+    curve = tuple(float(a * a) for a in range(61))
+    assert at_angle(curve, 42.5) == (curve[42] + curve[43]) / 2
+    assert at_angle(curve, -1) == curve[0]
+    assert at_angle(curve, 100) == curve[-1]
+    assert at_angle(None, 42) is None
+    assert at_angle(curve, float("nan")) is None
+
+
+def test_missing_unreadable_or_incompatible_artifacts_degrade_and_load_once(monkeypatch) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.domain.daylight import surrogate
+
+    calls = []
+
+    def denied(path):
+        calls.append(path)
+        raise PermissionError("unreadable model directory")
+
+    with TemporaryDirectory() as directory:
+        monkeypatch.setattr(surrogate, "DEFAULTS", replace(DEFAULTS, daylight_model_dir=directory))
+        surrogate._load_models.cache_clear()
+        assert surrogate.models() is None  # actual absent files
+        surrogate._load_models.cache_clear()
+        monkeypatch.setattr("joblib.load", denied)
+        with ThreadPoolExecutor(2) as pool:
+            assert list(pool.map(lambda _: surrogate.models(), range(2))) == [None, None]
+        assert len(calls) == 1
+        surrogate._load_models.cache_clear()
+        monkeypatch.setattr("joblib.load", lambda _path: {"target": "wrong"})
+        assert surrogate.models() is None
+        surrogate._load_models.cache_clear()
+
+
+def test_real_surrogates_are_deterministic_night_safe_and_observe_only() -> None:
+    from app.domain.controller import run_tick
+    from app.domain.daylight import surrogate
+    from app.domain.types import ControllerWeights
+
+    if not Path(DEFAULTS.daylight_model_dir, "ev.joblib").exists():
+        pytest.skip("Run make daylight-train for the real-artifact integration check")
+    env = generate_day(date(2026, 3, 20))[60]
+    solar, room = SolarState(250, 40, 800), RoomGeometry()
+    probe = probes_for("west", 1)[0]
+    optics = FacadeOptics(0.6, 40, 250, 270)
+    curve = surrogate.curve_for(probe, optics, solar, env, room)
+    assert curve is not None
+    np.testing.assert_array_equal(curve, surrogate.curve_for(probe, optics, solar, env, room))
+    assert not curve.flags.writeable
+    assert surrogate.curves_for(()) == ()
+    assert surrogate.curve_for(probe, optics, replace(solar, elevation=0), env, room) is None
+    before = run_tick(env, 20, ControllerWeights(), solar=solar, optics=optics)
+    after = run_tick(
+        env,
+        20,
+        ControllerWeights(),
+        solar=solar,
+        optics=optics,
+        daylight_curves=((0, probe.kind, curve),),
+    )
+    assert after.conditions.eye_illuminance is not None
+    assert replace(after, conditions=before.conditions) == before
+    assert (
+        replace(after.conditions, eye_illuminance=None, task_illuminance=None, daylight_probes=None)
+        == before.conditions
+    )

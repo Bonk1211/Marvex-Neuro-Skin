@@ -54,8 +54,9 @@ def test_health_reports_observations_without_contacting_upstreams(monkeypatch) -
     assert "test-secret" not in str(result)
 
 
-def test_simulation_is_reproducible_and_complete() -> None:
-    request = {"scenario": "overview", "seed": 7}
+@pytest.mark.parametrize("enabled", [False, True])
+def test_simulation_is_reproducible_and_complete(enabled: bool) -> None:
+    request = {"scenario": "overview", "seed": 7, "daylight_model_enabled": enabled}
     first = client.post("/api/v1/simulations/run", json=request)
     second = client.post("/api/v1/simulations/run", json=request)
     assert first.status_code == 200
@@ -305,7 +306,8 @@ def test_co_optimization_returns_three_comparable_metrics() -> None:
     ticks = payload["ticks"]
     occupied = [tick for tick in ticks if tick["occupancy"] >= 0.2]
     daylight = [
-        tick for tick in occupied
+        tick
+        for tick in occupied
         if next(wall for wall in tick["facade"] if wall["primary"])["incident"] >= 200
     ] or occupied
     for strategy, lux_key, load_key in [
@@ -350,3 +352,14 @@ def test_request_validation_rejects_bad_values() -> None:
         json={"scenario": "unknown", "occupancy_scale": 9},
     )
     assert response.status_code == 422
+
+
+def test_daylight_off_preserves_the_prechange_http_bytes() -> None:
+    import hashlib
+
+    response = client.post("/api/v1/simulations/run", json={"scenario": "overview", "seed": 42})
+    assert response.status_code == 200
+    # Captured before Phase B; all pre-existing fields, values and ordering are part of G2.
+    assert hashlib.sha256(response.content).hexdigest() == (
+        "3a2e9e024982b9bb2948510361c9b261587e642b2a8d5167c63efb2431a42210"
+    )

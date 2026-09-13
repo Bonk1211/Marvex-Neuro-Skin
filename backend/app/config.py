@@ -57,6 +57,7 @@ class SimulationDefaults:
     ev_cap_lux: float = 1000.0
     et_band_low_lux: float = 300.0
     et_band_high_lux: float = 500.0
+    daylight_angle_step: int = 5
     daylight_model_enabled: bool = False
     daylight_model_dir: str = "data/daylight/models"
     daylight_wall_reflectance: float = 0.5
@@ -83,6 +84,7 @@ class SimulationDefaults:
     daylight_dataset_tick_stride: int = 6
     daylight_dataset_bands: tuple[int, ...] = (1, 3)
     daylight_occupied_min: float = 0.2
+    daylight_negligible_exceedance_percent: float = 1.0
     daylight_transfer_mae_ratio: float = 1.5
     daylight_transfer_mae_margin_lux: float = 50.0
 
