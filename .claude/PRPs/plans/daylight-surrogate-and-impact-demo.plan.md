@@ -1,40 +1,83 @@
 # Plan: Daylight Surrogate Model and Impact Demo
 
-## Implementation record — 13 September 2026
+## Completion record — 13 September 2026
 
-- Tasks 1–4 implemented and checked: all four oracle invariants pass; probe frames include
-  nested desk-island rotations and the facade's exterior-left-to-right bay numbering.
-  Coarse probe view factors are normalised to a complete hemisphere to prevent near-patch
-  quadrature from amplifying a uniform light field.
-- Smoke generation produced 36,673 rows; the complete 12-day training / 3-day transfer sweep
-  produced 192,829 rows. Resume fingerprints match the current generation code.
-- The feature contract adds incident POA, lateral position, facade tilt and sky fraction.
-  These are necessary to distinguish physical inputs omitted from the proposed list;
-  absolute compass direction remains excluded. `env.ghi` at this seam means local POA.
-- Tasks 5a and 5b completed: two clean-kernel five-fold runs produced identical metrics,
-  parameters and fingerprints (14 ledger evaluations).
-  Structural holdout uses unseen days AND unseen zones. Cross-strata are excluded and
-  counted. Model selection uses holdout MAE; transfer never selects a model. Transfer
-  tolerance was set before fitting to 1.5 × holdout MAE + 50 lux for each target.
-- Task 6 completed twice, with byte-identical Markdown/JSON reports. NeuroSkin: 747/786
-  occupied daylight building ticks (95.0382%) have any seat over cap; naive: 740/786
-  (94.1476%). Seat-hour exceedance is 38.3506% vs 14.7196%. All 16 illustrative rooms
-  are included; the headline counts their union at each tick, not separate room-hours.
-- Current checks: 107 backend tests and 79 frontend tests pass; ruff passes across app,
-  tests, scripts and notebook. The default overview response is byte-identical to the
-  saved pre-change response. Phase A revalidated after crash recovery: notebook execution succeeded, full dataset
-  resume verified, raw report numerators independently reconciled, and a third ablation run
-  reproduced both reports byte-for-byte. Phase B follows the Phase A commit.
-- Correct smoke command: `make daylight-data ARGS=--smoke`; `--smoke` is not a make option.
+All 11 tasks are implemented. The completed checks below were audited against the
+code, executed notebook, generated reports, real-artifact API runs and browser output.
 
-This record reports current evidence; the unchecked acceptance checklist below remains
-the completion contract, including the executed notebook, Phase A commit and Phase B.
+- **Phase A checkpoint:** `69d6057` committed the independent oracle, generation,
+  training module, executed notebook, ledger and glare-blindness evidence before serving
+  was wired. `109fa7b` commits the final notebook rerun with its outputs and ledger.
+- **Geometry and oracle:** all four physical invariants pass, including extra-bounce
+  illumination and the unclamped direct-beam tail. Probe coordinates include nested
+  desk-island rotations and exterior-left-to-right facade bay numbering. A hemisphere
+  normalisation prevents coarse near-patch quadrature from amplifying uniform light.
+- **Dataset:** 36,673 smoke rows and 192,829 full rows across 12 training / 3 transfer
+  days. The final generation manifest resumes without changes; regenerated Parquet has
+  the same SHA-256 used for all training runs:
+  `b69fb674df4594977c5e8c9965d8fee2869537203617da32f5511e2df4a8a170`.
+  Correct smoke invocation: `make daylight-data ARGS=--smoke`.
+- **Features and fitting:** incident POA, lateral position, facade tilt and sky fraction
+  supplement the proposed feature list because omitting them aliases distinct physical
+  inputs. Absolute compass direction stays excluded. Three clean-kernel five-fold runs
+  reproduce every metric, parameter and dataset fingerprint: 21 append-only ledger rows,
+  one per target/model evaluation. All ten notebook figures were visually inspected.
+  Holdout excludes both whole days and whole zones; cross-strata are counted and excluded.
+  Selection uses structural MAE; transfer never selects the model.
+- **Selected models:** Extra Trees Ev shuffled / holdout / transfer MAE is
+  18.13 / 106.98 / 141.35 lux; Et is 28.57 / 105.89 / 94.60 lux. Linear and incumbent
+  baselines remain in the report. Both transfer checks satisfy the preregistered
+  1.5 × holdout + 50 lux tolerance, supporting all four orientations at the evaluated
+  Putrajaya location and 115° geometry. Worst displayed Et probe-set MAE is 2,068.8 lux;
+  rare errors remain visible, so this is an uncalibrated demonstration model.
+- **Decisive experiment:** NeuroSkin leaves any seat over the eye cap at 747/786 occupied
+  daylight building ticks (95.0382%); naive at 740/786 (94.1476%). These are unions across
+  all 16 illustrative rooms. Seat-hour exceedance is 38.3506% vs 14.7196%; Et in-band
+  seat-hours are 9.2280% vs 20.1827%. Repeated oracle runs give identical numerical results.
+  The frontend's bundled comparison equals the generated source JSON. No surrogate
+  prediction enters this experiment.
+- **Serving:** lazy guarded artifact loads, immutable cached angle curves, shared feature
+  assembly and exact generation-to-serving parity. Missing/unreadable/incompatible models
+  and missing scikit-learn degrade to unavailable. Simultaneous first load executes once.
+  Et/Ev remain observations; controller objectives, glare gate and movement choices stay
+  unchanged. The flag defaults off. The disabled 6,973,222-byte HTTP response retains SHA-256
+  `3a2e9e024982b9bb2948510361c9b261587e642b2a8d5167c63efb2431a42210`.
+- **Inference budget deviation:** measured all 144 ticks and 64 zones with both 1° and 5°
+  curves. Coarsening reduced total TestClient time from 17.648 s to 7.227 s, vs 1.934 s off;
+  matching cached curves take 2.297 s. Uncached overhead remains 5.293 s, above the proposed
+  ~1 s target; this limitation is explicit in the benchmark and PRD, and the model is opt-in.
+  Coarsening adds Et/Ev MAE 1.914/0.824 lux and changes 6 cap classifications among 18,200
+  daylight seat-ticks. Final real TCP HTTP verification: 1.842 s off, 9.264 s on including
+  first model load, 2.139 s cached; on-repeat bytes match exactly and all legacy fields
+  match the off payload.
+- **UI:** Floor chair/desk colours and numeric readings, selected-side/band seat counts,
+  grey night seats, and an unavailable message with hidden probes. The illustrative label
+  is retained. Brains renders the fixed 12-day oracle table with denominators and limitations.
+  Actual Chromium/WebGL checks matched 43/70 over-cap west seats against the API payload,
+  inspected a selected floor, night and Brains views, and found no console errors or overflow
+  at 1000 px. The missing-model check used a real API process pointing at an absent model
+  directory; existing model files were preserved.
+- **Validation:** full suites pass (112 backend, 82 frontend), including G2 in both flag
+  states and the saved baseline hash. Ruff checks app/tests/scripts/notebook; TypeScript
+  and the production build pass. The final unavailable-message change additionally passes
+  the 23 affected frontend tests. Empty inputs, NaN probes, concurrent loading, unreadable
+  files, absent dependency and whole-degree interpolation are covered. Circularity,
+  plotting/notebook imports, absolute direction and energy/currency scans are clean.
+- **Documentation and scope:** PRD assumptions, thresholds, dependencies, observe-only
+  display and remaining latency are updated. Thresholds live in `DEFAULTS`; binaries and
+  Parquet remain ignored. Existing unrelated dashboard/feed work is preserved in the
+  workspace; the daylight evidence checkpoints do not commit that work.
+
+Evidence: [oracle report](../../../docs/appendix/daylight-blindness-results.md),
+[training report](../../../docs/appendix/daylight-training-results.md),
+[serving benchmark](../../../docs/appendix/daylight-inference-results.md),
+[executed notebook](../../../backend/notebooks/daylight_surrogate_training.ipynb).
 
 ## Summary
 
 The entire interior daylight transfer in NeuroSkin is one constant: `WALL_LUX_PER_IRRADIANCE = 1.7`
 (`controller.py:22-32`), whose own comment says "re-tune it against a real lux meter". This plan
-replaces it with two learned surrogates — Task Illuminance (`Et`) at desks and Vertical Eye
+extends it with two observe-only learned surrogates — Task Illuminance (`Et`) at desks and Vertical Eye
 Illuminance (`Ev`) at seated eye positions — trained on a slow multi-bounce radiosity oracle that
 uses the existing `optics.py` as its boundary condition. The deliverable is not the model; it is the
 evidence that the shipped controller is **blind to glare**, measured by re-scoring its own decisions
@@ -577,7 +620,7 @@ smoke run** (~24,960 rows, 1,248 solves, about a minute) to prove the pipeline e
   convenience**: at 2.92 N the sun crosses overhead twice a year, and a model that never saw those
   days will be wrong on them. Make it resumable (skip days whose Parquet already exists). Do **not**
   scale up "just in case"; if holdout MAE is acceptable at 12 days, more rows buy nothing.
-- **VALIDATE**: `make daylight-data --smoke` (2 days) produces a Parquet whose row count equals
+- **VALIDATE**: `make daylight-data ARGS=--smoke` (2 days) produces a Parquet whose row count equals
   `days × orientations × bands × daylight_ticks × angle_steps × probes`, with no NaN and no negative
   lux, and where `split_role` partitions cleanly by orientation. Full run completes in under 90 min
   on a laptop.
@@ -793,13 +836,13 @@ smoke run** (~24,960 rows, 1,248 solves, about a minute) to prove the pipeline e
 | sklearn absent | import `app.domain.daylight` with no scikit-learn | package still imports, flag forced off | **yes — deploy without training deps** |
 
 ### Edge Cases Checklist
-- [ ] Empty input — band whose program has no chairs
-- [ ] Maximum size input — all 64 zones × 144 ticks × 61 angles × 2 models; measure, don't assume
-- [ ] Invalid types — `view_rad` NaN from a malformed probe
-- [ ] Concurrent access — two requests sharing the lazily-loaded model; load once, treat as read-only
-- [ ] Network failure — N/A, no network in this path
-- [ ] Permission denied — model directory unreadable → degrade to `None`, log once, never raise
-- [ ] Missing dependency — `scikit-learn` absent → import guarded, flag forced off
+- [x] Empty input — band whose program has no chairs
+- [x] Maximum size input — all 64 zones × 144 ticks × 61 angles × 2 models; measure, don't assume
+- [x] Invalid types — `view_rad` NaN from a malformed probe
+- [x] Concurrent access — two requests sharing the lazily-loaded model; load once, treat as read-only
+- [x] Network failure — N/A, no network in this path
+- [x] Permission denied — model directory unreadable → degrade to `None`, log once, never raise
+- [x] Missing dependency — `scikit-learn` absent → import guarded, flag forced off
 
 ---
 
@@ -825,7 +868,7 @@ runs, and it is the only thing that proves the notebook is a record rather than 
 wc -l docs/appendix/daylight-runs.jsonl
 tail -1 docs/appendix/daylight-runs.jsonl | python3 -m json.tool
 ```
-EXPECT: One line per training run; the last row carries `target`, `model`, `mae_shuffled`,
+EXPECT: One line per target/model evaluation in each training run; the last row carries `target`, `model`, `mae_shuffled`,
 `mae_holdout`, `git_sha`, `dataset_sha256`, `seed`.
 
 ### Unit Tests — daylight only
@@ -875,48 +918,48 @@ EXPECT: Run once with the flag off and once on; record the delta in the report. 
 exceeds ~1 s, coarsen the angle grid before wiring further.
 
 ### Manual Validation
-- [ ] `make daylight-ablate`, read the Ev exceedance for the shipped controller — **this number is the
+- [x] `make daylight-ablate`, read the Ev exceedance for the shipped controller — **this number is the
       whole deliverable**
-- [ ] Confirm the linear baseline is in the training report, whatever it says
-- [ ] Confirm shuffled and holdout metrics are both present and the gap is stated
-- [ ] Flag off → run `/dashboard`, response identical to before
-- [ ] Flag on → Floor lens, seats coloured, over-cap count matches the tick payload
-- [ ] Delete the joblib files, reload → probes hidden, no crash, no zeros
-- [ ] Night tick → seats grey
-- [ ] `group.name` still reads "Illustrative office interior — not measured drawings"
+- [x] Confirm the linear baseline is in the training report, whatever it says
+- [x] Confirm shuffled and holdout metrics are both present and the gap is stated
+- [x] Flag off → run `/dashboard`, response identical to before
+- [x] Flag on → Floor lens, seats coloured, over-cap count matches the tick payload
+- [x] Delete the joblib files, reload → probes hidden, no crash, no zeros
+- [x] Night tick → seats grey
+- [x] `group.name` still reads "Illustrative office interior — not measured drawings"
 
 ---
 
 ## Acceptance Criteria
-- [ ] All 11 tasks completed (5a and 5b count separately)
-- [ ] All validation commands pass, circularity check included
-- [ ] Oracle satisfies its four physical invariants
-- [ ] Training report states shuffled, whole-day/whole-zone holdout, **and** orientation-transfer metrics
-- [ ] Transfer verdict written explicitly, and the model's orientation scope stated to match it
-- [ ] No absolute compass direction in `FEATURE_NAMES`
-- [ ] Linear baseline and the incumbent `WALL_LUX_PER_IRRADIANCE` baseline both reported
-- [ ] MAE is the stated selection criterion
-- [ ] Notebook executes clean via `nbconvert --execute` from a fresh kernel
-- [ ] Notebook is committed **with** outputs; no estimator, split, or metric is defined in a cell
-- [ ] `daylight-runs.jsonl` has a row per run and the history cell plots it
-- [ ] Blindness report exists with a per-controller Ev exceedance table
-- [ ] Controller decision logic unchanged; flag defaults off
-- [ ] G2 reproducibility holds in both flag states
-- [ ] `LOG_FIELDS` extended
-- [ ] No kWh, carbon, or cost figure anywhere in the daylight package
-- [ ] Model artifacts gitignored
+- [x] All 11 tasks completed (5a and 5b count separately)
+- [x] All validation commands pass, circularity check included
+- [x] Oracle satisfies its four physical invariants
+- [x] Training report states shuffled, whole-day/whole-zone holdout, **and** orientation-transfer metrics
+- [x] Transfer verdict written explicitly, and the model's orientation scope stated to match it
+- [x] No absolute compass direction in `FEATURE_NAMES`
+- [x] Linear baseline and the incumbent `WALL_LUX_PER_IRRADIANCE` baseline both reported
+- [x] MAE is the stated selection criterion
+- [x] Notebook executes clean via `nbconvert --execute` from a fresh kernel
+- [x] Notebook is committed **with** outputs; no estimator, split, or metric is defined in a cell
+- [x] `daylight-runs.jsonl` has a row per run and the history cell plots it
+- [x] Blindness report exists with a per-controller Ev exceedance table
+- [x] Controller decision logic unchanged; flag defaults off
+- [x] G2 reproducibility holds in both flag states
+- [x] `LOG_FIELDS` extended
+- [x] No kWh, carbon, or cost figure anywhere in the daylight package
+- [x] Model artifacts gitignored
 
 ## Completion Checklist
-- [ ] Code follows discovered patterns
-- [ ] `ponytail:` comments on the bounce count and the angle grid
-- [ ] No matplotlib import anywhere under `backend/app/`
-- [ ] Nothing under `backend/app/` references `notebooks/`
-- [ ] Tests follow `test_engine.py` style
-- [ ] No hardcoded thresholds — all in `DEFAULTS`
-- [ ] `scipy` declared explicitly in `pyproject.toml` (currently transitive via pvlib, version 1.18.0)
-- [ ] PRD updated — see Notes
-- [ ] Paper cited where its method is used
-- [ ] Self-contained — no questions needed during implementation
+- [x] Code follows discovered patterns
+- [x] `ponytail:` comments on the bounce count and the angle grid
+- [x] No matplotlib import anywhere under `backend/app/`
+- [x] Nothing under `backend/app/` references `notebooks/`
+- [x] Tests follow `test_engine.py` style
+- [x] No hardcoded thresholds — all in `DEFAULTS`
+- [x] `scipy` declared explicitly in `pyproject.toml` (currently transitive via pvlib, version 1.18.0)
+- [x] PRD updated — see Notes
+- [x] Paper cited where its method is used
+- [x] Self-contained — no questions needed during implementation
 
 ## Risks
 
