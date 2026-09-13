@@ -153,6 +153,25 @@ export function SimulationControls({
       </div>
 
       <div className='settings-rail-body'>
+        <label className='flex items-start gap-2 text-xs'>
+          <input
+            type='checkbox'
+            checked={value.daylight_model_enabled ?? false}
+            onChange={(event) =>
+              onChange({
+                ...value,
+                daylight_model_enabled: event.target.checked,
+              })
+            }
+          />
+          <span>
+            Modelled seat daylight
+            <span className='block text-[10px] text-muted-foreground'>
+              Apply with the next run. Available for the Putrajaya tilted facade
+              when models are installed.
+            </span>
+          </span>
+        </label>
         <ControlGroup
           icon={<CloudSun className='h-4 w-4' />}
           number='01'

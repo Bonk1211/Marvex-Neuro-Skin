@@ -6,6 +6,7 @@ import { ProvenanceStrip } from './ProvenanceStrip'
 import { CostBreakdownPanel } from './CostBreakdownPanel'
 import { ModelLimitsPanel } from './ModelLimitsPanel'
 import { FeedsPanel } from './FeedsPanel'
+import { GlareBlindnessPanel } from './DaylightPanel'
 import { FloorPanel } from './FloorPanel'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -733,6 +734,7 @@ export function NeuroSkinDashboard() {
 
                 {lens === 'brains' && isControlled && (
                   <>
+                    <GlareBlindnessPanel />
                     {selectedTick && (
                       <>
                         <CostBreakdownPanel

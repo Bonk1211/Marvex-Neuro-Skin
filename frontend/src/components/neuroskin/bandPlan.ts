@@ -1,11 +1,13 @@
 import * as THREE from 'three'
-import type { FacadeOrientation } from '@/lib/types'
+import type { FacadeOrientation, TickPayload } from '@/lib/types'
 import { roofGrid } from './solarExposure'
 import { FLOOR_PLANS, floorProgram } from './floorWorkspaces'
 
+import { daylightColor } from './DaylightPanel'
+
 export const FLOOR_STACK_GAP = 4.4
 
-/** Illustrative furnished floor cutaway. */
+/** Illustrative furnished cutaway with optional modelled occupant-plane readings. */
 export function createBandPlan(
   panels: Map<FacadeOrientation, THREE.Mesh[]>,
   divisions: number
@@ -13,6 +15,7 @@ export function createBandPlan(
   const group = new THREE.Group()
   group.name = 'Illustrative office interior — not measured drawings'
   let furnishing: THREE.Group = group
+  let probeRegistry: THREE.Object3D[] = []
   const material = (color: number) =>
     new THREE.MeshStandardMaterial({ color, roughness: 0.8 })
   const white = material(0xf7f6ef)
@@ -76,6 +79,8 @@ export function createBandPlan(
   }
   const chair = (x: number, z: number, rotation = 0, finish = fabric) => {
     const item = at(x, z, rotation)
+    item.userData.daylight = { index: probeRegistry.length, kind: 'seat' }
+    probeRegistry.push(item)
     box(0.27, 0.065, 0.28, 0, 0.23, 0, finish, item)
     box(0.27, 0.27, 0.055, 0, 0.38, 0.12, finish, item)
     cylinder(0.025, 0.2, 0, 0.12, 0, dark, item)
@@ -84,6 +89,8 @@ export function createBandPlan(
   }
   const desk = (x: number, z: number, rotation = 0) => {
     const item = at(x, z, rotation)
+    item.userData.daylight = { index: probeRegistry.length, kind: 'desk' }
+    probeRegistry.push(item)
     box(0.85, 0.05, 0.43, 0, 0.4, 0, oak, item)
     for (const side of [-1, 1])
       box(0.05, 0.38, 0.35, side * 0.35, 0.2, 0, white, item)
@@ -174,6 +181,7 @@ export function createBandPlan(
   // Each facade owns an entire furnished plan. Bands select readings, not rooms.
   const layouts = (Object.keys(FLOOR_PLANS) as FacadeOrientation[]).map(
     (orientation, designIndex) => {
+      probeRegistry = []
       const design = FLOOR_PLANS[orientation]
       const layout = new THREE.Group()
       layout.name = `${orientation} floor plan · ${design.name}`
@@ -538,6 +546,35 @@ export function createBandPlan(
       level.traverse((object) => {
         if (object instanceof THREE.Mesh) materials.set(object, object.material)
       })
+      const probes: {
+        index: number
+        kind: 'seat' | 'desk'
+        x: number
+        z: number
+        rotation: number
+        mesh: THREE.Mesh
+        color: THREE.MeshStandardMaterial
+      }[] = []
+      level.updateMatrixWorld(true)
+      interior.traverse((object) => {
+        if (!object.userData.daylight) return
+        const point = object.getWorldPosition(new THREE.Vector3())
+        const mesh = object.children[0] as THREE.Mesh<
+          THREE.BufferGeometry,
+          THREE.MeshStandardMaterial
+        >
+        probes.push({
+          ...object.userData.daylight,
+          x: point.x,
+          z: point.z,
+          rotation: Math.atan2(
+            object.matrixWorld.elements[8],
+            object.matrixWorld.elements[10]
+          ),
+          mesh,
+          color: mesh.material.clone(),
+        })
+      })
       pickables.push(slab)
       group.add(level)
       return {
@@ -547,6 +584,7 @@ export function createBandPlan(
         hvac: climate,
         slab,
         materials,
+        probes,
       }
     })
   )
@@ -597,6 +635,7 @@ export function createBandPlan(
     }
   group.traverse((object) => object.layers.set(1))
   let previousView = ''
+  let previousDaylight: TickPayload | undefined
   return {
     group,
     levels,
@@ -607,7 +646,8 @@ export function createBandPlan(
       orientation: FacadeOrientation,
       available: Set<string>,
       showHvac = true,
-      topDown = false
+      topDown = false,
+      daylightTick?: TickPayload
     ) {
       const view = `${orientation}:${focusedBand}:${showHvac}:${topDown}`
       const changed = previousView !== view
@@ -633,6 +673,33 @@ export function createBandPlan(
         }
         previousView = view
       }
+      if (changed || previousDaylight !== daylightTick) {
+        for (const level of levels) {
+          const focused = focusedBand === null || level.band === focusedBand
+          const status = daylightTick?.daylight
+          const readings = new Map(
+            daylightTick?.facade
+              .find((wall) => wall.orientation === level.orientation)
+              ?.zones?.filter((zone) => zone.row === level.band)
+              .flatMap((zone) => zone.conditions?.daylight_probes ?? [])
+              .map((probe) => [probe.index, probe]) ?? []
+          )
+          for (const probe of level.probes) {
+            const reading = readings.get(probe.index)
+            const color =
+              reading && status ? daylightColor(reading, status) : null
+            if (color && focused) {
+              probe.color.color.set(color)
+              probe.mesh.material = probe.color
+            } else {
+              probe.mesh.material = focused
+                ? level.materials.get(probe.mesh)!
+                : grey
+            }
+          }
+        }
+        previousDaylight = daylightTick
+      }
       for (const cell of cells) {
         const source = cell.userData.source as THREE.Mesh
         const focused =
@@ -654,6 +721,8 @@ export function createBandPlan(
       return changed
     },
     dispose() {
+      for (const level of levels)
+        for (const probe of level.probes) probe.color.dispose()
       muted.dispose()
       grey.dispose()
       greySlab.dispose()

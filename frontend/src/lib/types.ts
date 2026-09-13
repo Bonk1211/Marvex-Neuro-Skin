@@ -16,6 +16,7 @@ export interface ControllerWeights {
 }
 
 export interface SimulationRunRequest {
+  daylight_model_enabled?: boolean
   vision_observation?: {
     tick_index: number
     captured_at: string
@@ -87,15 +88,36 @@ export interface ZoneHeat {
   angle_target?: number
   reason?: string
   sensor_trusted?: boolean
-  conditions?: {
-    daylight_status: 'low' | 'useful' | 'high'
-    transmitted: number
-    solar_heat_gain: number
-    direct_sun: number
-    glare_risk: boolean
-    glare_limit_w_m2: number
-    glazing_shgc: number
-  }
+  conditions?: ComfortStatePayload
+}
+
+export interface DaylightProbePayload {
+  index: number
+  kind: 'seat' | 'desk'
+  task_illuminance: number | null
+  eye_illuminance: number | null
+}
+
+export interface ComfortStatePayload {
+  daylight_status: 'low' | 'useful' | 'high'
+  transmitted: number
+  solar_heat_gain: number
+  direct_sun: number
+  glare_risk: boolean
+  glare_limit_w_m2: number
+  glazing_shgc: number
+  task_illuminance?: number | null
+  eye_illuminance?: number | null
+  daylight_probes?: DaylightProbePayload[] | null
+}
+
+export interface DaylightStatusPayload {
+  model: string
+  night: boolean
+  occupied: boolean
+  ev_cap_lux: number
+  et_band_low_lux: number
+  et_band_high_lux: number
 }
 
 export interface FacadeHeat {
@@ -121,6 +143,7 @@ export interface FacadeHeat {
 }
 
 export interface TickPayload {
+  daylight?: DaylightStatusPayload | null
   environment_cloud?: number | null
   cloud_source?: 'environment' | 'vision'
   timestamp: string

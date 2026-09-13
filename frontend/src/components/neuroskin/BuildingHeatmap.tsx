@@ -456,6 +456,8 @@ export function BuildingHeatmap({
   buildingVariant = 'controlled',
   onBuildingVariantChange,
 }: BuildingHeatmapProps) {
+  const daylightTickRef = useRef<TickPayload | undefined>(undefined)
+  daylightTickRef.current = buildingVariant === 'controlled' ? tick : undefined
   const [planAngle, setPlanAngle] = useState<'cutaway' | 'top'>('cutaway')
   const planAngleRef = useRef(planAngle)
   planAngleRef.current = planAngle
@@ -1402,7 +1404,8 @@ export function BuildingHeatmap({
             planSideRef.current,
             availableZones.current,
             showHvacRef.current,
-            planAngleRef.current === 'top'
+            planAngleRef.current === 'top',
+            daylightTickRef.current
           )
         )
           renderer.shadowMap.needsUpdate = true

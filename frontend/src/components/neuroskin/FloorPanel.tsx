@@ -1,6 +1,7 @@
 'use client'
 
 import type { FacadeOrientation, TickPayload } from '@/lib/types'
+import { DaylightReadout } from './DaylightPanel'
 import { FLOOR_PLANS, floorGroupLabel, floorProgram } from './floorWorkspaces'
 
 interface FloorPanelProps {
@@ -146,6 +147,22 @@ export function FloorPanel({
         layout, airflow or room cooling demand. Card values compare facade
         means; the coloured edge shows only the selected side’s data.
       </p>
+      {controlled && !tick.daylight && (
+        <p className='mt-3 text-xs'>Daylight model not loaded for this run.</p>
+      )}
+      {controlled &&
+        tick.daylight &&
+        zones.some(({ zone }) => zone.conditions?.daylight_probes?.length) && (
+          <DaylightReadout
+            status={tick.daylight}
+            probes={zones.flatMap(({ zone }) =>
+              (zone.conditions?.daylight_probes ?? []).map((p) => ({
+                ...p,
+                zone: zone.zone,
+              }))
+            )}
+          />
+        )}
       {!zones.length ? (
         <p className='mt-3 text-xs'>Zone grid unavailable for this side</p>
       ) : (
