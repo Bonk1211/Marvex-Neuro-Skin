@@ -13,9 +13,11 @@ type Sample = { image: string; capturedAt: number; result: CloudResult }
 export function CloudVisionPanel({
   onObservation,
   onSkyChange,
+  onAgeChange,
 }: {
   onObservation?: (observation: SkyObservation | null) => Promise<string | null>
   onSkyChange?: (observation: SkyObservation | null) => void
+  onAgeChange?: (age: number | null) => void
 }) {
   const video = useRef<HTMLVideoElement>(null)
   const observer = useRef(onObservation)
@@ -149,6 +151,9 @@ export function CloudVisionPanel({
       ? Math.max(0, (now.getTime() - sample.capturedAt) / 1000)
       : null
   const fresh = age !== null && age <= 60 && !error
+  useEffect(() => {
+    onAgeChange?.(age)
+  }, [age, onAgeChange])
   const timestamp =
     now?.toLocaleString('en-GB', {
       timeZone: 'Asia/Kuala_Lumpur',

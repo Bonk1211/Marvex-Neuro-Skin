@@ -1,4 +1,5 @@
 import type { Metadata } from 'next'
+import { Suspense } from 'react'
 import { NeuroSkinDashboard } from '@/components/neuroskin/NeuroSkinDashboard'
 
 export const metadata: Metadata = {
@@ -8,5 +9,9 @@ export const metadata: Metadata = {
 }
 
 export default function DashboardPage() {
-  return <NeuroSkinDashboard />
+  return (
+    <Suspense fallback={null}>
+      <NeuroSkinDashboard />
+    </Suspense>
+  )
 }

@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
+import { createBandPlan, FLOOR_STACK_GAP } from './bandPlan'
+import { FLOOR_PLANS, floorGroupLabel, floorProgram } from './floorWorkspaces'
 import { createCloudCanopy } from './cloudCanopy'
 import type { SkyObservation } from './CloudVisionPanel'
 import { Box, Focus, RotateCcw, Sun } from 'lucide-react'
@@ -89,6 +91,12 @@ const WALL_DIVISIONS = 24
 // discrete shadows stack into bands; walking the sun between ticks turns those
 // bands back into an edge.
 const SUN_SUBSTEPS = 3
+
+const CAMERA_MODES = [
+  ['orbit', 'Orbit'],
+  ['plan', 'Floor plan'],
+] as const
+type CameraMode = (typeof CAMERA_MODES)[number][0]
 
 const SURFACE_MODES = [
   ['irradiance', 'Irradiance'],
@@ -254,27 +262,37 @@ function floorTemperature(
   )
 }
 
-function labelSprite(text: string) {
+function labelSprite(text: string, captionColor?: string) {
   const canvas = document.createElement('canvas')
-  canvas.width = 128
-  canvas.height = 128
+  canvas.width = captionColor ? 320 : 128
+  canvas.height = captionColor ? 80 : 128
   const context = canvas.getContext('2d')
   if (context) {
-    context.fillStyle = '#898781'
-    context.font = 'bold 72px system-ui, -apple-system, sans-serif'
+    if (captionColor) {
+      context.fillStyle = '#fffffff0'
+      context.fillRect(0, 0, canvas.width, canvas.height)
+      context.fillStyle = captionColor
+      context.fillRect(0, 0, 10, canvas.height)
+    }
+    context.fillStyle = captionColor ?? '#898781'
+    context.font = `bold ${captionColor ? 32 : 72}px system-ui, -apple-system, sans-serif`
     context.textAlign = 'center'
     context.textBaseline = 'middle'
-    context.fillText(text, 64, 64)
+    context.fillText(text, canvas.width / 2, canvas.height / 2)
   }
   const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
   const sprite = new THREE.Sprite(
     new THREE.SpriteMaterial({
       map: texture,
       transparent: true,
       depthWrite: false,
+      depthTest: !captionColor,
+      toneMapped: !captionColor,
     })
   )
-  sprite.scale.setScalar(0.5)
+  if (captionColor) sprite.scale.set(2, 0.5, 1)
+  else sprite.scale.setScalar(0.5)
   return sprite
 }
 
@@ -394,6 +412,10 @@ function ZoneBubble({
 }
 
 interface BuildingHeatmapProps {
+  cameraMode?: CameraMode
+  band?: number
+  focusedBand?: number | null
+  onSelectBand?: (band: number | null) => void
   visionSky?: SkyObservation | null
   tick: TickPayload
   floors: number
@@ -414,6 +436,10 @@ interface BuildingHeatmapProps {
 }
 
 export function BuildingHeatmap({
+  cameraMode = 'orbit',
+  band = 0,
+  focusedBand = null,
+  onSelectBand,
   visionSky = null,
   tick,
   floors,
@@ -430,6 +456,28 @@ export function BuildingHeatmap({
   buildingVariant = 'controlled',
   onBuildingVariantChange,
 }: BuildingHeatmapProps) {
+  const [planAngle, setPlanAngle] = useState<'cutaway' | 'top'>('cutaway')
+  const planAngleRef = useRef(planAngle)
+  planAngleRef.current = planAngle
+  const [showHvac, setShowHvac] = useState(true)
+  const showHvacRef = useRef(showHvac)
+  showHvacRef.current = showHvac
+  const [cameraOverride, setCameraOverride] = useState<CameraMode | null>(null)
+  useEffect(() => setCameraOverride(null), [cameraMode])
+  const activeCameraMode = cameraOverride ?? cameraMode
+  const cameraModeRef = useRef(activeCameraMode)
+  cameraModeRef.current = activeCameraMode
+  const focusedBandRef = useRef(focusedBand)
+  focusedBandRef.current = focusedBand
+  const onSelectBandRef = useRef(onSelectBand)
+  onSelectBandRef.current = onSelectBand
+  useEffect(() => {
+    if (focusedBand === null) setPlanAngle('cutaway')
+  }, [focusedBand])
+  const availableZones = useRef(new Set<string>())
+  availableZones.current = new Set(
+    tick.facade.flatMap((wall) => wall.zones?.map((zone) => zone.zone) ?? [])
+  )
   const controlled = buildingVariant === 'controlled'
   const buildingVariantRef = useRef(buildingVariant)
   buildingVariantRef.current = buildingVariant
@@ -440,6 +488,9 @@ export function BuildingHeatmap({
     renderer: THREE.WebGLRenderer
     scene: THREE.Scene
     camera: THREE.PerspectiveCamera
+    planCamera: THREE.OrthographicCamera
+    planControls: OrbitControls
+    fitPlan: () => void
     controls: OrbitControls
     panels: Map<FacadeOrientation, THREE.Mesh[]>
     roofFaces: Map<FacadeOrientation, THREE.Mesh>
@@ -463,6 +514,10 @@ export function BuildingHeatmap({
   } | null>(null)
   const [supported, setSupported] = useState(true)
   const [surfaceMode, setSurfaceMode] = useState<SurfaceMode>('irradiance')
+  useEffect(() => {
+    if (activeCameraMode === 'plan' && surfaceMode === 'exposure')
+      setSurfaceMode('temp')
+  }, [activeCameraMode, surfaceMode])
   const [showClouds, setShowClouds] = useState(true)
   const cloudCover =
     visionSky?.cloud_cover ?? tick.environment_cloud ?? tick.cloud
@@ -475,6 +530,9 @@ export function BuildingHeatmap({
   const activeWall = selected.startsWith('wall:')
     ? (selected.split(':')[1] as FacadeOrientation)
     : (tick.facade.find((wall) => wall.primary)?.orientation ?? 'west')
+  const planSide = selected.split(':')[1] as FacadeOrientation
+  const planSideRef = useRef(planSide)
+  planSideRef.current = planSide
   const activeWallRef = useRef(activeWall)
   activeWallRef.current = activeWall
   // Daily exposure range across all four quadrants, kWh/m2. One shared domain,
@@ -520,6 +578,7 @@ export function BuildingHeatmap({
   const focusFacade = () => {
     const context = sceneRef.current
     if (!context) return
+    setCameraOverride('orbit')
     const index = zone?.orientation === activeWall ? zone.index : 9
     const anchor = context.panels.get(activeWall)?.[index]?.userData.anchor as
       | THREE.Vector3
@@ -599,6 +658,26 @@ export function BuildingHeatmap({
     // Show the default west facade and its afternoon actuator response.
     camera.position.set(-10.5, height * 3.3, 10.5)
 
+    const planCamera = new THREE.OrthographicCamera(-4, 4, 4, -4, 0.1, 100)
+    planCamera.position.set(-10, 17, 13)
+    planCamera.lookAt(0, FLOOR_STACK_GAP * 1.5, 0)
+    planCamera.layers.set(1)
+    const sizePlan = (ratio: number) => {
+      const top = planAngleRef.current === 'top'
+      const span = (top ? 5.3 : 10.4) / Math.min(1, ratio)
+      const offset = top ? 0 : 2.4
+      Object.assign(planCamera, {
+        left: -span * ratio - offset,
+        right: span * ratio - offset,
+        top: span,
+        bottom: -span,
+      })
+      planCamera.updateProjectionMatrix()
+    }
+    sizePlan(aspect)
+    const renderCamera = () =>
+      cameraModeRef.current === 'plan' ? planCamera : camera
+
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.target.set(0, height * 0.95, 0)
     controls.enableDamping = true
@@ -607,8 +686,34 @@ export function BuildingHeatmap({
     controls.maxDistance = 26
     controls.maxPolarAngle = Math.PI / 2 - 0.05
     controls.update()
+    const planControls = new OrbitControls(planCamera, renderer.domElement)
+    planControls.target.set(0, FLOOR_STACK_GAP * 1.5, 0)
+    planControls.enableDamping = true
+    planControls.enablePan = false
+    planControls.minZoom = 0.7
+    planControls.maxZoom = 2.5
+    planControls.minPolarAngle = 0
+    planControls.maxPolarAngle = Math.PI / 2.8
+    planControls.enabled = cameraModeRef.current === 'plan'
+    planControls.update()
+    const fitPlan = () => {
+      sizePlan(mount.clientWidth / Math.max(1, mount.clientHeight))
+      if (planAngleRef.current === 'top') {
+        const elevation = (focusedBandRef.current ?? 0) * FLOOR_STACK_GAP
+        planCamera.position.set(0, elevation + 20, 0.001)
+        planControls.target.set(0, elevation + 0.15, 0)
+      } else {
+        planCamera.position.set(-10, 17, 13)
+        planControls.target.set(0, FLOOR_STACK_GAP * 1.5, 0)
+      }
+      planCamera.zoom = 1
+      planCamera.updateProjectionMatrix()
+      planControls.update()
+    }
 
-    scene.add(new THREE.HemisphereLight(0xdceeff, 0x77725e, 1.6))
+    const ambient = new THREE.HemisphereLight(0xdceeff, 0x77725e, 1.6)
+    ambient.layers.enable(1)
+    scene.add(ambient)
     const sunlight = new THREE.DirectionalLight(0xfff2e0, 3)
     sunlight.castShadow = true
     const shadowSize = Math.min(4096, renderer.capabilities.maxTextureSize)
@@ -758,6 +863,25 @@ export function BuildingHeatmap({
       }
       panels.set(orientation, zones)
     }
+
+    const plan = createBandPlan(panels, WALL_DIVISIONS)
+    for (const level of plan.levels) {
+      const label = labelSprite(
+        floorGroupLabel(level.band, floors),
+        FLOOR_PLANS[level.orientation].color
+      )
+      label.position.set(3, 0.3, 3)
+      label.scale.multiplyScalar(1.15)
+      label.layers.set(1)
+      label.renderOrder = 5
+      label.userData = {
+        band: level.band,
+        surface: `wall:${level.orientation}`,
+      }
+      level.group.add(label)
+      plan.pickables.push(label)
+    }
+    scene.add(plan.group)
 
     // Roof slab: oversails the walls, then steps in to the crown deck. One
     // sloping quadrant per cardinal, each carrying its own plane-of-array.
@@ -1029,8 +1153,21 @@ export function BuildingHeatmap({
       const rect = renderer.domElement.getBoundingClientRect()
       pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
       pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
-      raycaster.setFromCamera(pointer, camera)
-      return raycaster.intersectObjects(pickable, false)[0]
+      const isPlan = cameraModeRef.current === 'plan'
+      raycaster.layers.set(isPlan ? 1 : 0)
+      raycaster.setFromCamera(pointer, renderCamera())
+      return raycaster.intersectObjects(
+        isPlan
+          ? plan.pickables.filter(
+              (object) =>
+                object.visible &&
+                object.userData.surface === `wall:${planSideRef.current}` &&
+                (!object.userData.zone ||
+                  availableZones.current.has(object.userData.zone))
+            )
+          : pickable,
+        false
+      )[0]
     }
     // A zone frame traces whichever zone it is pointed at.
     const traceZone = (outlineFor: THREE.LineLoop, target?: THREE.Object3D) => {
@@ -1109,6 +1246,7 @@ export function BuildingHeatmap({
       if (probeRef.current) probeRef.current.hidden = true
     }
     controls.addEventListener('start', onPointerLeave)
+    planControls.addEventListener('start', onPointerLeave)
     const onPointerUp = (event: PointerEvent) => {
       if (!pressedAt) return
       const travelled = Math.hypot(
@@ -1118,6 +1256,11 @@ export function BuildingHeatmap({
       pressedAt = null
       if (travelled > 5) return
       const target = pick(event)?.object
+      if (
+        cameraModeRef.current === 'plan' &&
+        typeof target?.userData.band === 'number'
+      )
+        onSelectBandRef.current?.(target.userData.band)
       const surface = target?.userData.surface as SurfaceId | undefined
       const id = target?.userData.zone as string | undefined
       if (surface) onSelectRef.current(surface)
@@ -1126,6 +1269,7 @@ export function BuildingHeatmap({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
       highlightZone(null)
+      if (cameraModeRef.current === 'plan') onSelectBandRef.current?.(null)
       onSelectZoneRef.current?.(null)
     }
     renderer.domElement.addEventListener('pointerdown', onPointerDown)
@@ -1162,6 +1306,12 @@ export function BuildingHeatmap({
         object.receiveShadow = true
       }
     })
+    // The raised service overlay should not cast false ceiling shadows on rooms.
+    for (const level of plan.levels)
+      level.hvac.traverse((object) => {
+        object.castShadow = false
+        object.receiveShadow = false
+      })
 
     const cloudCanopy = createCloudCanopy(height + 3)
     scene.add(cloudCanopy.mesh)
@@ -1238,16 +1388,34 @@ export function BuildingHeatmap({
       } else {
         dirtyWalls.clear()
       }
-      controls.update()
-      renderer.render(scene, camera)
+      const isPlan = cameraModeRef.current === 'plan'
+      controls.enabled = !isPlan
+      controls.enableRotate = !isPlan
+      planControls.enabled = isPlan
+      planControls.enableRotate = planAngleRef.current === 'cutaway'
+      if (!isPlan) controls.update()
+      else {
+        planControls.update()
+        if (
+          plan.update(
+            focusedBandRef.current,
+            planSideRef.current,
+            availableZones.current,
+            showHvacRef.current,
+            planAngleRef.current === 'top'
+          )
+        )
+          renderer.shadowMap.needsUpdate = true
+      }
+      renderer.render(scene, renderCamera())
       // Keep the bubble pinned to its zone as the model turns.
       const bubble = bubbleRef.current
       if (!bubble) return
-      if (!anchor) {
+      if (!anchor || isPlan) {
         bubble.style.visibility = 'hidden'
         return
       }
-      projected.copy(anchor).project(camera)
+      projected.copy(anchor).project(renderCamera())
       bubble.style.visibility = projected.z > 1 ? 'hidden' : 'visible'
       bubble.style.left = `${((projected.x + 1) / 2) * 100}%`
       bubble.style.top = `${((1 - projected.y) / 2) * 100}%`
@@ -1259,6 +1427,7 @@ export function BuildingHeatmap({
       camera.aspect = mount.clientWidth / mount.clientHeight
       camera.fov = fieldOfView(camera.aspect)
       camera.updateProjectionMatrix()
+      sizePlan(camera.aspect)
       renderer.setSize(mount.clientWidth, mount.clientHeight)
     })
     observer.observe(mount)
@@ -1267,6 +1436,9 @@ export function BuildingHeatmap({
       renderer,
       scene,
       camera,
+      planCamera,
+      planControls,
+      fitPlan,
       controls,
       panels,
       roofFaces,
@@ -1299,6 +1471,9 @@ export function BuildingHeatmap({
       window.removeEventListener('keydown', onKeyDown)
       controls.removeEventListener('start', onPointerLeave)
       controls.dispose()
+      planControls.removeEventListener('start', onPointerLeave)
+      planControls.dispose()
+      plan.dispose()
       frames.forEach((geometry) => geometry.dispose())
       pickable.forEach((mesh) => mesh.userData.heatMaterial.dispose())
       occluderMaterial.dispose()
@@ -1330,6 +1505,13 @@ export function BuildingHeatmap({
       sceneRef.current = null
     }
   }, [floors, overhang, roofPitch])
+
+  useEffect(() => {
+    sceneRef.current?.fitPlan()
+  }, [planAngle, floors, overhang, roofPitch])
+  useEffect(() => {
+    if (planAngle === 'top') sceneRef.current?.fitPlan()
+  }, [focusedBand, planAngle])
 
   useEffect(() => {
     const context = sceneRef.current
@@ -1677,13 +1859,15 @@ export function BuildingHeatmap({
           className='absolute inset-0 cursor-grab active:cursor-grabbing'
           role='img'
           aria-label={
-            surfaceMode === 'irradiance'
-              ? `${BUILDING_VARIANTS[buildingVariant]}. Three-dimensional irradiance heatmap at ${timeLabel}. Blue means low irradiance, red means ${IRRADIANCE_MAX} watts per square metre or more. ${controlled ? 'Roof and louvre' : 'Passive roof and building'} shadows are sampled from the building mesh. Hover a surface for its local irradiance. Unshaded plane-of-array readings are available in the surface readings table.`
-              : surfaceMode === 'model'
-                ? `${BUILDING_VARIANTS[buildingVariant]}. Three-dimensional architectural model of ${locationName}, with glazing, floor bands, ${controlled ? 'louvres and actuators, ' : 'no external louvres or actuators, '}and a roof skylight. Drag to orbit.`
-                : surfaceMode === 'exposure'
-                  ? `${BUILDING_VARIANTS[buildingVariant]}. Three-dimensional model of the building with every wall shaded by its surface temperature at ${timeLabel} and the roof shaded by its daily solar exposure, ranging from ${roofRange[0].toFixed(1)} to ${roofRange[1].toFixed(1)} kilowatt hours per square metre. The roof legend shows the full daily range; the readings table shows the selected time.`
-                  : `${BUILDING_VARIANTS[buildingVariant]}. Three-dimensional model of the building with every wall shaded by its surface temperature at ${timeLabel}. The same values are listed in the wall readings table.`
+            activeCameraMode === 'plan'
+              ? `${planAngle === 'top' ? 'Top-down detail' : 'Stacked 3D view'} of the ${planSide} floor plans · ${focusedBand === null ? 'all four floor groups in colour' : `${floorGroupLabel(focusedBand, floors)} selected; other levels greyed out`} · illustrative interiors; ${showHvac ? 'illustrative overhead HVAC supply, return and air-handling unit shown' : 'HVAC hidden'}; coloured edge shows only the ${planSide} facade readings`
+              : surfaceMode === 'irradiance'
+                ? `${BUILDING_VARIANTS[buildingVariant]}. Three-dimensional irradiance heatmap at ${timeLabel}. Blue means low irradiance, red means ${IRRADIANCE_MAX} watts per square metre or more. ${controlled ? 'Roof and louvre' : 'Passive roof and building'} shadows are sampled from the building mesh. Hover a surface for its local irradiance. Unshaded plane-of-array readings are available in the surface readings table.`
+                : surfaceMode === 'model'
+                  ? `${BUILDING_VARIANTS[buildingVariant]}. Three-dimensional architectural model of ${locationName}, with glazing, floor bands, ${controlled ? 'louvres and actuators, ' : 'no external louvres or actuators, '}and a roof skylight. Drag to orbit.`
+                  : surfaceMode === 'exposure'
+                    ? `${BUILDING_VARIANTS[buildingVariant]}. Three-dimensional model of the building with every wall shaded by its surface temperature at ${timeLabel} and the roof shaded by its daily solar exposure, ranging from ${(roofRange[0] * 3.6).toFixed(1)} to ${(roofRange[1] * 3.6).toFixed(1)} megajoules per square metre. The roof legend shows the full daily range; the readings table shows the selected time.`
+                    : `${BUILDING_VARIANTS[buildingVariant]}. Three-dimensional model of the building with every wall shaded by its surface temperature at ${timeLabel}. The same values are listed in the wall readings table.`
           }
         />
       ) : (
@@ -1717,7 +1901,13 @@ export function BuildingHeatmap({
 
       <div className='pointer-events-none absolute inset-x-3 top-3 z-10 flex flex-wrap items-start justify-between gap-2'>
         <div className='stage-panel w-full max-w-[340px]'>
-          <p className='flex items-center gap-1.5 text-[11px] font-semibold'>
+          <p
+            className={
+              activeCameraMode === 'plan'
+                ? 'hidden'
+                : 'flex items-center gap-1.5 text-[11px] font-semibold'
+            }
+          >
             <Box className='h-3.5 w-3.5 text-primary' />
             {locationName}
           </p>
@@ -1739,153 +1929,255 @@ export function BuildingHeatmap({
               ))}
             </select>
           </label>
-          <p className='mt-1 hidden text-[9px] text-muted-foreground sm:block'>
+          <p
+            className={
+              activeCameraMode === 'plan'
+                ? 'hidden'
+                : 'mt-1 hidden text-[9px] text-muted-foreground sm:block'
+            }
+          >
             Same geometry, sun, time and colour scales. Only the external
             adaptive facade changes.
           </p>
           <div
-            aria-label='Surface colouring'
-            className='mt-2 flex flex-wrap gap-1'
             role='group'
+            aria-label='Camera mode'
+            className='mt-2 flex gap-1'
           >
-            {SURFACE_MODES.filter(
-              ([mode]) => mode !== 'exposure' || ticks?.length
-            ).map(([mode, label]) => (
+            {CAMERA_MODES.map(([mode, label]) => (
               <button
-                aria-pressed={surfaceMode === mode}
-                className={
-                  surfaceMode === mode
-                    ? 'rounded-md bg-primary px-2 py-1.5 text-[10px] font-semibold text-primary-foreground'
-                    : 'rounded-md border border-border px-2 py-1.5 text-[10px] text-muted-foreground hover:bg-secondary/60'
-                }
-                key={mode}
-                onClick={() => setSurfaceMode(mode)}
                 type='button'
+                className='band-button'
+                aria-pressed={activeCameraMode === mode}
+                key={mode}
+                onClick={() => setCameraOverride(mode)}
               >
                 {label}
               </button>
             ))}
           </div>
-          <label className='mt-3 flex items-center gap-2 text-[10px]'>
-            <input
-              type='checkbox'
-              checked={showClouds}
-              onChange={(event) => setShowClouds(event.target.checked)}
-            />
-            Clouds overhead · {Math.round(cloudCover * 100)}% ·{' '}
-            {visionSky ? 'AI vision' : 'weather / simulation'}
-          </label>
-          {showClouds && (
-            <p className='mt-1 text-[9px] text-muted-foreground'>
-              Projected cloud shadows · placement and drift modelled
-            </p>
-          )}
-          {surfaceMode !== 'model' && (
-            <div className='mt-3'>
-              <p className='mb-1.5 flex justify-between text-[9px] font-semibold uppercase tracking-wider text-muted-foreground'>
-                <span>
-                  {surfaceMode === 'irradiance'
-                    ? 'Surface irradiance'
-                    : surfaceMode === 'exposure'
-                      ? 'Roof · daily solar exposure'
-                      : 'Sol-air temperature'}
-                </span>
-                <span>
-                  {surfaceMode === 'irradiance'
-                    ? 'W/m²'
-                    : surfaceMode === 'exposure'
-                      ? 'kWh/m²'
-                      : '°C'}
-                </span>
-              </p>
-              <span
-                className='block h-2.5 w-full rounded-sm'
-                style={{
-                  backgroundImage: `linear-gradient(to right, ${(surfaceMode ===
-                  'irradiance'
-                    ? IRRADIANCE_LEGEND
-                    : surfaceMode === 'exposure'
-                      ? EXPOSURE_RAMP
-                      : HEAT_RAMP
-                  ).join(', ')})`,
-                }}
-              />
-              <div className='mt-1 flex justify-between font-mono text-[9px] tabular-nums text-muted-foreground'>
-                {[0, 0.25, 0.5, 0.75, 1].map((fraction) => (
-                  <span key={fraction}>
-                    {surfaceMode === 'irradiance'
-                      ? `${fraction * IRRADIANCE_MAX}${fraction === 1 ? '+' : ''}`
-                      : surfaceMode === 'exposure'
-                        ? (
-                            roofRange[0] +
-                            fraction * (roofRange[1] - roofRange[0])
-                          ).toFixed(1)
-                        : `${Math.round(TEMP_MIN + fraction * (TEMP_MAX - TEMP_MIN))}${fraction === 1 ? '+' : ''}`}
-                  </span>
-                ))}
-              </div>
-              {surfaceMode === 'exposure' && (
-                <p className='mt-1 text-[9px] text-muted-foreground'>
-                  Walls: surface temperature · {TEMP_MIN}–{TEMP_MAX} °C
-                  <span
-                    className='ml-2 inline-block h-1.5 w-16 rounded-full'
-                    style={{
-                      backgroundImage: `linear-gradient(to right, ${HEAT_RAMP.join(', ')})`,
+          {activeCameraMode === 'plan' && (
+            <>
+              <div className='mt-2 flex flex-wrap gap-1'>
+                <div
+                  role='group'
+                  aria-label='Floor viewing angle'
+                  className='flex gap-1'
+                >
+                  <button
+                    type='button'
+                    className='band-button'
+                    aria-pressed={planAngle === 'cutaway'}
+                    onClick={() => setPlanAngle('cutaway')}
+                  >
+                    3D stack
+                  </button>
+                  <button
+                    type='button'
+                    className='band-button'
+                    aria-pressed={planAngle === 'top'}
+                    onClick={() => {
+                      if (focusedBand === null) onSelectBand?.(band)
+                      setPlanAngle('top')
                     }}
-                  />
+                  >
+                    Top down
+                  </button>
+                </div>
+                <button
+                  type='button'
+                  className='band-button'
+                  aria-pressed={showHvac}
+                  onClick={() => setShowHvac((shown) => !shown)}
+                >
+                  HVAC overlay
+                </button>
+              </div>
+              {showHvac && (
+                <p className='mt-1 text-[9px] leading-4'>
+                  <span className='font-semibold text-cyan-700'>
+                    Supply → rooms
+                  </span>
+                  {' · '}
+                  <span className='font-semibold text-amber-800'>
+                    Return → AHU
+                  </span>
+                  {' · schematic'}
                 </p>
               )}
-            </div>
+              <p className='mt-2 text-[10px] font-semibold'>
+                {planSide.toUpperCase()} FLOOR STACK
+              </p>
+              <p className='mt-1 text-[9px] leading-4 text-muted-foreground'>
+                {focusedBand === null
+                  ? 'Four levels · click a floor group to inspect'
+                  : `${floorGroupLabel(focusedBand, floors)} · ${FLOOR_PLANS[floorProgram(planSide, focusedBand)].name}`}
+                <br />
+                {planAngle === 'cutaway'
+                  ? 'Other levels grey out on selection · drag to rotate · scroll to zoom.'
+                  : 'North up · scroll to zoom.'}
+              </p>
+            </>
           )}
-          <p className='mt-2 hidden text-[10px] leading-relaxed text-muted-foreground sm:block'>
-            {surfaceMode === 'irradiance'
-              ? controlled
-                ? 'Modelled sunlight with roof, skylight and louvre shadows. Diffuse light uses the selected tick’s optical estimate. Hover to inspect.'
-                : 'No external facade: passive roof and skylight shadows remain, without louvre shading. Hover to inspect.'
-              : surfaceMode === 'exposure'
-                ? 'Whole-day roof exposure. Unchanged between buildings; holds still as you scrub the timeline.'
-                : surfaceMode === 'model'
-                  ? controlled
-                    ? 'Glazed facades, metal louvres and a diamond skylight.'
-                    : 'Glazing, building mass and skylight remain. No external louvres or actuators.'
-                  : controlled
-                    ? 'Estimated surface temperature after louvre shading.'
-                    : 'Estimated surface temperature with passive shading only; no external louvres.'}
-          </p>
-          <p className='mt-1 text-[9px] text-muted-foreground'>
-            Drag to orbit · scroll to zoom ·{' '}
-            {zone
-              ? `zone ${zone.id} selected · esc to clear`
-              : 'click any zone'}
-          </p>
-          <div className='mt-2 flex flex-wrap items-center gap-1.5 border-t border-border/60 pt-2'>
-            <button
-              type='button'
-              aria-label='Focus selected facade'
-              onClick={focusFacade}
-              className='flex items-center gap-1 rounded-md border border-border px-2 py-1.5 text-[10px] hover:bg-secondary/60'
+          <details open={activeCameraMode !== 'plan'}>
+            <summary
+              className={
+                activeCameraMode === 'plan'
+                  ? 'mt-2 cursor-pointer text-[10px] font-semibold'
+                  : 'hidden'
+              }
             >
-              <Focus className='h-3 w-3' /> Façade detail
-            </button>
-            {detailedView && (
+              View settings
+            </summary>
+            <div
+              aria-label='Surface colouring'
+              className='mt-2 flex flex-wrap gap-1'
+              role='group'
+            >
+              {SURFACE_MODES.filter(
+                ([mode]) =>
+                  mode !== 'exposure' ||
+                  (ticks?.length && activeCameraMode !== 'plan')
+              ).map(([mode, label]) => (
+                <button
+                  aria-pressed={surfaceMode === mode}
+                  className={
+                    surfaceMode === mode
+                      ? 'rounded-md bg-primary px-2 py-1.5 text-[10px] font-semibold text-primary-foreground'
+                      : 'rounded-md border border-border px-2 py-1.5 text-[10px] text-muted-foreground hover:bg-secondary/60'
+                  }
+                  key={mode}
+                  onClick={() => setSurfaceMode(mode)}
+                  type='button'
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <label className='mt-3 flex items-center gap-2 text-[10px]'>
+              <input
+                type='checkbox'
+                checked={showClouds}
+                onChange={(event) => setShowClouds(event.target.checked)}
+              />
+              Clouds overhead · {Math.round(cloudCover * 100)}% ·{' '}
+              {visionSky ? 'AI vision' : 'weather / simulation'}
+            </label>
+            {showClouds && (
+              <p className='mt-1 text-[9px] text-muted-foreground'>
+                Projected cloud shadows · placement and drift modelled
+              </p>
+            )}
+            {surfaceMode !== 'model' && (
+              <div className='mt-3'>
+                <p className='mb-1.5 flex justify-between text-[9px] font-semibold uppercase tracking-wider text-muted-foreground'>
+                  <span>
+                    {surfaceMode === 'irradiance'
+                      ? 'Surface irradiance'
+                      : surfaceMode === 'exposure'
+                        ? 'Roof · daily solar exposure'
+                        : 'Sol-air temperature'}
+                  </span>
+                  <span>
+                    {surfaceMode === 'irradiance'
+                      ? 'W/m²'
+                      : surfaceMode === 'exposure'
+                        ? 'MJ/m²'
+                        : '°C'}
+                  </span>
+                </p>
+                <span
+                  className='block h-2.5 w-full rounded-sm'
+                  style={{
+                    backgroundImage: `linear-gradient(to right, ${(surfaceMode ===
+                    'irradiance'
+                      ? IRRADIANCE_LEGEND
+                      : surfaceMode === 'exposure'
+                        ? EXPOSURE_RAMP
+                        : HEAT_RAMP
+                    ).join(', ')})`,
+                  }}
+                />
+                <div className='mt-1 flex justify-between font-mono text-[9px] tabular-nums text-muted-foreground'>
+                  {[0, 0.25, 0.5, 0.75, 1].map((fraction) => (
+                    <span key={fraction}>
+                      {surfaceMode === 'irradiance'
+                        ? `${fraction * IRRADIANCE_MAX}${fraction === 1 ? '+' : ''}`
+                        : surfaceMode === 'exposure'
+                          ? (
+                              (roofRange[0] +
+                                fraction * (roofRange[1] - roofRange[0])) *
+                              3.6
+                            ).toFixed(1)
+                          : `${Math.round(TEMP_MIN + fraction * (TEMP_MAX - TEMP_MIN))}${fraction === 1 ? '+' : ''}`}
+                    </span>
+                  ))}
+                </div>
+                {surfaceMode === 'exposure' && (
+                  <p className='mt-1 text-[9px] text-muted-foreground'>
+                    Walls: surface temperature · {TEMP_MIN}–{TEMP_MAX} °C
+                    <span
+                      className='ml-2 inline-block h-1.5 w-16 rounded-full'
+                      style={{
+                        backgroundImage: `linear-gradient(to right, ${HEAT_RAMP.join(', ')})`,
+                      }}
+                    />
+                  </p>
+                )}
+              </div>
+            )}
+            <p className='mt-2 hidden text-[10px] leading-relaxed text-muted-foreground sm:block'>
+              {surfaceMode === 'irradiance'
+                ? controlled
+                  ? 'Modelled sunlight with roof, skylight and louvre shadows. Diffuse light uses the selected tick’s optical estimate. Hover to inspect.'
+                  : 'No external facade: passive roof and skylight shadows remain, without louvre shading. Hover to inspect.'
+                : surfaceMode === 'exposure'
+                  ? 'Whole-day roof exposure. Unchanged between buildings; holds still as you scrub the timeline.'
+                  : surfaceMode === 'model'
+                    ? controlled
+                      ? 'Glazed facades, metal louvres and a diamond skylight.'
+                      : 'Glazing, building mass and skylight remain. No external louvres or actuators.'
+                    : controlled
+                      ? 'Estimated surface temperature after louvre shading.'
+                      : 'Estimated surface temperature with passive shading only; no external louvres.'}
+            </p>
+            <p className='mt-1 text-[9px] text-muted-foreground'>
+              {activeCameraMode === 'plan'
+                ? 'Select a coloured facade zone · '
+                : 'Drag to orbit · scroll to zoom · '}
+              {zone
+                ? `zone ${zone.id} selected · esc to clear`
+                : 'click any zone'}
+            </p>
+            <div className='mt-2 flex flex-wrap items-center gap-1.5 border-t border-border/60 pt-2'>
               <button
                 type='button'
-                aria-label='Show whole building'
-                onClick={showBuilding}
-                className='rounded-md border border-border p-1.5 hover:bg-secondary/60'
+                aria-label='Focus selected facade'
+                onClick={focusFacade}
+                className='flex items-center gap-1 rounded-md border border-border px-2 py-1.5 text-[10px] hover:bg-secondary/60'
               >
-                <RotateCcw className='h-3 w-3' />
+                <Focus className='h-3 w-3' /> Façade detail
               </button>
-            )}
-          </div>
-          <p
-            ref={motionReadoutRef}
-            className='mt-1.5 font-mono text-[9px] capitalize text-muted-foreground'
-          >
-            {controlled
-              ? `${activeWall} louvres · follows timeline`
-              : 'No external louvres, actuators or control brain'}
-          </p>
+              {detailedView && (
+                <button
+                  type='button'
+                  aria-label='Show whole building'
+                  onClick={showBuilding}
+                  className='rounded-md border border-border p-1.5 hover:bg-secondary/60'
+                >
+                  <RotateCcw className='h-3 w-3' />
+                </button>
+              )}
+            </div>
+            <p
+              ref={motionReadoutRef}
+              className='mt-1.5 font-mono text-[9px] capitalize text-muted-foreground'
+            >
+              {controlled
+                ? `${activeWall} louvres · follows timeline`
+                : 'No external louvres, actuators or control brain'}
+            </p>
+          </details>
         </div>
 
         <div className='stage-panel hidden flex-col items-end gap-1 sm:flex'>

@@ -11,7 +11,14 @@ interface ControllerPanelProps {
   onRun: () => void
 }
 
-const weightLabels: Array<{
+export const DEFAULT_WEIGHTS: ControllerWeights = {
+  thermal: 0.45,
+  lux: 0.45,
+  movement: 0.05,
+  risk: 0.05,
+}
+
+export const weightLabels: Array<{
   key: keyof ControllerWeights
   label: string
   symbol: string
@@ -80,14 +87,8 @@ export function ControllerPanel({
     (sum, weight) => sum + weight,
     0
   )
-  const fallbackWeights: ControllerWeights = {
-    thermal: 0.45,
-    lux: 0.45,
-    movement: 0.05,
-    risk: 0.05,
-  }
   const normalized = (key: keyof ControllerWeights) =>
-    weightTotal > 0 ? value.weights[key] / weightTotal : fallbackWeights[key]
+    weightTotal > 0 ? value.weights[key] / weightTotal : DEFAULT_WEIGHTS[key]
   const setWeight = (key: keyof ControllerWeights, next: number) => {
     onChange({ ...value, weights: { ...value.weights, [key]: next } })
   }

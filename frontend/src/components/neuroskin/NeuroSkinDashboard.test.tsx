@@ -10,6 +10,40 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NeuroSkinDashboard } from './NeuroSkinDashboard'
 import type { SimulationRunResponse, ZoneHeat } from '@/lib/types'
 
+vi.mock('next/navigation', () => ({
+  useSearchParams: () =>
+    new URLSearchParams(
+      React.useSyncExternalStore(
+        (notify) => {
+          window.addEventListener('popstate', notify)
+          return () => window.removeEventListener('popstate', notify)
+        },
+        () => window.location.search
+      )
+    ),
+}))
+vi.mock('next/link', () => ({
+  default: ({
+    href,
+    children,
+    scroll,
+    ...props
+  }: React.ComponentProps<'a'> & { scroll?: boolean }) => (
+    <a
+      {...props}
+      data-scroll={String(scroll)}
+      href={href}
+      onClick={(event) => {
+        event.preventDefault()
+        window.history.pushState(null, '', href)
+        window.dispatchEvent(new PopStateEvent('popstate'))
+      }}
+    >
+      {children}
+    </a>
+  ),
+}))
+
 const response: SimulationRunResponse = {
   scenario: 'overview',
   title: 'NeuroSkin representative tropical day',
@@ -190,6 +224,7 @@ describe('NeuroSkinDashboard', () => {
   const fetchMock = vi.fn()
 
   beforeEach(() => {
+    window.history.replaceState(null, '', '/dashboard')
     fetchMock.mockReset()
     fetchMock.mockResolvedValue({ ok: true, json: async () => response })
     vi.stubGlobal('fetch', fetchMock)
@@ -215,9 +250,7 @@ describe('NeuroSkinDashboard', () => {
     expect(screen.getByText('Impact')).toBeInTheDocument()
     expect(screen.getByText('Selected tick')).toBeInTheDocument()
     expect(screen.queryByText('Decision explanation')).not.toBeInTheDocument()
-    expect(
-      screen.queryByText(/all environmental and sensor data are synthetic/i)
-    ).not.toBeInTheDocument()
+    expect(screen.getByText(response.metadata.data_notice)).toBeInTheDocument()
     expect(screen.queryByText(/kWh/i)).not.toBeInTheDocument()
   })
 
@@ -290,6 +323,7 @@ describe('NeuroSkinDashboard', () => {
     expect(panel).toHaveTextContent('Lux compliance: 90% vs 60% naive')
     expect(panel).toHaveTextContent('1 louvre movements across the day')
 
+    fireEvent.click(screen.getByRole('link', { name: 'Brains' }))
     // And so do all three sets of charts, rather than one area swapping.
     expect(
       screen.getByRole('region', { name: 'Tier 1 charts' })
@@ -306,7 +340,7 @@ describe('NeuroSkinDashboard', () => {
     expect(screen.getByText('Daylight compliance')).toBeInTheDocument()
   }, 15000)
 
-  it('shows only the compact MET source status in the operating view', async () => {
+  it('shows the MET provider and full notice in every lens', async () => {
     const anchored: SimulationRunResponse = {
       ...response,
       metadata: {
@@ -347,7 +381,10 @@ describe('NeuroSkinDashboard', () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => anchored })
     render(<NeuroSkinDashboard />)
 
-    expect(await screen.findByText('MET anchored')).toBeInTheDocument()
+    expect(
+      await screen.findByText('MET Malaysia via data.gov.my')
+    ).toBeInTheDocument()
+    expect(screen.getByText(anchored.metadata.data_notice)).toBeInTheDocument()
     expect(screen.queryByTestId('weather-context')).not.toBeInTheDocument()
     expect(
       screen.queryByText(/Continuous Rain Warning/)
@@ -556,6 +593,8 @@ describe('NeuroSkinDashboard', () => {
       }
     })
     render(<NeuroSkinDashboard />)
+    await screen.findByText('Mean load')
+    fireEvent.click(screen.getByRole('link', { name: 'Floor' }))
     await screen.findByRole('region', { name: 'west zone sensors' })
     const timeline = screen.getByRole('slider', { name: 'Simulation timeline' })
     fireEvent.change(timeline, { target: { value: '1' } })
@@ -565,7 +604,8 @@ describe('NeuroSkinDashboard', () => {
     const building = screen.getByRole('combobox', {
       name: 'Monitored building',
     })
-    const comparison = screen.getByRole('region', {
+    fireEvent.click(screen.getByRole('link', { name: 'Building' }))
+    let comparison = screen.getByRole('region', {
       name: 'Building irradiance comparison',
     })
     expect(comparison).toHaveTextContent('West · W2')
@@ -583,6 +623,7 @@ describe('NeuroSkinDashboard', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(timeline).toHaveValue('1')
     expect(comparison).toHaveTextContent(wallComparison!)
+    fireEvent.click(screen.getByRole('link', { name: 'Floor' }))
     expect(screen.getByRole('button', { name: /^Zone W2,/ })).toHaveAttribute(
       'aria-pressed',
       'true'
@@ -647,12 +688,14 @@ describe('NeuroSkinDashboard', () => {
       'true'
     )
     expect(screen.getByText('20.0° angle')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('link', { name: 'Building' }))
     expect(screen.getByText('Mean load')).toBeInTheDocument()
     expect(
       screen.getByRole('complementary', {
         name: 'Controller settings and formulas',
       })
     ).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('link', { name: 'Floor' }))
     expect(screen.getByLabelText('Sensor irradiance')).toHaveValue(300)
     expect(screen.getByText('Facade power')).toBeInTheDocument()
     expect(screen.getByText('Powered · controller active')).toBeInTheDocument()
@@ -688,6 +731,10 @@ describe('NeuroSkinDashboard', () => {
     expect(timeline).toHaveValue('1')
 
     fireEvent.click(screen.getByRole('button', { name: /^roof west$/i }))
+    fireEvent.click(screen.getByRole('link', { name: 'Building' }))
+    comparison = screen.getByRole('region', {
+      name: 'Building irradiance comparison',
+    })
     expect(comparison).toHaveTextContent('West roof')
     expect(
       within(comparison).getByText('Controlled').nextElementSibling
@@ -705,6 +752,220 @@ describe('NeuroSkinDashboard', () => {
       expect(timeline).toHaveValue('1')
       expect(fetchMock).toHaveBeenCalledTimes(3)
     }
+  })
+
+  it('keeps applied objective weights with cached results while settings are edited', async () => {
+    render(<NeuroSkinDashboard />)
+    await screen.findByText('Mean load')
+    fireEvent.change(screen.getByRole('slider', { name: 'Thermal load' }), {
+      target: { value: '0' },
+    })
+    fireEvent.click(screen.getByRole('link', { name: 'Brains' }))
+    expect(
+      within(
+        screen.getByRole('region', { name: 'Cost breakdown' })
+      ).getAllByText('· weight 45%')
+    ).toHaveLength(2)
+    fireEvent.click(screen.getByRole('link', { name: 'Building' }))
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Apply settings and re-run' })
+    )
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    await screen.findByRole('button', { name: 'Apply settings and re-run' })
+    fireEvent.click(screen.getByRole('link', { name: 'Brains' }))
+    expect(
+      within(screen.getByRole('region', { name: 'Cost breakdown' })).getByText(
+        '· weight 0%'
+      )
+    ).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('link', { name: 'Building' }))
+    fireEvent.click(screen.getByRole('button', { name: /Read sensor stream/ }))
+    fireEvent.click(screen.getByRole('link', { name: 'Brains' }))
+    expect(
+      within(
+        screen.getByRole('region', { name: 'Cost breakdown' })
+      ).getAllByText('· weight 45%')
+    ).toHaveLength(2)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('opens deep links and falls back to Building for unknown lenses', async () => {
+    window.history.replaceState(null, '', '/dashboard?view=brains')
+    render(<NeuroSkinDashboard />)
+    await screen.findByRole('region', { name: 'Cost breakdown' })
+    expect(screen.queryByText('Mean load')).not.toBeInTheDocument()
+    expect(
+      screen.getByRole('region', { name: 'Data provenance' })
+    ).toHaveTextContent(response.metadata.data_notice)
+    fireEvent.click(screen.getByRole('link', { name: 'Building' }))
+    expect(screen.getByText('Mean load')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('link', { name: 'Floor' }))
+    expect(
+      screen.getByText('Zone grid unavailable for this side')
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Floor plan' })).toHaveAttribute(
+      'aria-pressed',
+      'true'
+    )
+    fireEvent.popState(window, { state: null })
+    // An arbitrary external URL value never becomes a lens.
+    window.history.replaceState(null, '', '/dashboard?view=nonsense')
+    fireEvent.popState(window)
+    expect(screen.getByText('Mean load')).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps an in-flight tier run and the stage mounted while navigating lenses', async () => {
+    let finish: ((value: unknown) => void) | undefined
+    render(<NeuroSkinDashboard />)
+    await screen.findByText('Mean load')
+    const stage = screen.getByRole('region', { name: 'Building model' })
+    const building = screen.getByRole('combobox', {
+      name: 'Monitored building',
+    })
+    const video = screen.getByLabelText('Sky video feed')
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve
+        })
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Run simulation' }))
+    const signal = fetchMock.mock.calls[1][1].signal as AbortSignal
+    fireEvent.click(screen.getByRole('link', { name: 'Floor' }))
+    expect(signal.aborted).toBe(false)
+    expect(screen.getByRole('region', { name: 'Building model' })).toBe(stage)
+    expect(screen.getByRole('combobox', { name: 'Monitored building' })).toBe(
+      building
+    )
+    finish?.({ ok: true, json: async () => response })
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5), {
+      timeout: 6000,
+    })
+    fireEvent.click(screen.getByRole('link', { name: 'Building' }))
+    await screen.findByText('4/4 complete')
+    expect(screen.getByLabelText('Sky video feed')).toBe(video)
+    fireEvent.click(screen.getByRole('link', { name: 'Brains' }))
+    expect(
+      screen.getByRole('region', { name: 'Tier 3 charts' })
+    ).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledTimes(5)
+  }, 15000)
+
+  it('switches complete side plans and scopes band readings and glare to that side', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ...response,
+        ticks: [
+          {
+            ...response.ticks[0],
+            facade: response.ticks[0].facade.map((wall) => ({
+              ...wall,
+              zones: Array.from({ length: 16 }, (_, index) => ({
+                row: Math.floor(index / 4),
+                column: index % 4,
+                zone: `${wall.orientation[0].toUpperCase()}${index + 1}`,
+                incident:
+                  Math.floor(index / 4) === 1
+                    ? wall.orientation === 'west'
+                      ? 300
+                      : 400
+                    : 900,
+                transmitted:
+                  Math.floor(index / 4) === 1
+                    ? wall.orientation === 'west'
+                      ? 150
+                      : 200
+                    : 600,
+                sunlit_fraction: 1,
+                sol_air_temp: 34,
+                angle: 20,
+                mode: 'HOLD',
+                moved: false,
+                lux: 400,
+                load_relative: 0.4,
+                sensor_trusted: true,
+                conditions: {
+                  daylight_status: 'useful',
+                  glare_risk: index === 4,
+                  transmitted: 150,
+                  solar_heat_gain: 60,
+                  direct_sun: 30,
+                  glare_limit_w_m2: 25,
+                  glazing_shgc: 0.4,
+                },
+              })),
+            })),
+          },
+        ],
+      }),
+    })
+    render(<NeuroSkinDashboard />)
+    await screen.findByText('Mean load')
+    fireEvent.click(screen.getByRole('link', { name: 'Floor' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Floors 3–4' }))
+    expect(screen.getByText('west floor stack')).toBeInTheDocument()
+    const zones = screen.getByRole('list', { name: 'Side zones' })
+    expect(within(zones).getAllByRole('listitem')).toHaveLength(4)
+    const workspaces = screen.getByRole('group', { name: 'Floor plan side' })
+    expect(within(workspaces).getAllByRole('button')).toHaveLength(4)
+    expect(
+      within(workspaces).getByRole('button', { name: 'north floor plan' })
+    ).toHaveTextContent('200 W/m²')
+    expect(
+      within(workspaces).getByRole('button', { name: 'west floor plan' })
+    ).toHaveTextContent('150 W/m²')
+    fireEvent.click(
+      within(workspaces).getByRole('button', { name: 'north floor plan' })
+    )
+    expect(screen.getByText('north floor stack')).toBeInTheDocument()
+    expect(
+      within(workspaces).getByRole('button', { name: 'north floor plan' })
+    ).toHaveAttribute('aria-pressed', 'true')
+    expect(within(zones).getAllByRole('listitem')).toHaveLength(4)
+    expect(
+      within(zones).getByRole('button', { name: /north · N5/ })
+    ).toBeInTheDocument()
+    expect(
+      within(zones).queryByRole('button', { name: /west · W5/ })
+    ).not.toBeInTheDocument()
+    fireEvent.click(
+      within(workspaces).getByRole('button', { name: 'west floor plan' })
+    )
+    expect(
+      within(zones).getByRole('button', { name: /west · W5/ })
+    ).toHaveTextContent('Glare risk')
+    expect(
+      within(zones).queryByText(/occupancy|Floor 2/)
+    ).not.toBeInTheDocument()
+    fireEvent.click(within(zones).getByRole('button', { name: /west · W5/ }))
+    expect(screen.getByRole('button', { name: /^Zone W5,/ })).toHaveAttribute(
+      'aria-pressed',
+      'true'
+    )
+    fireEvent.change(
+      screen.getByRole('combobox', { name: 'Monitored building' }),
+      { target: { value: 'baseline' } }
+    )
+    expect(
+      within(workspaces).getByRole('button', { name: 'west floor plan' })
+    ).toHaveTextContent('300 W/m²')
+    expect(
+      within(workspaces).getByRole('button', { name: 'north floor plan' })
+    ).toHaveTextContent('400 W/m²')
+    expect(workspaces).not.toHaveTextContent('Load index')
+    fireEvent.click(screen.getByRole('button', { name: 'Show all levels' }))
+    expect(within(zones).getAllByRole('listitem')).toHaveLength(16)
+    expect(
+      screen.getByRole('button', { name: 'Show all levels' })
+    ).toHaveAttribute('aria-pressed', 'true')
+    for (const label of ['Floors 1–2', 'Floors 3–4', 'Floors 5–6', 'Floor 7'])
+      expect(screen.getByRole('button', { name: label })).toHaveAttribute(
+        'aria-pressed',
+        'false'
+      )
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it('links to the project overview and excludes tutorial chrome', async () => {

@@ -7,6 +7,41 @@ import type {
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
+export interface HealthResponse {
+  status: string
+  service: string
+  model: string
+  dependencies: Record<
+    'roboflow' | 'open_meteo' | 'met_malaysia',
+    {
+      configured: boolean
+      last_status: string
+      last_success_at: string | null
+    }
+  >
+}
+
+async function get<T>(
+  path: string,
+  label: string,
+  signal?: AbortSignal
+): Promise<T> {
+  const response = await fetch(`${API_URL}${path}`, {
+    signal,
+    cache: 'no-store',
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    const detail = typeof payload?.detail === 'string' ? payload.detail : null
+    throw new Error(detail || `${label} API returned ${response.status}.`)
+  }
+  return response.json() as Promise<T>
+}
+
+export function getHealth(signal?: AbortSignal): Promise<HealthResponse> {
+  return get('/api/v1/health', 'Health', signal)
+}
+
 export interface CloudResult {
   cloud_mask?: number[][] | null
   cloud_cover: number | null
