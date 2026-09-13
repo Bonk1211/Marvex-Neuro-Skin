@@ -11,6 +11,8 @@ import numpy as np
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from app.feed_health import record_feed
+
 router = APIRouter(prefix="/api/v1/vision", tags=["vision"])
 WORKFLOW_URL = (
     "https://serverless.roboflow.com/infer/workflows/jias-workspace-tnv49/general-segmentation-api"
@@ -157,13 +159,17 @@ def detect_clouds(frame: CloudFrame) -> CloudResult:
             raw = response.read(6_000_001)
         if len(raw) > 6_000_000:
             raise ValueError("Workflow response too large")
-        return parse_clouds(json.loads(raw), frame.width, frame.height)
+        result = parse_clouds(json.loads(raw), frame.width, frame.height)
+        record_feed("roboflow", "applied")
+        return result
     except (URLError, TimeoutError, OSError):
+        record_feed("roboflow", "error")
         # Never return upstream bodies/URLs, which may contain credentials.
         raise HTTPException(
             502, "Cloud vision is unavailable. Check Roboflow access and retry."
         ) from None
     except (ValueError, KeyError, TypeError, AttributeError, ValidationError):
+        record_feed("roboflow", "error")
         raise HTTPException(
             502,
             "Unexpected workflow output. Expose segmentation predictions with image dimensions "

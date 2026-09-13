@@ -19,6 +19,41 @@ def test_health_and_config() -> None:
     assert config["simulation"]["actuator_speed_deg_per_min"] == 1.2
 
 
+def test_health_reports_observations_without_contacting_upstreams(monkeypatch) -> None:
+    from app import feed_health
+
+    monkeypatch.setattr(feed_health, "_observations", {})
+    monkeypatch.delenv("ROBOFLOW_API_KEY", raising=False)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Health must never make an outbound request")
+
+    monkeypatch.setattr("app.weather.urlopen", forbidden)
+    monkeypatch.setattr("app.vision.urlopen", forbidden)
+    result = client.get("/api/v1/health").json()
+    assert result["status"] == "ok"
+    assert result["service"] == "neuroskin-api"
+    assert result["model"] == "deterministic"
+    assert result["dependencies"]["roboflow"] == {
+        "configured": False,
+        "last_status": "unknown",
+        "last_success_at": None,
+    }
+    stamp = datetime(2026, 9, 13, 4, 4, tzinfo=timezone.utc)
+    feed_health.record_feed("open_meteo", "applied", stamp)
+    feed_health.record_feed("open_meteo", "applied", stamp.replace(day=12))
+    feed_health.record_feed("open_meteo", "fallback")
+    monkeypatch.setenv("ROBOFLOW_API_KEY", "test-secret")
+    result = client.get("/api/v1/health").json()
+    assert result["dependencies"]["open_meteo"] == {
+        "configured": True,
+        "last_status": "fallback",
+        "last_success_at": stamp.isoformat(),
+    }
+    assert result["dependencies"]["roboflow"]["configured"] is True
+    assert "test-secret" not in str(result)
+
+
 def test_simulation_is_reproducible_and_complete() -> None:
     request = {"scenario": "overview", "seed": 7}
     first = client.post("/api/v1/simulations/run", json=request)

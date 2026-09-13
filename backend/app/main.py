@@ -10,6 +10,7 @@ from app.config import DEFAULTS
 from app.domain.facade import ORIENTATIONS
 from app.domain.scenarios import SCENARIO_TITLES, run_scenario
 from app.domain.slab import plan_slab
+from app.feed_health import feed_health
 from app.logging_config import configure_logging
 from app.schemas import (
     SimulationRunRequest,
@@ -85,8 +86,13 @@ async def log_http_request(request: Request, call_next):
 
 
 @app.get("/api/v1/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "service": "neuroskin-api", "model": "deterministic"}
+def health() -> dict[str, object]:
+    return {
+        "status": "ok",
+        "service": "neuroskin-api",
+        "model": "deterministic",
+        "dependencies": feed_health(),
+    }
 
 
 @app.get("/api/v1/config")

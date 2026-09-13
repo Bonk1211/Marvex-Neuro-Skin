@@ -54,6 +54,9 @@ def test_cloud_workflow_contract_and_failures(monkeypatch):
     monkeypatch.setattr("app.vision.urlopen", upstream)
     result = client.post("/api/v1/vision/clouds", json=FRAME)
     assert result.status_code == 200
+    success = client.get("/api/v1/health").json()["dependencies"]["roboflow"]
+    assert success["last_status"] == "applied"
+    assert success["last_success_at"] is not None
     assert result.json()["detections"][0]["confidence"] == 0.9
     mask = result.json()["cloud_mask"]
     assert len(mask) == 72 and len(mask[0]) == 128
@@ -72,6 +75,9 @@ def test_cloud_workflow_contract_and_failures(monkeypatch):
     result = client.post("/api/v1/vision/clouds", json=FRAME)
     assert result.status_code == 502
     assert "test-secret" not in result.text
+    failed = client.get("/api/v1/health").json()["dependencies"]["roboflow"]
+    assert failed["last_status"] == "error"
+    assert failed["last_success_at"] is not None
 
 
 def test_mask_union_and_uncertain_detections():

@@ -75,6 +75,10 @@ def test_open_meteo_context_reads_every_hourly_channel():
     assert context.observed.cloud[0] == pytest.approx(0.4)  # percent converted to fraction
     assert context.observed.ghi[13] == pytest.approx(900.0)
     assert context.fallback_reason is None
+    from app.feed_health import feed_health
+
+    assert feed_health()["open_meteo"]["last_status"] == "applied"
+    assert feed_health()["open_meteo"]["last_success_at"] == context.fetched_at.isoformat()
 
 
 def test_open_meteo_falls_back_when_upstream_fails():
@@ -86,6 +90,9 @@ def test_open_meteo_falls_back_when_upstream_fails():
     assert context.status == "fallback"
     assert context.observed is None
     assert "upstream unavailable" in (context.fallback_reason or "")
+    from app.feed_health import feed_health
+
+    assert feed_health()["open_meteo"]["last_status"] == "fallback"
 
 
 def test_open_meteo_rejects_a_short_day():

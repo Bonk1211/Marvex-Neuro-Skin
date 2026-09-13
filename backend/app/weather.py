@@ -12,6 +12,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from app.domain.types import EnvironmentAnchor, ObservedWeather, Site
+from app.feed_health import record_feed
 
 FORECAST_URL = "https://api.data.gov.my/weather/forecast/"
 WARNING_URL = "https://api.data.gov.my/weather/warning/"
@@ -269,6 +270,7 @@ def get_met_weather_context(
             )
         else:
             reason = errors[0] if errors else "MET returned no forecast for Kuala Lumpur."
+        record_feed("met_malaysia", "fallback")
         return MetWeatherContext(
             status="fallback",
             fetched_at=fetched_at,
@@ -277,6 +279,7 @@ def get_met_weather_context(
             fallback_reason=reason,
         )
 
+    record_feed("met_malaysia", "degraded" if errors else "applied", fetched_at)
     return MetWeatherContext(
         status="applied",
         fetched_at=fetched_at,
@@ -368,6 +371,7 @@ def get_open_meteo_context(
         payload, fetched_at = _cached_fetch(key, OPEN_METEO_TTL_SECONDS, url, params, fetcher)
         observed = _parse_open_meteo(payload, simulation_date)
     except RuntimeError as exc:
+        record_feed("open_meteo", "fallback")
         return OpenMeteoContext(
             status="fallback",
             fetched_at=datetime.now(timezone.utc),
@@ -376,6 +380,7 @@ def get_open_meteo_context(
             observed=None,
             fallback_reason=str(exc),
         )
+    record_feed("open_meteo", "applied", fetched_at)
     return OpenMeteoContext(
         status="applied",
         fetched_at=fetched_at,
