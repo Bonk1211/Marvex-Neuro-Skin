@@ -202,7 +202,7 @@ def write_report(rows: pd.DataFrame, totals: pd.DataFrame, *, seed: int, output:
     conclusion = (
         "The pre-registered near-zero condition holds: this geometry does not show a "
         "material glare-screening gap; stop Phase B."
-        if ours["ev_exceedance_percent"] < 1.0
+        if ours["ev_exceedance_percent"] < DEFAULTS.daylight_negligible_exceedance_percent
         else "The oracle shows occupant-plane exceedance the controller did not compute. "
         "This does not demonstrate that adding Ev to control would avoid those exposures; "
         "that requires a separate controller intervention experiment."
@@ -320,6 +320,10 @@ def main() -> None:
         pd.DataFrame(totals),
         seed=args.seed,
         output=Path("../docs/appendix/daylight-blindness-results.md"),
+    )
+    # Keep the bundled UI evidence identical to the report, including its provenance.
+    Path("../frontend/src/lib/daylight-blindness-results.json").write_text(
+        json.dumps(data, indent=2, allow_nan=False) + "\n"
     )
     print(json.dumps(data["results"], indent=2))
 

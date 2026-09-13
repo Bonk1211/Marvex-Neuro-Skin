@@ -35,4 +35,4 @@ The room is a 6.4 × 6.4 × 3.6 m empty box, full-wall transparent aperture, wal
 
 ## Reproduction
 
-`make daylight-ablate` regenerates this report and its JSON numerator/denominator companion. Source SHA-256: `ee7118e08e69a8fa04f378d769f47b9a4da1b0cffd6e7111aaef30796d23f454`. Raw per-room tick scores are saved to `backend/data/daylight/ablation-scores.parquet`. All results are deterministic; execution timing is deliberately excluded from the evidence hash.
+`make daylight-ablate` regenerates this report and its JSON numerator/denominator companion. Source SHA-256: `1ab0e849f8e3f596e207c3302d5d5b16b6f4f52861b98f941dc79210a454d54b`. Raw per-room tick scores are saved to `backend/data/daylight/ablation-scores.parquet`. All results are deterministic; execution timing is deliberately excluded from the evidence hash.
