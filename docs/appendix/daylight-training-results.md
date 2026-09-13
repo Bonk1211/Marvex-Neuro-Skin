@@ -25,7 +25,7 @@ EV: 55,036 fit / 13,760 shuffled / 6,656 structural / 30,030 transfer; 42,848 cr
 
 ET: 72,363 fit / 18,091 shuffled / 8,320 structural / 39,039 transfer; 55,016 cross-stratum rows excluded. Artifact: 124.56 MiB.
 
-Seed: 42; git: `324670a061b2adacd9a857cb2aef59b28ebc91c5`; code SHA-256: `94a808763cbd09225654c67484911c39f1214d30ee71c65bc0f25d32cb994148`; dataset SHA-256: `b69fb674df4594977c5e8c9965d8fee2869537203617da32f5511e2df4a8a170`. JSONL records each target/model evaluation.
+Seed: 42; git: `69d60576906b7fd3d38f85805de25d9451c2eba8`; code SHA-256: `ea43008221479b32b016e8ce0a80a22f5f53b111ca1e248d78f53d4b13113fb5`; dataset SHA-256: `b69fb674df4594977c5e8c9965d8fee2869537203617da32f5511e2df4a8a170`. JSONL records each target/model evaluation.
 
 Features add incident intensity, lateral position, tilt and sky fraction to the plan's list: without these, different physical inputs can produce identical vectors. Every directional feature remains facade-relative. Fixed room/material assumptions constrain model applicability.
 
