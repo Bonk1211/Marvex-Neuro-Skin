@@ -2,46 +2,93 @@ import Link from 'next/link'
 import {
   ArrowRight,
   BrainCircuit,
-  Check,
-  Gauge,
+  Building2,
+  Grid2X2,
+  Layers,
   Leaf,
-  Move3d,
+  Radio,
   ShieldCheck,
   SunMedium,
 } from 'lucide-react'
 
-const proofs = [
+const differentiators = [
+  {
+    number: '01',
+    icon: Building2,
+    label: 'See what happens',
+    title: 'Interactive digital twin',
+    body: 'Move from building exposure to a local zone, then trace its inputs and action on one shared timeline.',
+    result: 'Building · Floor · Brains · Feeds',
+    href: '/dashboard?view=building',
+    action: 'Explore the twin',
+  },
+  {
+    number: '02',
+    icon: Grid2X2,
+    label: 'Control where it matters',
+    title: 'Independent 4×4 zones',
+    body: 'Each zone keeps its own simulated sensors and actuator state. One orchestrator applies a shared policy to local conditions.',
+    result: '16 zones per facade · 64 logical building zones',
+    href: '/dashboard?view=floor',
+    action: 'Inspect a local zone',
+  },
+  {
+    number: '03',
+    icon: BrainCircuit,
+    label: 'Understand the decision',
+    title: 'Three-layer mechatronic brain',
+    body: 'Check inputs, observe predicted daylight, and inspect the planned path to supervised fault recovery.',
+    result: 'Partial checks · observe-only Et/Ev · planned supervision',
+    href: '/dashboard?view=brains',
+    action: 'Follow the reasoning',
+  },
+]
+
+const brainLayers = [
   {
     number: '01',
     icon: SunMedium,
-    label: 'Sensor truth',
-    title: 'Detect a lying irradiance sensor.',
-    body: 'Measured irradiance is checked against solar position and cloud-adjusted expectation before it can influence the facade.',
-    result: 'Reject contradiction · trust genuine cloud',
+    title: 'Physics + vision input assurance',
+    status: 'CURRENT · PARTIAL',
+    color: 'text-mint bg-mint/10',
+    description:
+      'Solar/cloud checks on the wall path; freshness checks for vision. Local zone sensors currently receive finite/range checks.',
   },
   {
     number: '02',
     icon: BrainCircuit,
-    label: 'One objective',
-    title: 'Balance four impacts together.',
-    body: 'Thermal load, daylight comfort, movement, and wind risk are evaluated for every allowable facade angle.',
-    result: '0°–60° continuous targets · limited travel rate',
+    title: 'Daylight prediction + optimisation',
+    status: 'OBSERVE-ONLY',
+    color: 'text-sky bg-sky/10',
+    description:
+      'Extra Trees predicts task light (Et) and eye light (Ev). These estimates are displayed; they do not yet drive control.',
   },
   {
     number: '03',
     icon: ShieldCheck,
-    label: 'Hard safety',
-    title: 'Keep optimisation below safety.',
-    body: 'Power loss, critical wind, and rain bypass normal optimisation and select the safe mechanical state directly.',
-    result: 'Power off → 60° · wind or rain → 0°',
+    title: 'Agentic supervision + fault recovery',
+    status: 'PLANNED',
+    color: 'text-amber-200 bg-amber-200/10',
+    description:
+      'Bounded diagnosis, authorised mitigation, and independent verification—with rollback or escalation when recovery fails.',
   },
 ]
+
+const lenses = [
+  ['building', 'Building', 'See exposure', Building2],
+  ['floor', 'Floor', 'Inspect a zone', Layers],
+  ['brains', 'Brains', 'Trace the decision', BrainCircuit],
+  ['feeds', 'Feeds', 'Check the evidence', Radio],
+] as const
 
 export function NeuroSkinLanding() {
   return (
     <main className='landing-shell'>
       <header className='landing-nav'>
-        <nav className='mx-auto flex max-w-[1240px] items-center justify-between px-5 py-5 lg:px-8'>
+        <nav
+          aria-label='Main navigation'
+          className='mx-auto flex max-w-[1240px] items-center justify-between px-5 py-5 lg:px-8'
+        >
           <Link className='flex items-center gap-3' href='/'>
             <span className='brand-mark h-10 w-10 rounded-2xl'>
               <Leaf className='h-5 w-5' />
@@ -50,159 +97,181 @@ export function NeuroSkinLanding() {
               <span className='block font-display text-lg font-semibold tracking-tight text-white'>
                 NeuroSkin
               </span>
-              <span className='block text-[9px] font-semibold uppercase tracking-[0.22em] text-white/40'>
-                Adaptive facade control
+              <span className='block text-[9px] font-semibold uppercase tracking-[0.22em] text-white/60'>
+                Adaptive facade intelligence
               </span>
             </span>
           </Link>
           <div className='flex items-center gap-5'>
             <a
-              className='hidden text-xs font-medium text-white/55 transition hover:text-white md:block'
+              className='hidden text-xs font-medium text-white/65 transition hover:text-white md:block'
               href='#how-it-works'
             >
-              How it works
+              Three defining ideas
             </a>
             <a
-              className='hidden text-xs font-medium text-white/55 transition hover:text-white md:block'
+              className='hidden text-xs font-medium text-white/65 transition hover:text-white md:block'
               href='#model'
             >
-              The model
+              Inside the brain
             </a>
-            <Link
-              className='hidden text-xs font-medium text-white/55 transition hover:text-white md:block'
-              href='/slab'
-            >
-              Slab charging
-            </Link>
-            <Link className='landing-nav-cta' href='/dashboard'>
-              Open dashboard <ArrowRight className='h-3.5 w-3.5' />
+            <Link className='landing-nav-cta shrink-0' href='/dashboard'>
+              Open twin <ArrowRight className='h-3.5 w-3.5' />
             </Link>
           </div>
         </nav>
       </header>
 
       <section className='landing-hero'>
-        <div className='mx-auto grid max-w-[1240px] items-center gap-14 px-5 pb-20 pt-16 lg:grid-cols-[1.05fr_0.95fr] lg:px-8 lg:pb-28 lg:pt-24'>
+        <div className='mx-auto grid max-w-[1240px] items-center gap-12 px-5 pb-16 pt-12 lg:grid-cols-[1.05fr_0.95fr] lg:px-8 lg:pb-24 lg:pt-20'>
           <div>
             <div className='landing-eyebrow'>
-              <span className='status-pulse' /> Deterministic · explainable ·
-              safety-first
+              <span className='h-1.5 w-1.5 rounded-full bg-mint' /> Interactive
+              simulation · current release
             </div>
-            <h1 className='mt-6 max-w-3xl font-display text-5xl font-semibold leading-[0.98] tracking-[-0.055em] text-white sm:text-6xl lg:text-7xl'>
-              A facade controller you can{' '}
-              <span className='text-mint'>judge.</span>
+            <h1 className='mt-6 max-w-3xl font-display text-5xl font-semibold leading-[1.02] tracking-[-0.055em] text-white sm:text-6xl lg:text-7xl'>
+              One twin.
+              <br />
+              Local control.
+              <br />
+              <span className='text-mint'>Visible decisions.</span>
             </h1>
-            <p className='mt-7 max-w-xl text-base leading-7 text-white/55 sm:text-lg'>
-              NeuroSkin turns weather, occupancy, daylight, and safety
-              conditions into an auditable facade angle—without hiding the
-              decision inside a black box.
+            <p className='mt-6 max-w-lg text-base leading-7 text-white/65'>
+              Explore an adaptive facade in simulation. Inspect the building,
+              compare independent zones, and follow the logic behind each
+              movement.
             </p>
-            <div className='mt-9 flex flex-wrap items-center gap-3'>
-              <Link className='landing-primary-cta' href='/dashboard'>
-                Run the simulation <ArrowRight className='h-4 w-4' />
+            <div className='mt-8 flex flex-wrap items-center gap-3'>
+              <Link
+                className='landing-primary-cta'
+                href='/dashboard?view=building'
+              >
+                Explore the digital twin <ArrowRight className='h-4 w-4' />
               </Link>
               <a className='landing-secondary-cta' href='#how-it-works'>
-                Understand the logic
+                Discover the three ideas
               </a>
-              <Link className='landing-secondary-cta' href='/slab'>
-                7.1 Predictive slab charging
-              </Link>
             </div>
-            <div className='mt-10 flex flex-wrap gap-x-7 gap-y-3 text-[11px] text-white/45'>
-              {[
-                '144 decisions per day',
-                '10-minute resolution',
-                'Kuala Lumpur model',
-              ].map((item) => (
-                <span className='flex items-center gap-2' key={item}>
-                  <Check className='h-3.5 w-3.5 text-mint' /> {item}
-                </span>
-              ))}
-            </div>
+            <p className='mt-7 text-xs leading-5 text-white/55'>
+              Putrajaya building model · simulated sensing · modelled daylight
+            </p>
           </div>
 
-          <div
-            className='landing-visual'
-            aria-label='NeuroSkin decision loop preview'
-          >
+          <div className='landing-visual'>
             <div className='landing-visual-top'>
-              <span className='flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-white/45'>
-                <span className='h-2 w-2 rounded-full bg-mint' /> Decision loop
+              <span className='text-[10px] font-semibold uppercase tracking-[0.16em] text-white/65'>
+                Independent by zone
               </span>
-              <span className='font-mono text-[10px] text-white/35'>
-                12:00 MYT
+              <span className='rounded-full border border-white/15 px-2.5 py-1 font-mono text-[9px] uppercase tracking-wider text-white/60'>
+                Schematic
               </span>
             </div>
-            <div className='landing-angle-readout'>
+            <div className='my-5 flex items-end justify-between gap-4'>
               <div>
-                <p className='text-[10px] font-semibold uppercase tracking-[0.16em] text-white/35'>
-                  Selected angle
+                <p className='font-display text-5xl font-semibold tracking-[-0.05em] text-white'>
+                  64<span className='ml-2 text-base text-white/60'>zones</span>
                 </p>
-                <p className='mt-2 font-display text-6xl font-semibold tracking-[-0.05em] text-white'>
-                  35°
+                <p className='mt-2 text-xs text-white/60'>
+                  Four facades. Separate local state.
                 </p>
               </div>
-              <div className='landing-angle-dial'>
-                <span className='landing-angle-arm' />
-                <span className='landing-angle-center' />
-              </div>
+              <Grid2X2 className='mb-1 h-8 w-8 text-mint/70' />
             </div>
-            <div className='grid grid-cols-2 gap-2'>
-              <PreviewMetric label='Relative load' value='0.420' tone='mint' />
-              <PreviewMetric label='Indoor light' value='520 lux' tone='sky' />
-              <PreviewMetric label='Sensor' value='Trusted' tone='mint' />
-              <PreviewMetric label='Mode' value='NORMAL' tone='amber' />
+            <div className='flex items-center justify-center gap-2 rounded-xl border border-mint/25 bg-mint/10 px-3 py-3 text-xs font-semibold text-mint'>
+              <BrainCircuit className='h-4 w-4' /> One orchestrator · one shared
+              policy
             </div>
-            <div className='mt-3 flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3'>
-              <span className='text-[10px] text-white/45'>
-                Thermal · Light · Movement · Risk
+            <div aria-hidden='true' className='mx-auto h-4 w-px bg-mint/30' />
+            <div
+              role='img'
+              aria-label='Four facades, each with a 4 by 4 array of 16 independent logical zones; 64 zones in total. Illustrative states.'
+              className='grid grid-cols-2 gap-3'
+            >
+              {['North', 'East', 'South', 'West'].map((facade, faceIndex) => (
+                <div
+                  className='rounded-xl border border-white/10 bg-black/10 p-3'
+                  key={facade}
+                >
+                  <div className='mb-2 flex justify-between font-mono text-[9px] uppercase tracking-wider text-white/60'>
+                    <span>{facade}</span>
+                    <span>4 × 4</span>
+                  </div>
+                  <div className='grid grid-cols-4 gap-1.5' aria-hidden='true'>
+                    {Array.from({ length: 16 }, (_, zone) => (
+                      <div
+                        key={zone}
+                        className={`grid aspect-[1.5] place-items-center overflow-hidden rounded border ${faceIndex % 2 === 0 ? 'border-mint/25 bg-mint/10 text-mint' : 'border-sky/25 bg-sky/10 text-sky'}`}
+                      >
+                        <span
+                          className='h-0.5 w-2/3 rounded-full bg-current'
+                          style={{
+                            transform: `rotate(${-12 - ((zone + faceIndex * 3) % 5) * 9}deg)`,
+                            opacity: 0.4 + ((zone + faceIndex) % 4) * 0.2,
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className='mt-4 flex flex-wrap items-center justify-between gap-3 text-[10px]'>
+              <span className='text-white/55'>
+                Illustrative states · logical zones
               </span>
-              <span className='rounded-full bg-mint/10 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-mint'>
-                Lowest cost
-              </span>
+              <Link
+                className='inline-flex items-center gap-1.5 font-semibold text-mint hover:text-white'
+                href='/dashboard?view=floor'
+              >
+                Inspect the array <ArrowRight className='h-3 w-3' />
+              </Link>
             </div>
           </div>
         </div>
       </section>
 
-      <section className='bg-background py-20 sm:py-28' id='how-it-works'>
+      <section className='bg-background py-16 sm:py-20' id='how-it-works'>
         <div className='mx-auto max-w-[1240px] px-5 lg:px-8'>
-          <div className='max-w-2xl'>
-            <p className='eyebrow'>How it works</p>
-            <h2 className='mt-3 font-display text-3xl font-semibold tracking-[-0.035em] sm:text-5xl'>
-              Three proofs. One operating loop.
-            </h2>
-            <p className='mt-4 text-sm leading-6 text-muted-foreground sm:text-base'>
-              The landing page holds the context. The dashboard stays focused on
-              inputs, impact, and evidence.
-            </p>
-          </div>
-
-          <div className='mt-12 grid gap-4 lg:grid-cols-3'>
-            {proofs.map((proof) => {
-              const Icon = proof.icon
+          <p className='eyebrow'>Three defining ideas</p>
+          <h2 className='mt-3 max-w-2xl font-display text-3xl font-semibold tracking-[-0.035em] sm:text-5xl'>
+            See the whole. Act locally.
+            <br />
+            Understand why.
+          </h2>
+          <div className='mt-10 grid gap-4 lg:grid-cols-3'>
+            {differentiators.map((item) => {
+              const Icon = item.icon
               return (
-                <article className='landing-proof-card' key={proof.number}>
+                <article
+                  className='landing-proof-card flex flex-col'
+                  key={item.number}
+                >
                   <div className='flex items-center justify-between'>
                     <span className='landing-proof-icon'>
                       <Icon className='h-5 w-5' />
                     </span>
-                    <span className='font-mono text-[10px] text-muted-foreground'>
-                      {proof.number}
+                    <span className='font-mono text-xs text-muted-foreground'>
+                      {item.number}
                     </span>
                   </div>
-                  <p className='mt-8 text-[10px] font-bold uppercase tracking-[0.16em] text-primary'>
-                    {proof.label}
+                  <p className='mt-6 text-[10px] font-bold uppercase tracking-[0.16em] text-primary'>
+                    {item.label}
                   </p>
                   <h3 className='mt-2 font-display text-xl font-semibold tracking-tight'>
-                    {proof.title}
+                    {item.title}
                   </h3>
-                  <p className='mt-3 text-sm leading-6 text-muted-foreground'>
-                    {proof.body}
+                  <p className='mb-6 mt-3 text-sm leading-6 text-muted-foreground'>
+                    {item.body}
                   </p>
-                  <div className='mt-7 border-t border-border/70 pt-4 font-mono text-[10px] text-foreground/60'>
-                    {proof.result}
-                  </div>
+                  <p className='mt-auto border-t border-border/70 pt-4 text-[11px] leading-5 text-muted-foreground'>
+                    {item.result}
+                  </p>
+                  <Link
+                    className='mt-4 inline-flex items-center gap-2 text-xs font-semibold text-primary hover:underline'
+                    href={item.href}
+                  >
+                    {item.action} <ArrowRight className='h-3.5 w-3.5' />
+                  </Link>
                 </article>
               )
             })}
@@ -211,124 +280,106 @@ export function NeuroSkinLanding() {
       </section>
 
       <section className='landing-model-section' id='model'>
-        <div className='mx-auto grid max-w-[1240px] gap-12 px-5 py-20 lg:grid-cols-[0.8fr_1.2fr] lg:px-8 lg:py-28'>
+        <div className='mx-auto grid max-w-[1240px] items-start gap-10 px-5 py-16 lg:grid-cols-[0.8fr_1.2fr] lg:px-8 lg:py-20'>
           <div>
-            <p className='landing-dark-eyebrow'>Transparent by design</p>
-            <h2 className='mt-3 font-display text-3xl font-semibold tracking-[-0.035em] text-white sm:text-5xl'>
-              The controller is the formula.
-            </h2>
-            <p className='mt-5 max-w-md text-sm leading-6 text-white/50'>
-              Each zone balances daylight and solar heat while screening direct
-              sun. Fractional-angle targets and a travel-rate limit keep normal
-              tracking gradual; hardware safety takes priority.
+            <p className='landing-dark-eyebrow'>
+              Current capability → target brain
             </p>
-            <div className='mt-8 space-y-3'>
-              <ModelRule icon={Gauge} text='Comfort band: 300–700 lux' />
-              <ModelRule icon={Move3d} text='Continuous targets: 0°–60°' />
-              <ModelRule icon={ShieldCheck} text='Critical wind: 15 m/s' />
+            <h2 className='mt-3 font-display text-3xl font-semibold tracking-[-0.035em] text-white sm:text-5xl'>
+              Three layers.
+              <br />
+              Clear responsibility.
+            </h2>
+            <p className='mt-5 max-w-md text-sm leading-6 text-white/65'>
+              Physics checks evidence. Learned models predict daylight. Planned
+              supervision will verify recovery within the same orchestrator.
+            </p>
+            <div className='mt-7 flex items-start gap-3 rounded-xl border border-white/10 bg-white/[0.04] p-4'>
+              <ShieldCheck className='mt-0.5 h-5 w-5 shrink-0 text-mint' />
+              <p className='text-xs leading-5 text-white/65'>
+                <strong className='block font-semibold text-white'>
+                  Safety remains deterministic
+                </strong>
+                Power, wind, rain and movement limits govern simulated
+                actuation.
+              </p>
             </div>
+            <Link
+              className='mt-7 inline-flex items-center gap-2 text-xs font-semibold text-mint hover:text-white'
+              href='/dashboard?view=brains'
+            >
+              Inspect the current brain <ArrowRight className='h-3.5 w-3.5' />
+            </Link>
           </div>
 
-          <div className='landing-formula-panel'>
-            <p className='text-[10px] font-bold uppercase tracking-[0.18em] text-mint/60'>
-              Total angle cost
-            </p>
-            <div className='mt-6 font-mono text-sm leading-8 text-mint sm:text-lg'>
-              <p>C(θ) = wT · L(θ) + wL · P(lux(θ))²</p>
-              <p className='pl-8'>+ wM · |θ − θprevious| / 60</p>
-              <p className='pl-8'>+ wR · (v / 15)² · θ / 60</p>
-            </div>
-            <div className='mt-8 grid gap-3 sm:grid-cols-2'>
-              <FormulaTerm symbol='wT' label='Thermal load' />
-              <FormulaTerm symbol='wL' label='Daylight penalty' />
-              <FormulaTerm symbol='wM' label='Movement cost' />
-              <FormulaTerm symbol='wR' label='Wind exposure' />
-            </div>
-            <p className='mt-6 border-t border-white/10 pt-5 text-[10px] leading-5 text-white/40'>
-              Cooling load is a relative physics-inspired proxy, not HVAC energy
-              in kWh. Environmental and sensor readings are seeded synthetic
-              data; MET mode uses official daily context to shape that synthetic
-              day.
-            </p>
-          </div>
+          <ol className='space-y-3'>
+            {brainLayers.map((layer) => {
+              const Icon = layer.icon
+              return (
+                <li
+                  className='rounded-2xl border border-white/10 bg-white/[0.045] p-5 sm:p-6'
+                  key={layer.number}
+                >
+                  <div className='flex flex-wrap items-center justify-between gap-3'>
+                    <span className='flex items-center gap-2 font-mono text-[10px] uppercase tracking-wider text-white/60'>
+                      <Icon className='h-4 w-4' /> Layer {layer.number}
+                    </span>
+                    <span
+                      className={`rounded-full px-2.5 py-1 text-[9px] font-bold tracking-wider ${layer.color}`}
+                    >
+                      {layer.status}
+                    </span>
+                  </div>
+                  <h3 className='mt-3 font-display text-lg font-semibold tracking-tight text-white'>
+                    {layer.title}
+                  </h3>
+                  <p className='mt-2 text-xs leading-6 text-white/65'>
+                    {layer.description}
+                  </p>
+                </li>
+              )
+            })}
+          </ol>
         </div>
       </section>
 
-      <section className='bg-white py-20'>
-        <div className='mx-auto flex max-w-[1000px] flex-col items-center px-5 text-center'>
-          <p className='eyebrow'>Ready to judge the result?</p>
-          <h2 className='mt-3 max-w-2xl font-display text-3xl font-semibold tracking-[-0.035em] sm:text-5xl'>
-            Change one input. See the impact.
+      <section className='bg-white py-16 sm:py-20'>
+        <div className='mx-auto max-w-[1240px] px-5 lg:px-8'>
+          <p className='eyebrow'>Start exploring</p>
+          <h2 className='mt-3 font-display text-3xl font-semibold tracking-[-0.035em] sm:text-4xl'>
+            Four views. One shared timeline.
           </h2>
-          <p className='mt-4 max-w-xl text-sm leading-6 text-muted-foreground'>
-            The operating dashboard contains only the controls and evidence
-            needed to compare a run.
-          </p>
-          <Link className='landing-primary-cta mt-8' href='/dashboard'>
-            Open NeuroSkin OS <ArrowRight className='h-4 w-4' />
-          </Link>
+          <div className='mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-4'>
+            {lenses.map(([id, name, purpose, Icon]) => (
+              <Link
+                className='group flex items-center gap-4 rounded-2xl border border-border/80 bg-background p-5 transition hover:border-primary/30 hover:bg-secondary'
+                href={`/dashboard?view=${id}`}
+                key={id}
+              >
+                <Icon className='h-5 w-5 shrink-0 text-primary' />
+                <span>
+                  <span className='block text-sm font-semibold'>{name}</span>
+                  <span className='mt-1 block text-xs text-muted-foreground'>
+                    {purpose}
+                  </span>
+                </span>
+                <ArrowRight className='ml-auto h-3.5 w-3.5 shrink-0 text-primary transition group-hover:translate-x-0.5' />
+              </Link>
+            ))}
+          </div>
         </div>
       </section>
 
       <footer className='border-t border-border/70 bg-white px-5 py-6'>
-        <div className='mx-auto flex max-w-[1240px] flex-col justify-between gap-2 text-[10px] text-muted-foreground sm:flex-row'>
-          <span>NeuroSkin · Explainable adaptive facade simulation</span>
-          <span>Kuala Lumpur · Synthetic decision proof</span>
+        <div className='mx-auto flex max-w-[1240px] flex-col justify-between gap-3 text-[11px] text-muted-foreground sm:flex-row'>
+          <span>
+            NeuroSkin · Simulation and model-development demonstration
+          </span>
+          <Link className='hover:text-primary hover:underline' href='/slab'>
+            Supporting application: radiant-slab planner ↗
+          </Link>
         </div>
       </footer>
     </main>
-  )
-}
-
-function PreviewMetric({
-  label,
-  value,
-  tone,
-}: {
-  label: string
-  value: string
-  tone: 'mint' | 'sky' | 'amber'
-}) {
-  const color =
-    tone === 'mint'
-      ? 'text-mint'
-      : tone === 'sky'
-        ? 'text-sky'
-        : 'text-amber-300'
-  return (
-    <div className='rounded-xl border border-white/10 bg-white/[0.05] p-3'>
-      <p className='text-[9px] uppercase tracking-wider text-white/35'>
-        {label}
-      </p>
-      <p className={`mt-1 font-mono text-sm font-semibold ${color}`}>{value}</p>
-    </div>
-  )
-}
-
-function ModelRule({
-  icon: Icon,
-  text,
-}: {
-  icon: React.ElementType
-  text: string
-}) {
-  return (
-    <div className='flex items-center gap-3 text-xs text-white/60'>
-      <span className='grid h-8 w-8 place-items-center rounded-xl bg-white/[0.06] text-mint'>
-        <Icon className='h-4 w-4' />
-      </span>
-      {text}
-    </div>
-  )
-}
-
-function FormulaTerm({ symbol, label }: { symbol: string; label: string }) {
-  return (
-    <div className='flex items-center gap-3 rounded-xl border border-white/10 bg-white/[0.04] p-3'>
-      <span className='grid h-8 w-8 place-items-center rounded-lg bg-mint/10 font-mono text-xs font-bold text-mint'>
-        {symbol}
-      </span>
-      <span className='text-xs text-white/60'>{label}</span>
-    </div>
   )
 }
