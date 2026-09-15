@@ -1,11 +1,15 @@
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FeedsPanel } from './FeedsPanel'
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.useRealTimers()
+})
 
 describe('feed observations', () => {
   it('shows an unconfigured feed without presenting an error', async () => {
+    vi.setSystemTime(new Date('2026-09-13T04:06:00Z'))
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -35,11 +39,18 @@ describe('feed observations', () => {
       })
     )
     render(<FeedsPanel visionAgeSeconds={95} />)
+    expect(await screen.findByText('not configured')).toHaveClass(
+      'bg-secondary'
+    )
+    expect(screen.getByText('fallback')).toHaveClass('text-amber-800')
     expect(
-      await screen.findByText('not configured · last success unknown')
-    ).toBeInTheDocument()
-    expect(screen.getByText('2026-09-13T04:04:00Z')).toBeInTheDocument()
-    expect(screen.getByText('Vision sample: 95s ago')).toHaveClass(
+      screen.getByText('Provider weather · last success 2m ago')
+    ).toBeVisible()
+    const timestamp = screen.getByText('2026-09-13T04:04:00Z')
+    expect(timestamp).not.toBeVisible()
+    fireEvent.click(screen.getByText('Open-Meteo'))
+    expect(timestamp).toBeVisible()
+    expect(screen.getByText('Sky sample stale · 95s ago')).toHaveClass(
       'text-amber-700'
     )
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
@@ -52,8 +63,21 @@ describe('feed observations', () => {
     render(<FeedsPanel visionAgeSeconds={null} />)
     const panel = screen.getByRole('region', { name: 'Upstream feeds' })
     expect(
-      await within(panel).findAllByText('unknown · last success unknown')
+      await within(panel).findAllByText('unknown', { exact: true })
     ).toHaveLength(3)
-    expect(screen.getByText('Vision sample: unknown')).toBeInTheDocument()
+    expect(screen.getByText('Sky sample unavailable')).toBeVisible()
+  })
+  it('preserves the precise vision expiry and treats invalid ages as unavailable', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Offline')))
+    const { rerender } = render(<FeedsPanel visionAgeSeconds={60} />)
+    expect(screen.getByText('Sky sample · 60s ago')).not.toHaveClass(
+      'text-amber-700'
+    )
+    rerender(<FeedsPanel visionAgeSeconds={60.1} />)
+    expect(screen.getByText('Sky sample stale · 60s ago')).toHaveClass(
+      'text-amber-700'
+    )
+    rerender(<FeedsPanel visionAgeSeconds={NaN} />)
+    expect(await screen.findByText('Sky sample unavailable')).toBeVisible()
   })
 })
