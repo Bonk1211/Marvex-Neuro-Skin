@@ -34,6 +34,13 @@ export function ZoneSensorPanel({
   const selected = zones.find((zone) => zone.zone === selectedZone)
   const sensors = selected?.sensors
   const conditions = selected?.conditions
+  const input = selected?.control_input
+  const sensorSource =
+    sensors?.source === 'override'
+      ? 'injected'
+      : sensors
+        ? 'simulated'
+        : 'unknown'
 
   return (
     <section
@@ -44,9 +51,7 @@ export function ZoneSensorPanel({
         <span className='capitalize'>
           {wall.orientation} · {uncontrolled ? 'surface zones' : 'zone sensors'}
         </span>
-        <span className='font-mono'>
-          {zones.length} {uncontrolled ? 'zones' : 'channels'}
-        </span>
+        <span className='font-mono'>{zones.length} simulated zones</span>
       </h3>
       <div
         role='group'
@@ -110,20 +115,118 @@ export function ZoneSensorPanel({
           </p>
         </div>
       ) : (
-        <div className='mt-3 border-t border-border/60 pt-2'>
+        <div
+          className='mt-3 border-t border-border/60 pt-2'
+          aria-label='Selected zone inspection'
+        >
           <p className='flex flex-wrap items-center justify-between gap-1 text-[11px] font-semibold'>
-            <span>{selected.zone} · independent actuator</span>
+            <span>{selected.zone} · simulated actuator</span>
             <span className='font-mono text-[9px]'>{selected.mode}</span>
           </p>
+          <dl className='mt-2 grid grid-cols-2 gap-2'>
+            <div className='rounded-lg bg-secondary/60 p-2'>
+              <dt className='text-[10px] text-muted-foreground'>
+                Requested angle
+              </dt>
+              <dd className='font-mono text-lg'>
+                {selected.angle_target?.toFixed(1) ?? '—'}°
+              </dd>
+            </div>
+            <div className='rounded-lg bg-primary/5 p-2'>
+              <dt className='text-[10px] text-muted-foreground'>
+                Simulated achieved
+              </dt>
+              <dd className='font-mono text-lg'>
+                {selected.angle.toFixed(1)}°
+              </dd>
+            </div>
+          </dl>
           <p className='mt-1 text-[10px] text-muted-foreground'>
-            Final position {selected.angle.toFixed(1)}° · target{' '}
-            {(selected.angle_target ?? selected.angle).toFixed(1)}°
-            {selected.sensor_trusted !== undefined &&
-              ` · sensor ${selected.sensor_trusted ? 'trusted' : 'rejected'}`}
+            Local input:{' '}
+            <strong
+              className={
+                selected.sensor_trusted === false ? 'text-amber-800' : ''
+              }
+            >
+              {selected.sensor_trusted === undefined
+                ? 'unknown'
+                : selected.sensor_trusted
+                  ? 'accepted'
+                  : 'rejected'}
+            </strong>{' '}
+            · finite/range checks only
           </p>
+          <dl
+            className='mt-3 space-y-1.5 text-[10px]'
+            aria-label='Control evidence'
+          >
+            <div className='flex flex-wrap justify-between gap-x-2'>
+              <dt>Raw irradiance · {sensorSource}</dt>
+              <dd className='font-mono'>
+                {sensors?.irradiance.toFixed(1) ?? '—'} W/m²
+              </dd>
+            </div>
+            <div className='flex flex-wrap justify-between gap-x-2'>
+              <dt>Raw illuminance · {sensorSource}</dt>
+              <dd className='font-mono'>
+                {sensors?.illuminance.toFixed(1) ?? '—'} lx
+              </dd>
+            </div>
+            <div className='flex flex-wrap justify-between gap-x-2 border-t border-border/60 pt-1.5'>
+              <dt>Admitted irradiance</dt>
+              <dd className='text-right font-mono'>
+                {input?.irradiance.toFixed(1) ?? '—'} W/m²
+                {input && (
+                  <span className='block text-[9px] text-muted-foreground'>
+                    {input.irradiance_source === 'model'
+                      ? 'model'
+                      : `${sensorSource} sensor`}
+                  </span>
+                )}
+              </dd>
+            </div>
+            <div className='flex flex-wrap justify-between gap-x-2'>
+              <dt>Open-path lux input</dt>
+              <dd className='text-right font-mono'>
+                {input?.open_lux.toFixed(1) ?? '—'} lx
+                {input && (
+                  <span className='block text-[9px] text-muted-foreground'>
+                    {input.daylight_source === 'model'
+                      ? 'model'
+                      : `${sensorSource} sensor`}
+                  </span>
+                )}
+              </dd>
+            </div>
+          </dl>
+          {!input && (
+            <p className='mt-1 text-[9px] text-muted-foreground'>
+              Effective control input unavailable in this run.
+            </p>
+          )}
+          <details className='mt-3 text-[10px] leading-4'>
+            <summary className='cursor-pointer font-medium'>
+              Why this action?
+            </summary>
+            <p className='mt-2 text-muted-foreground'>
+              {selected.reason || 'Decision reason unavailable.'}
+            </p>
+            <p className='mt-2 text-muted-foreground'>
+              Local range checks can accept an in-range fouled sensor. A passed
+              check does not establish fault-free sensing.
+            </p>
+            {sensors && (
+              <p className='mt-2 break-words font-mono text-muted-foreground'>
+                {sensors.sensor_id}
+              </p>
+            )}
+          </details>
           {conditions && (
-            <div className='mt-2 rounded border border-border/60 p-2'>
-              <dl className='space-y-1 text-[10px]'>
+            <details className='mt-2 text-[10px]'>
+              <summary className='cursor-pointer font-medium'>
+                Simulated daylight & heat
+              </summary>
+              <dl className='mt-2 space-y-1'>
                 <div className='flex flex-wrap justify-between gap-x-2'>
                   <dt>Indoor daylight</dt>
                   <dd className='font-mono'>
@@ -167,26 +270,16 @@ export function ZoneSensorPanel({
                 {conditions.glazing_shgc.toFixed(2)}. Calibration assumptions;
                 DGP needs a separate luminance assessment.
               </p>
-            </div>
-          )}
-          {selected.reason && (
-            <p className='mt-1 text-[10px] leading-relaxed text-muted-foreground'>
-              {selected.reason}
-            </p>
+            </details>
           )}
           {sensors ? (
-            <>
-              <p className='mt-2 break-words font-mono text-[10px]'>
-                {sensors.sensor_id}
-              </p>
-              <p className='mt-0.5 text-[9px] text-muted-foreground'>
-                {sensors.source === 'override'
-                  ? 'Sensor override'
-                  : 'Simulated sensor readings'}
-                {' · '}
-                {sensors.irradiance.toFixed(0)} W/m²{' · '}
-                {sensors.illuminance.toFixed(0)} lx
-              </p>
+            <details className='mt-3 rounded-lg border border-border p-2'>
+              <summary className='cursor-pointer text-[10px] font-semibold'>
+                Inject sensor reading
+                {overriddenZoneIds.includes(selected.zone) && (
+                  <span className='text-amber-800'> · override active</span>
+                )}
+              </summary>
               <form
                 key={`${selected.zone}:${sensors.source}`}
                 className='mt-2'
@@ -251,9 +344,10 @@ export function ZoneSensorPanel({
                 </fieldset>
               </form>
               <p className='mt-1.5 text-[9px] text-muted-foreground'>
-                Applied to {selected.zone} at the selected time.
+                Inject into {selected.zone} at the selected time. Other zones
+                retain their own readings.
               </p>
-            </>
+            </details>
           ) : (
             <p className='mt-2 text-[10px] text-muted-foreground'>
               Sensor readings unavailable at this tick.

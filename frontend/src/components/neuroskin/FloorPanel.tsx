@@ -12,8 +12,8 @@ interface FloorPanelProps {
   orientation: FacadeOrientation
   onSideChange: (orientation: FacadeOrientation) => void
   onBandChange: (band: number | null) => void
-  selectedZone: string | null
-  onSelectZone: (orientation: FacadeOrientation, zone: string) => void
+  selectedZone?: string | null
+  onSelectZone?: (orientation: FacadeOrientation, zone: string) => void
   controlled: boolean
   onEnableDaylight?: () => void
   loading?: boolean
@@ -26,8 +26,6 @@ export function FloorPanel({
   orientation,
   onSideChange,
   onBandChange,
-  selectedZone,
-  onSelectZone,
   controlled,
   onEnableDaylight,
   loading = false,
@@ -46,11 +44,7 @@ export function FloorPanel({
   const walking = crowd.reduce((sum, counts) => sum + counts.walking, 0)
   return (
     <section className='console-card' aria-label='Thermal & daylight'>
-      <p className='console-card-title'>Individual floor plans</p>
-      <p className='mt-2 text-[10px] text-muted-foreground'>
-        Choose a side, then click a stacked level to inspect its occupants and
-        daylight.
-      </p>
+      <p className='console-card-title'>Floor & facade</p>
       <div
         className='mt-3 grid grid-cols-2 gap-2'
         role='group'
@@ -61,19 +55,6 @@ export function FloorPanel({
           const readings = allZones
             .filter((entry) => entry.orientation === side)
             .map((entry) => entry.zone)
-          const mean = (key: 'incident' | 'transmitted' | 'load_relative') => {
-            if (
-              !readings.length ||
-              readings.some((zone) => !Number.isFinite(zone[key]))
-            )
-              return null
-            return (
-              readings.reduce((sum, zone) => sum + zone[key], 0) /
-              readings.length
-            )
-          }
-          const irradiance = mean(controlled ? 'transmitted' : 'incident')
-          const load = mean('load_relative')
           const people = bands.reduce(
             (sum, row) => sum + mockOccupancy(tick.occupancy, side, row).total,
             0
@@ -92,15 +73,9 @@ export function FloorPanel({
               aria-pressed={orientation === side}
               onClick={() => onSideChange(side)}
             >
-              <span className='block font-semibold capitalize'>
-                {side} floor plan
-              </span>
+              <span className='block font-semibold capitalize'>{side}</span>
               <span className='block text-[10px]'>
-                {focusedBand === null
-                  ? '4 grouped levels'
-                  : FLOOR_PLANS[floorProgram(side, focusedBand)].name}
-              </span>
-              <span className='mt-1 block text-[10px] font-semibold text-cyan-800'>
+                {readings.length}/{focusedBand === null ? 16 : 4} zones ·{' '}
                 {people} people · mock
               </span>
               {controlled && tick.daylight && (
@@ -109,34 +84,20 @@ export function FloorPanel({
                   {light.ev?.toFixed(0) ?? '—'} lux
                 </span>
               )}
-              <span className='mt-2 block font-mono'>
-                {irradiance?.toFixed(0) ?? '—'} W/m²
-              </span>
-              <span className='block text-[9px]'>
-                {controlled ? 'Mean transmitted' : 'Mean before glazing'}
-              </span>
-              {controlled && (
-                <span className='block'>
-                  Load index {load?.toFixed(3) ?? '—'}
-                </span>
-              )}
-              <span className='block text-[9px] text-muted-foreground'>
-                {readings.length}/{focusedBand === null ? 16 : 4} zones ·{' '}
-                {focusedBand === null
-                  ? 'all levels'
-                  : floorGroupLabel(focusedBand, floors)}
-              </span>
             </button>
           )
         })}
       </div>
       <p className='mt-3 text-xs font-semibold capitalize' aria-live='polite'>
-        {orientation} floor stack
+        {orientation} ·{' '}
+        {focusedBand === null
+          ? 'all floor groups'
+          : floorGroupLabel(focusedBand, floors)}
       </p>
       <p className='mt-1 text-[10px] text-muted-foreground'>
         {focusedBand === null
-          ? 'Four stacked groups: floors 1–2, 3–4, 5–6 and 7.'
-          : `${floorGroupLabel(focusedBand, floors)} · ${FLOOR_PLANS[floorProgram(orientation, focusedBand)].name}`}
+          ? 'Four illustrative floor groups'
+          : FLOOR_PLANS[floorProgram(orientation, focusedBand)].name}
       </p>
       <div
         role='group'
@@ -186,36 +147,15 @@ export function FloorPanel({
         Show all levels
       </button>
       <div
-        className='mt-3 rounded-lg border border-cyan-700/20 bg-cyan-50/60 p-3'
-        aria-label='Mock occupant detection'
+        className='mt-3 rounded-lg border border-cyan-700/20 bg-cyan-50/60 p-2'
+        aria-label='Mock occupants'
       >
-        <p className='text-xs font-semibold'>Occupant detection · mock</p>
-        <p className='mt-1 text-sm'>
+        <p className='text-[10px] font-semibold'>Scripted occupants · mock</p>
+        <p className='mt-1 text-xs'>
           <strong>{total}</strong> people · {walking} walking ·{' '}
           {total - walking} seated
         </p>
-        <p className='mt-1 text-[10px] text-muted-foreground'>
-          {orientation} ·{' '}
-          {focusedBand === null
-            ? 'all floor groups'
-            : floorGroupLabel(focusedBand, floors)}
-          . Cyan rings mark scripted people. Counts follow the timeline’s
-          simulated occupancy; no camera detection is running.
-        </p>
       </div>
-      <p className='mt-2 text-[10px] text-muted-foreground'>
-        {focusedBand === null
-          ? 'All four levels are shown in colour. Select a level for its four facade zones.'
-          : `${floorGroupLabel(focusedBand, floors)} is selected; the other levels are greyed out.`}{' '}
-        Only {orientation} facade readings are shown. Glare is direct-sun
-        screening, not DGP.
-      </p>
-      <p className='mt-2 text-[9px] text-muted-foreground'>
-        Each complete plan is illustrative. Rooms and HVAC have no measured
-        layout, airflow or room cooling demand. Light cards show mean Et and
-        highest Ev across fixed probes. The coloured edge shows the selected
-        side’s facade readings.
-      </p>
       {controlled && !tick.daylight && (
         <div className='mt-3 text-xs'>
           <p>Daylight model not loaded for this run.</p>
@@ -231,73 +171,39 @@ export function FloorPanel({
                 : 'Load Et/Ev predictions'}
             </button>
           )}
-          <p className='mt-1 text-[10px] text-muted-foreground'>
-            Trained for the Putrajaya facade. Other sites and missing model
-            files have no readings.
-          </p>
         </div>
       )}
-      {controlled &&
-        tick.daylight &&
-        zones.some(({ zone }) => zone.conditions?.daylight_probes?.length) && (
-          <DaylightReadout
-            status={tick.daylight}
-            probes={zones.flatMap(({ zone }) =>
-              (zone.conditions?.daylight_probes ?? []).map((p) => ({
-                ...p,
-                zone: `${floorGroupLabel(zone.row, floors)} · ${zone.zone}`,
-              }))
-            )}
-          />
-        )}
-      {!zones.length ? (
-        <p className='mt-3 text-xs'>Zone grid unavailable for this side</p>
-      ) : (
-        <ul className='mt-3 space-y-1' aria-label='Side zones'>
-          {zones.map(({ orientation, zone }) => (
-            <li key={zone.zone}>
-              <button
-                type='button'
-                aria-pressed={selectedZone === zone.zone}
-                className='band-button w-full text-left'
-                onClick={() => onSelectZone(orientation, zone.zone)}
-              >
-                <span className='font-semibold'>
-                  {orientation} · {zone.zone}
-                </span>
-                {controlled ? (
-                  <>
-                    <span className='block'>
-                      Load {zone.load_relative.toFixed(3)} · daylight{' '}
-                      {zone.conditions?.daylight_status ?? 'unknown'}
-                    </span>
-                    <span
-                      className={`block ${zone.conditions?.glare_risk ? 'text-amber-700' : ''}`}
-                    >
-                      {zone.conditions?.glare_risk
-                        ? 'Glare risk'
-                        : zone.conditions
-                          ? 'No glare flag'
-                          : 'Glare unknown'}{' '}
-                      · {zone.angle.toFixed(1)}° · {zone.mode} ·{' '}
-                      {zone.sensor_trusted === undefined
-                        ? 'trust unknown'
-                        : zone.sensor_trusted
-                          ? 'trusted'
-                          : 'untrusted'}
-                    </span>
-                  </>
-                ) : (
-                  <span className='block'>
-                    {zone.incident.toFixed(0)} W/m² before glazing · no external
-                    facade
-                  </span>
-                )}
-              </button>
-            </li>
-          ))}
-        </ul>
+      {controlled && tick.daylight && (
+        <DaylightReadout
+          status={tick.daylight}
+          probes={zones.flatMap(({ zone }) =>
+            (zone.conditions?.daylight_probes ?? []).map((p) => ({
+              ...p,
+              zone: `${floorGroupLabel(zone.row, floors)} · ${zone.zone}`,
+            }))
+          )}
+        />
       )}
+      {!zones.length && (
+        <p className='mt-3 text-xs'>Zone grid unavailable for this side</p>
+      )}
+      <details className='mt-3 border-t pt-2 text-[10px] leading-4 text-muted-foreground'>
+        <summary className='cursor-pointer'>Scene & model assumptions</summary>
+        <p className='mt-2'>
+          Cyan rings mark scripted people. Counts follow shared simulated
+          occupancy; no camera detection is running.
+        </p>
+        <p className='mt-2'>
+          Rooms and HVAC are illustrative, with no measured layout, airflow or
+          room cooling demand. Floor groups do not provide individual floor
+          measurements.
+        </p>
+        <p className='mt-2'>
+          Et is mean work-plane illuminance; Ev is the highest seat estimate.
+          Predictions are observe-only and uncalibrated. Unsupported sites and
+          missing models have no readings. Direct-sun screening is not DGP.
+        </p>
+      </details>
     </section>
   )
 }

@@ -1,7 +1,8 @@
 import { render, screen, within } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
-import type { TickPayload } from '@/lib/types'
+import { describe, expect, it, vi } from 'vitest'
+import type { TickPayload, ZoneHeat } from '@/lib/types'
 import { CostBreakdownPanel } from './CostBreakdownPanel'
+import { BrainFlow } from './BrainFlow'
 
 const tick: TickPayload = {
   timestamp: '2026-03-21T12:00:00+08:00',
@@ -135,6 +136,100 @@ const tick: TickPayload = {
 }
 
 describe('controller objective', () => {
+  it('keeps local evidence separate from the primary result and unavailable legacy fields', () => {
+    const zone: ZoneHeat = {
+      ...tick.facade[3],
+      zone: 'W2',
+      row: 0,
+      column: 1,
+      sunlit_fraction: 1,
+      angle: 18,
+      angle_target: 30,
+      sensor_trusted: false,
+      sensors: {
+        sensor_id: 'W2',
+        irradiance: 1700,
+        illuminance: 1200,
+        source: 'override',
+      },
+      control_input: {
+        irradiance: 600,
+        open_lux: 1000,
+        irradiance_source: 'model',
+        daylight_source: 'model',
+      },
+      cost_breakdown: { thermal: 0.7, lux: 0.1, movement: 0, risk: 0 },
+      reason: 'Local out-of-range input rejected.',
+    }
+    const input = {
+      ...tick,
+      cloud: 0.6,
+      environment_cloud: 0.1,
+      cloud_source: 'vision' as const,
+    }
+    const weights = { thermal: 0.45, lux: 0.45, movement: 0.05, risk: 0.05 }
+    const onSelectZone = vi.fn()
+    const { rerender } = render(
+      <>
+        <BrainFlow
+          tick={input}
+          selectedZone={zone}
+          onSelectZone={onSelectZone}
+        />
+        <CostBreakdownPanel tick={input} weights={weights} zone={zone} />
+      </>
+    )
+    const trust = screen.getByRole('region', { name: 'Sensor trust decision' })
+    expect(within(trust).getByText('Rejected')).toBeInTheDocument()
+    expect(within(trust).getByText('1700 W/m²')).toBeInTheDocument()
+    expect(within(trust).getByText('600 W/m²')).toBeInTheDocument()
+    expect(within(trust).getByText(/60% cloud/)).toBeInTheDocument()
+    expect(
+      screen.getByRole('img', { name: 'Objective contributions, total 0.800' })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('img', {
+        name: /Requested 30.0 degrees, achieved 18.0 degrees/,
+      })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText('Target 30.0° → final 18.0° · Δ -12.0°')
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('region', { name: 'Planned fault recovery' })
+    ).toHaveTextContent('design only')
+    const legacy = {
+      ...zone,
+      control_input: undefined,
+      cost_breakdown: undefined,
+      angle_target: undefined,
+    }
+    rerender(
+      <>
+        <BrainFlow
+          tick={input}
+          selectedZone={legacy}
+          onSelectZone={onSelectZone}
+        />
+        <CostBreakdownPanel tick={input} weights={weights} zone={legacy} />
+      </>
+    )
+    expect(
+      screen.getByText('Local objective unavailable in this run.')
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('img', { name: /Requested unavailable degrees/ })
+    ).toBeInTheDocument()
+    expect(within(trust).getByText('— W/m²')).toBeInTheDocument()
+    rerender(<BrainFlow tick={input} onSelectZone={onSelectZone} />)
+    expect(
+      screen.getByText(
+        /Across west zone probes, each at its own achieved angle/
+      )
+    ).toBeInTheDocument()
+    expect(within(trust).getByText('Accepted')).toBeInTheDocument()
+    expect(within(trust).getByText('Solar/cloud reference')).toBeInTheDocument()
+  })
   it('shows the selected tick contributions, normalized weights and target-to-final delta', () => {
     const weights = { thermal: 0.9, lux: 0.9, movement: 0.1, risk: 0.1 }
     const { rerender } = render(

@@ -46,7 +46,7 @@ const environmentSources: Array<{
   {
     value: 'open_meteo',
     label: 'Open-Meteo',
-    hint: 'Measured hourly irradiance, temperature, cloud, wind and rain',
+    hint: 'Modelled hourly irradiance, temperature, cloud, wind and rain',
   },
 ]
 

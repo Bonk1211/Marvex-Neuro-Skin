@@ -41,7 +41,7 @@ export const TIER_STEPS: TierStep[] = [
   },
   {
     scenario: 'lie_detector',
-    tier: 'Tier 1',
+    tier: 'Test 1',
     label: 'Sensor trust',
     action: 'Checking each pyranometer reading against the solar almanac.',
     why: 'A controller that trusts a broken sensor optimises against fiction.',
@@ -49,7 +49,7 @@ export const TIER_STEPS: TierStep[] = [
   },
   {
     scenario: 'co_optimization',
-    tier: 'Tier 2',
+    tier: 'Test 2',
     label: 'Co-optimisation',
     action: 'Running the cost optimiser against a naive threshold controller.',
     why: 'Heat, daylight, movement and wind risk are traded in one objective.',
@@ -57,7 +57,7 @@ export const TIER_STEPS: TierStep[] = [
   },
   {
     scenario: 'budget_failsafe',
-    tier: 'Tier 3',
+    tier: 'Test 3',
     label: 'Budget and fail-safe',
     action: 'Squeezing the movement budget and cutting power mid-afternoon.',
     why: 'Restraint and a safe resting position matter more than a clever angle.',
@@ -132,9 +132,9 @@ export function TierRunner({
   ).length
 
   return (
-    <section className='console-card' aria-label='Three-tier analysis'>
+    <section className='console-card' aria-label='Scenario comparisons'>
       <div className='flex items-center justify-between gap-2'>
-        <p className='console-card-title'>Three-tier analysis</p>
+        <p className='console-card-title'>Scenario comparisons</p>
         <p className='text-[9px] text-muted-foreground'>
           {done}/{TIER_STEPS.length} complete
         </p>
@@ -201,19 +201,27 @@ export function TierRunner({
               {/* Every finished tier keeps its findings on the page, so the
                   three read as one analysis rather than three sub-pages. */}
               {status === 'done' && result && (
-                <ul className='mb-1 ml-7 mt-0.5 flex flex-col gap-0.5'>
-                  {tierFindings(step, result).map((finding) => (
-                    <li
-                      className='flex gap-1.5 text-[10px] leading-snug text-muted-foreground'
-                      key={finding}
-                    >
-                      <span aria-hidden className='text-primary'>
-                        ·
-                      </span>
-                      <span>{finding}</span>
-                    </li>
-                  ))}
-                </ul>
+                <details
+                  className='mb-1 ml-7 mt-1 text-[10px]'
+                  open={active === step.scenario}
+                >
+                  <summary className='cursor-pointer text-muted-foreground'>
+                    Run findings
+                  </summary>
+                  <ul className='mt-1 flex flex-col gap-0.5'>
+                    {tierFindings(step, result).map((finding) => (
+                      <li
+                        className='flex gap-1.5 text-[10px] leading-snug text-muted-foreground'
+                        key={finding}
+                      >
+                        <span aria-hidden className='text-primary'>
+                          ·
+                        </span>
+                        <span>{finding}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
               )}
             </li>
           )

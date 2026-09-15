@@ -8,6 +8,7 @@ import { ModelLimitsPanel } from './ModelLimitsPanel'
 import { FeedsPanel } from './FeedsPanel'
 import { GlareBlindnessPanel } from './DaylightPanel'
 import { FloorPanel } from './FloorPanel'
+import { BrainFlow } from './BrainFlow'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity,
@@ -39,7 +40,7 @@ import type {
   SimulationRunRequest,
   SimulationRunResponse,
 } from '@/lib/types'
-import { BuildingHeatmap, FacadeReadout } from './BuildingHeatmap'
+import { BuildingHeatmap } from './BuildingHeatmap'
 import type { SurfaceId } from './BuildingHeatmap'
 import {
   baselineSurfaceTemperature,
@@ -236,6 +237,15 @@ export function NeuroSkinDashboard() {
       try {
         const response = await runSimulation(nextRequest, controller.signal)
         if (controller.signal.aborted) return
+        if (
+          JSON.stringify({ ...nextRequest, scenario: null }) !==
+          JSON.stringify({ ...appliedRequest.current, scenario: null })
+        ) {
+          setTierResults({})
+          setTierStatus({})
+          setActiveTier(null)
+          tierRequests.current = {}
+        }
         appliedRequest.current = nextRequest
         if (preserveTick === undefined) focusOn(response)
         else {
@@ -286,6 +296,7 @@ export function NeuroSkinDashboard() {
     setError(null)
     setTierResults({})
     setTierStatus({})
+    tierRequests.current = {}
     // Run the clock for the whole analysis: the sun keeps crossing the sky on
     // each tier's own solar data while the next tier is still being computed.
     setTimelineIndex(0)
@@ -394,6 +405,13 @@ export function NeuroSkinDashboard() {
   )
   const selectedTick =
     data?.ticks[Math.min(timelineIndex, Math.max(0, data.ticks.length - 1))]
+  const primaryOrientation = selectedTick?.facade.find(
+    (wall) => wall.primary
+  )?.orientation
+  useEffect(() => {
+    if (lens === 'brains' && !selectedZone && primaryOrientation)
+      setSelectedWall(`wall:${primaryOrientation}`)
+  }, [lens, selectedZone, primaryOrientation])
   const trustedPercent = data?.ticks.length
     ? (data.ticks.filter((tick) => tick.sensor_trusted).length /
         data.ticks.length) *
@@ -419,6 +437,23 @@ export function NeuroSkinDashboard() {
   const selectedZoneState = selectedWallState?.zones?.find(
     (zone) => zone.zone === selectedZone
   )
+  const selectZone = (id: string | null) => {
+    setSelectedZone(id)
+    if (!id) {
+      const primary = selectedTick?.facade.find((wall) => wall.primary)
+      if (primary) setSelectedWall(`wall:${primary.orientation}`)
+      return
+    }
+    const wall = selectedTick?.facade.find((wall) =>
+      wall.zones?.some((zone) => zone.zone === id)
+    )
+    const zone = wall?.zones?.find((zone) => zone.zone === id)
+    if (wall && zone) {
+      setSelectedWall(`wall:${wall.orientation}`)
+      setBand(zone.row)
+      setFloorFocused(true)
+    }
+  }
   const selectedController = selectedZoneState ?? selectedWallState
   const irradianceComparison = selectedTick
     ? surfaceIrradianceComparison(selectedTick, selectedWall, selectedZone)
@@ -474,14 +509,6 @@ export function NeuroSkinDashboard() {
         <div className='brand-mark h-10 w-10 shrink-0 rounded-xl'>
           <Leaf className='h-4 w-4' />
         </div>
-        <Link
-          aria-label='Predictive slab charging'
-          className='console-nav-button'
-          href='/slab'
-          title='7.1 Predictive radiant-slab charging'
-        >
-          <BatteryCharging className='h-4 w-4' />
-        </Link>
         {LENSES.map(([id, label, Icon]) => (
           <Link
             key={id}
@@ -496,6 +523,14 @@ export function NeuroSkinDashboard() {
             <span>{label}</span>
           </Link>
         ))}
+        <Link
+          aria-label='Predictive slab charging'
+          className='console-nav-button'
+          href='/slab'
+          title='Supporting simulation · predictive slab charging'
+        >
+          <BatteryCharging className='h-4 w-4' />
+        </Link>
         <div className='ml-auto xl:ml-0 xl:mt-auto'>
           <Link
             aria-label='Project overview'
@@ -528,7 +563,7 @@ export function NeuroSkinDashboard() {
                     <p className='eyebrow'>24-hour result</p>
                     <h1 className='mt-0.5 font-display text-lg font-semibold tracking-tight'>
                       {isControlled
-                        ? 'Three-tier analysis'
+                        ? 'Facade performance'
                         : 'No external facade'}
                     </h1>
                     {isControlled && activeStep && (
@@ -657,13 +692,6 @@ export function NeuroSkinDashboard() {
                   </>
                 )}
 
-                <div hidden={lens !== 'feeds'}>
-                  <CloudVisionPanel
-                    onObservation={updateSkyObservation}
-                    onSkyChange={setVisionSky}
-                    onAgeChange={setVisionAgeSeconds}
-                  />
-                </div>
                 {lens === 'feeds' && (
                   <>
                     <FeedsPanel visionAgeSeconds={visionAgeSeconds} />
@@ -683,7 +711,6 @@ export function NeuroSkinDashboard() {
                         floors={data.metadata.floors}
                         focusedBand={floorFocused ? band : null}
                         onBandChange={focusFloor}
-                        selectedZone={selectedZone}
                         controlled={isControlled}
                         loading={loading || tierRunning}
                         onEnableDaylight={() => {
@@ -699,42 +726,15 @@ export function NeuroSkinDashboard() {
                             timelineIndex
                           )
                         }}
-                        onSelectZone={(orientation, id) => {
-                          setSelectedWall(`wall:${orientation}`)
-                          setSelectedZone(id)
-                          setFloorFocused(true)
-                          const row = selectedTick.facade
-                            .find((wall) => wall.orientation === orientation)
-                            ?.zones?.find((zone) => zone.zone === id)?.row
-                          if (row !== undefined) setBand(row)
-                        }}
                       />
                     )}
-                    {selectedTick && (
-                      <FacadeReadout
-                        tick={selectedTick}
-                        selected={selectedWall}
-                        onSelect={selectSurface}
-                        buildingVariant={buildingVariant}
-                      />
-                    )}
-
                     {selectedWallState &&
                       (selectedWallState.zones?.length ?? 0) > 0 && (
                         <ZoneSensorPanel
                           buildingVariant={buildingVariant}
                           wall={selectedWallState}
                           selectedZone={selectedZone}
-                          onSelectZone={(id) => {
-                            setSelectedZone(id)
-                            const selected = selectedWallState?.zones?.find(
-                              (zone) => zone.zone === id
-                            )
-                            if (selected) {
-                              setBand(selected.row)
-                              setFloorFocused(true)
-                            }
-                          }}
+                          onSelectZone={selectZone}
                           onOverride={(zoneId, reading) =>
                             void updateZoneSensor(zoneId, reading)
                           }
@@ -752,30 +752,23 @@ export function NeuroSkinDashboard() {
 
                 {lens === 'brains' && isControlled && (
                   <>
-                    <GlareBlindnessPanel />
                     {selectedTick && (
                       <>
                         <CostBreakdownPanel
                           tick={selectedTick}
                           weights={appliedRequest.current.weights}
+                          zone={selectedZoneState}
                         />
-                        <section
-                          className='console-card'
-                          aria-label='Sensor trust decision'
-                        >
-                          <p className='console-card-title'>Sensor trust</p>
-                          <p className='mt-2 text-xs'>
-                            {selectedTick.sensor_trusted
-                              ? 'Trusted'
-                              : 'Rejected'}{' '}
-                            · {selectedTick.mode}
-                          </p>
-                          <p className='mt-1 text-xs text-muted-foreground'>
-                            {selectedTick.reason}
-                          </p>
-                        </section>
                       </>
                     )}
+                    <details className='console-card'>
+                      <summary className='cursor-pointer text-xs font-semibold'>
+                        Offline daylight benchmark
+                      </summary>
+                      <div className='mt-3'>
+                        <GlareBlindnessPanel />
+                      </div>
+                    </details>
                     {isControlled && data.annotations.length > 0 && (
                       <section className='console-card' data-tour='events'>
                         <p className='console-card-title'>Events</p>
@@ -806,6 +799,9 @@ export function NeuroSkinDashboard() {
                       </section>
                     )}
 
+                    <p className='px-1 text-[10px] text-muted-foreground'>
+                      Scenario charts · primary reporting controller · full day
+                    </p>
                     {/* Each tier keeps its own charts on the page. One clock drives all
                 of them, so the three read side by side instead of one chart
                 area swapping its contents as the analysis moves on. */}
@@ -846,11 +842,6 @@ export function NeuroSkinDashboard() {
                       ))}
                   </>
                 )}
-                {lens === 'brains' && !isControlled && (
-                  <p className='console-card text-xs'>
-                    No external louvres or control brain on this building.
-                  </p>
-                )}
               </>
             )}
           </aside>
@@ -858,14 +849,17 @@ export function NeuroSkinDashboard() {
           <RailHandle side='left' label='Resize results panel' />
 
           <section className='console-stage' aria-label='Building model'>
-            {isControlled && activeStep && !cardDismissed && (
-              <TierCard
-                step={activeStep}
-                status={tierStatus[activeStep.scenario] ?? 'pending'}
-                response={tierResults[activeStep.scenario]}
-                onDismiss={() => setCardDismissed(true)}
-              />
-            )}
+            {lens === 'building' &&
+              isControlled &&
+              activeStep &&
+              !cardDismissed && (
+                <TierCard
+                  step={activeStep}
+                  status={tierStatus[activeStep.scenario] ?? 'pending'}
+                  response={tierResults[activeStep.scenario]}
+                  onDismiss={() => setCardDismissed(true)}
+                />
+              )}
 
             {error ? (
               <ErrorState
@@ -876,27 +870,76 @@ export function NeuroSkinDashboard() {
               <LoadingState />
             ) : data && selectedTick ? (
               <>
-                <BuildingHeatmap
-                  cameraMode={lens === 'floor' ? 'plan' : 'orbit'}
-                  band={band}
-                  focusedBand={floorFocused ? band : null}
-                  onSelectBand={focusFloor}
-                  visionSky={visionSky}
-                  buildingVariant={buildingVariant}
-                  onBuildingVariantChange={setBuildingVariant}
-                  tick={selectedTick}
-                  floors={data.metadata.floors}
-                  facadeTilt={data.metadata.facade_tilt}
-                  roofPitch={data.metadata.roof_pitch}
-                  locationName={data.metadata.location}
-                  timeLabel={timeLabel(selectedTick.timestamp, zone)}
-                  selected={selectedWall}
-                  onSelect={selectSurface}
-                  selectedZone={selectedZone}
-                  onSelectZone={setSelectedZone}
-                  sunTrack={sunTrack}
-                  ticks={data.ticks}
-                />
+                <div
+                  className={`absolute inset-0 ${lens === 'brains' || lens === 'feeds' ? 'invisible' : ''}`}
+                >
+                  <BuildingHeatmap
+                    active={lens === 'building' || lens === 'floor'}
+                    cameraMode={lens === 'floor' ? 'plan' : 'orbit'}
+                    band={band}
+                    focusedBand={floorFocused ? band : null}
+                    onSelectBand={focusFloor}
+                    visionSky={visionSky}
+                    buildingVariant={buildingVariant}
+                    onBuildingVariantChange={setBuildingVariant}
+                    tick={selectedTick}
+                    floors={data.metadata.floors}
+                    facadeTilt={data.metadata.facade_tilt}
+                    roofPitch={data.metadata.roof_pitch}
+                    locationName={data.metadata.location}
+                    timeLabel={timeLabel(selectedTick.timestamp, zone)}
+                    selected={selectedWall}
+                    onSelect={selectSurface}
+                    selectedZone={selectedZone}
+                    onSelectZone={selectZone}
+                    sunTrack={sunTrack}
+                    ticks={data.ticks}
+                  />
+                </div>
+                {lens === 'brains' && isControlled && (
+                  <div className='absolute inset-0 overflow-y-auto p-4 pb-44 sm:p-5 sm:pb-44'>
+                    <BrainFlow
+                      tick={selectedTick}
+                      selectedZone={selectedZoneState}
+                      onSelectZone={selectZone}
+                    />
+                  </div>
+                )}
+                {lens === 'brains' && !isControlled && (
+                  <div className='absolute inset-0 flex items-center justify-center p-6 pb-44'>
+                    <section className='console-card max-w-sm text-center'>
+                      <h1 className='font-display text-xl font-semibold'>
+                        No facade controller
+                      </h1>
+                      <p className='mt-2 text-sm text-muted-foreground'>
+                        This comparison building has no external louvres or
+                        actuators.
+                      </p>
+                      <Link
+                        className='run-button-light mt-4'
+                        href='/dashboard?view=building'
+                      >
+                        Choose a controlled building
+                      </Link>
+                    </section>
+                  </div>
+                )}
+                <div
+                  hidden={lens !== 'feeds'}
+                  className='absolute inset-0 overflow-y-auto p-4 pb-44 sm:p-5 sm:pb-44'
+                >
+                  <header className='mb-4'>
+                    <p className='eyebrow'>Evidence sources</p>
+                    <h1 className='mt-1 font-display text-2xl font-semibold'>
+                      Sky context, with a traceable source
+                    </h1>
+                  </header>
+                  <CloudVisionPanel
+                    onObservation={updateSkyObservation}
+                    onSkyChange={setVisionSky}
+                    onAgeChange={setVisionAgeSeconds}
+                  />
+                </div>
 
                 <div className='stage-toolbar' data-tour='timeline-inspector'>
                   <div className='flex flex-wrap items-center gap-2'>
@@ -1026,6 +1069,12 @@ export function NeuroSkinDashboard() {
                           ).toFixed(3)}{' '}
                           load
                         </span>
+                        {selectedController && (
+                          <span className='stage-chip'>
+                            {selectedController.sol_air_temp.toFixed(1)} °C
+                            surface
+                          </span>
+                        )}
                       </>
                     )}
                     <span className='stage-chip'>
@@ -1035,13 +1084,18 @@ export function NeuroSkinDashboard() {
                       {selectedTick.outdoor_temp.toFixed(1)} °C
                     </span>
                   </div>
-                  {selectedWallState && (
-                    <p className='text-[10px] leading-4 text-muted-foreground'>
-                      {isControlled
-                        ? (selectedZoneState?.reason ??
-                          selectedWallState.reason)
-                        : 'Same structure, glazing and roof; external louvres, actuators and mechatronic controller removed.'}
-                    </p>
+                  {selectedWallState && lens === 'building' && (
+                    <details className='text-[10px] leading-4 text-muted-foreground'>
+                      <summary className='cursor-pointer'>
+                        Selected action details
+                      </summary>
+                      <p className='mt-1'>
+                        {isControlled
+                          ? (selectedZoneState?.reason ??
+                            selectedWallState.reason)
+                          : 'Same structure, glazing and roof; external louvres, actuators and mechatronic controller removed.'}
+                      </p>
+                    </details>
                   )}
                   {selectedRoofState && (
                     <p className='text-[10px] leading-4 text-muted-foreground'>
@@ -1057,6 +1111,16 @@ export function NeuroSkinDashboard() {
           <RailHandle side='right' label='Resize settings panel' />
 
           <aside className='console-rail console-rail-right'>
+            {lens !== 'building' && (
+              <button
+                className='run-button-light shrink-0'
+                type='button'
+                disabled={loading || tierRunning}
+                onClick={() => void execute(request, timelineIndex)}
+              >
+                {loading ? 'Applying settings…' : 'Apply settings and re-run'}
+              </button>
+            )}
             <SimulationControls
               buildingVariant={buildingVariant}
               value={request}

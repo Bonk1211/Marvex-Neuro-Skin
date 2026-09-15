@@ -1,18 +1,32 @@
 'use client'
 
-import type { ControllerWeights, TickPayload } from '@/lib/types'
+import type { ControllerWeights, TickPayload, ZoneHeat } from '@/lib/types'
 import { DEFAULT_WEIGHTS, weightLabels } from './ControllerPanel'
 
 interface CostBreakdownPanelProps {
   tick: TickPayload
   weights: ControllerWeights
+  zone?: ZoneHeat
 }
 
-export function CostBreakdownPanel({ tick, weights }: CostBreakdownPanelProps) {
-  const total = Object.values(tick.cost_breakdown).reduce(
-    (sum, value) => sum + value,
-    0
-  )
+export function CostBreakdownPanel({
+  tick,
+  weights,
+  zone,
+}: CostBreakdownPanelProps) {
+  const costs = zone ? zone.cost_breakdown : tick.cost_breakdown
+  if (!costs)
+    return (
+      <section className='console-card' aria-label='Cost breakdown'>
+        <p className='console-card-title'>{zone?.zone} objective</p>
+        <p className='mt-2 text-xs text-muted-foreground'>
+          Local objective unavailable in this run.
+        </p>
+      </section>
+    )
+  const target = zone ? zone.angle_target : tick.angle_target
+  const final = zone ? zone.angle : tick.angle_final
+  const total = Object.values(costs).reduce((sum, value) => sum + value, 0)
   const weightTotal = Object.values(weights).reduce(
     (sum, value) => sum + value,
     0
@@ -21,7 +35,8 @@ export function CostBreakdownPanel({ tick, weights }: CostBreakdownPanelProps) {
     <section className='console-card' aria-label='Cost breakdown'>
       <p className='console-card-title'>Cost breakdown</p>
       <p className='mt-1 text-xs text-muted-foreground'>
-        Primary controller objective · lower is better · dimensionless
+        {zone ? `${zone.zone} local objective` : 'Primary controller objective'}{' '}
+        · lower is better · dimensionless
       </p>
       <div
         className='mt-3 flex h-3 overflow-hidden rounded bg-secondary'
@@ -33,7 +48,7 @@ export function CostBreakdownPanel({ tick, weights }: CostBreakdownPanelProps) {
             key={key}
             className={color}
             style={{
-              width: `${total > 0 ? (tick.cost_breakdown[key] / total) * 100 : 0}%`,
+              width: `${total > 0 ? (costs[key] / total) * 100 : 0}%`,
             }}
           />
         ))}
@@ -46,7 +61,7 @@ export function CostBreakdownPanel({ tick, weights }: CostBreakdownPanelProps) {
               {label}
             </dt>
             <dd className='font-mono'>
-              {tick.cost_breakdown[key].toFixed(3)}{' '}
+              {costs[key].toFixed(3)}{' '}
               <span className='text-muted-foreground'>
                 · weight{' '}
                 {(
@@ -61,9 +76,8 @@ export function CostBreakdownPanel({ tick, weights }: CostBreakdownPanelProps) {
         ))}
       </dl>
       <p className='mt-3 text-xs'>
-        Target {tick.angle_target.toFixed(1)}° → final{' '}
-        {tick.angle_final.toFixed(1)}° · Δ{' '}
-        {(tick.angle_final - tick.angle_target).toFixed(1)}°
+        Target {target?.toFixed(1) ?? '—'}° → final {final.toFixed(1)}° · Δ{' '}
+        {target === undefined ? '—' : (final - target).toFixed(1)}°
       </p>
     </section>
   )

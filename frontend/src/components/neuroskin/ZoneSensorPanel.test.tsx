@@ -115,7 +115,9 @@ describe('zone sensor panel', () => {
       'true'
     )
     expect(screen.getByLabelText('Sensor irradiance')).toHaveValue(400)
-    expect(screen.getByText('Clear override')).toBeInTheDocument()
+    expect(screen.getByText('Clear override')).not.toBeVisible()
+    fireEvent.click(screen.getByText('Inject sensor reading'))
+    expect(screen.getByText('Clear override')).toBeVisible()
   })
 
   it('reports achieved daylight, heat and direct-sun screening with fractional actuator positions', () => {
@@ -152,10 +154,12 @@ describe('zone sensor panel', () => {
     expect(
       screen.getByRole('button', { name: /^Zone W7, 18.3 degrees/ })
     ).toBeInTheDocument()
-    expect(screen.getByText(/Final position 18.3°/)).toHaveTextContent(
-      'target 27.9°'
-    )
-    expect(screen.getByText('745.0 lx · high')).toBeInTheDocument()
+    const inspector = screen.getByLabelText('Selected zone inspection')
+    expect(within(inspector).getByText('18.3°')).toBeVisible()
+    expect(within(inspector).getByText('27.9°')).toBeVisible()
+    expect(screen.getByText('745.0 lx · high')).not.toBeVisible()
+    fireEvent.click(screen.getByText('Simulated daylight & heat'))
+    expect(screen.getByText('745.0 lx · high')).toBeVisible()
     expect(screen.getByText('108.1 W/m²')).toBeInTheDocument()
     expect(screen.getByText('43.2 W/m² glazing')).toBeInTheDocument()
     expect(screen.getByText('26.3 W/m²')).toBeInTheDocument()
@@ -247,7 +251,12 @@ describe('zone sensor panel', () => {
       loading: false,
     }
     const { rerender } = render(<ZoneSensorPanel {...props} />)
-    expect(screen.getByText('sensor-W7')).toBeInTheDocument()
+    expect(screen.getByText('sensor-W7')).not.toBeVisible()
+    fireEvent.click(screen.getByText('Why this action?'))
+    expect(screen.getByText('sensor-W7')).toBeVisible()
+    expect(screen.getByLabelText('Sensor irradiance')).not.toBeVisible()
+    fireEvent.click(screen.getByText('Inject sensor reading'))
+    expect(screen.getByLabelText('Sensor irradiance')).toBeVisible()
     expect(screen.getByRole('button', { name: /^Zone W7,/ })).toHaveAttribute(
       'aria-pressed',
       'true'
@@ -296,6 +305,7 @@ describe('zone sensor panel', () => {
       loading: false,
     }
     const { rerender } = render(<ZoneSensorPanel {...props} />)
+    fireEvent.click(screen.getByText('Inject sensor reading'))
     fireEvent.change(screen.getByLabelText('Sensor irradiance'), {
       target: { value: '1601' },
     })
@@ -312,5 +322,81 @@ describe('zone sensor panel', () => {
       screen.getByRole('button', { name: 'Apply only this sensor' })
     )
     expect(onOverride).not.toHaveBeenCalled()
+  })
+
+  it('shows actual admitted values and each source while keeping missing input unavailable', () => {
+    const zone = {
+      ...wall.zones![6],
+      sensors: {
+        ...wall.zones![6].sensors!,
+        irradiance: 0,
+        illuminance: 20,
+        source: 'override' as const,
+      },
+      control_input: {
+        irradiance: 0,
+        open_lux: 1234.5,
+        irradiance_source: 'sensor' as const,
+        daylight_source: 'model' as const,
+      },
+    }
+    const props = {
+      wall: { ...wall, zones: [zone] },
+      selectedZone: 'W7',
+      onSelectZone: vi.fn(),
+      onOverride: vi.fn(),
+      onClearOverride: vi.fn(),
+      overriddenZoneIds: ['W7'],
+      loading: false,
+    }
+    const { rerender } = render(<ZoneSensorPanel {...props} />)
+    const inputs = screen.getByLabelText('Control evidence')
+    expect(within(inputs).getByText('Raw irradiance · injected')).toBeVisible()
+    expect(within(inputs).getByText('20.0 lx')).toBeVisible()
+    expect(within(inputs).getByText('1234.5 lx')).toHaveTextContent('model')
+    expect(within(inputs).getByText('injected sensor')).toBeVisible()
+    expect(screen.getByText('accepted')).toBeVisible()
+    expect(screen.getByText(/finite\/range checks only/)).toBeVisible()
+    fireEvent.click(screen.getByText('Why this action?'))
+    expect(
+      screen.getByText(/can accept an in-range fouled sensor/)
+    ).toBeVisible()
+    rerender(
+      <ZoneSensorPanel
+        {...props}
+        wall={{
+          ...wall,
+          zones: [
+            {
+              ...zone,
+              sensor_trusted: false,
+              control_input: {
+                ...zone.control_input,
+                irradiance: 390,
+                irradiance_source: 'model',
+              },
+            },
+          ],
+        }}
+      />
+    )
+    expect(screen.getByText('rejected')).toBeVisible()
+    expect(within(inputs).getByText('390.0 W/m²')).toHaveTextContent('model')
+    rerender(
+      <ZoneSensorPanel
+        {...props}
+        wall={{
+          ...wall,
+          zones: [
+            { ...zone, angle_target: undefined, control_input: undefined },
+          ],
+        }}
+      />
+    )
+    expect(
+      screen.getByText('Effective control input unavailable in this run.')
+    ).toBeVisible()
+    expect(within(inputs).getByText('— W/m²')).toBeVisible()
+    expect(screen.getByText('—°')).toBeVisible()
   })
 })

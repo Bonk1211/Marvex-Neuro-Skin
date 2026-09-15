@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import evidence from '@/lib/daylight-blindness-results.json'
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { fireEvent, render, screen, within } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 import * as THREE from 'three'
 import type {
   DaylightProbePayload,
@@ -12,6 +12,7 @@ import { createBandPlan } from './bandPlan'
 import {
   DaylightReadout,
   GlareBlindnessPanel,
+  daylightColor,
   daylightSummary,
 } from './DaylightPanel'
 import { FloorPanel } from './FloorPanel'
@@ -106,7 +107,7 @@ describe('occupant-plane daylight', () => {
       />
     )
     const counts = mockOccupancy(0.8, 'west', 1)
-    expect(screen.getByLabelText('Mock occupant detection')).toHaveTextContent(
+    expect(screen.getByLabelText('Mock occupants')).toHaveTextContent(
       `${counts.total} people · ${counts.walking} walking · ${counts.seated} seated`
     )
     plan.dispose()
@@ -129,7 +130,10 @@ describe('occupant-plane daylight', () => {
     expect(
       screen.getByText('1 of 1 seats over the 1000 lux eye-illuminance cap')
     ).toBeInTheDocument()
-    expect(screen.getByText(/Ev 1840.0 lux · over cap/)).toBeInTheDocument()
+    expect(screen.getByText('Observe-only')).toBeVisible()
+    expect(screen.getByText(/Ev 1840.0 lux · over cap/)).not.toBeVisible()
+    fireEvent.click(screen.getByText('Seat and desk readings'))
+    expect(screen.getByText(/Ev 1840.0 lux · over cap/)).toBeVisible()
     rerender(
       <DaylightReadout
         probes={[{ ...probe, eye_illuminance: null }]}
@@ -137,6 +141,10 @@ describe('occupant-plane daylight', () => {
       />
     )
     expect(screen.queryByText(/seat 1 · Ev/)).not.toBeInTheDocument()
+    expect(screen.getByText('Seat predictions unavailable')).toBeVisible()
+    const invalid = { ...probe, task_illuminance: NaN, eye_illuminance: -1 }
+    expect(daylightSummary([invalid], status)).toEqual({ et: null, ev: null })
+    expect(daylightColor(invalid, status)).toBeNull()
     rerender(
       <DaylightReadout
         probes={[{ ...probe, eye_illuminance: null }]}
@@ -163,6 +171,62 @@ describe('occupant-plane daylight', () => {
     expect(
       screen.getByText('Daylight model not loaded for this run.')
     ).toBeInTheDocument()
+    expect(
+      screen.queryByLabelText('Daylight at occupied seats')
+    ).not.toBeInTheDocument()
+  })
+
+  it('keeps side and floor summaries without a duplicate zone picker or expanded caveats', () => {
+    const onSideChange = vi.fn()
+    const onBandChange = vi.fn()
+    const tick = {
+      occupancy: 0.5,
+      daylight: status,
+      facade: [
+        {
+          orientation: 'west',
+          zones: [
+            {
+              row: 1,
+              column: 0,
+              zone: 'W5',
+              conditions: { daylight_probes: [probe] },
+            },
+          ],
+        },
+      ],
+    } as unknown as TickPayload
+    const props = {
+      tick,
+      floors: 7,
+      focusedBand: 1,
+      orientation: 'west' as const,
+      onSideChange,
+      onBandChange,
+    }
+    const { rerender } = render(<FloorPanel {...props} controlled />)
+    const sides = screen.getByRole('group', { name: 'Floor plan side' })
+    const west = within(sides).getByRole('button', { name: 'west floor plan' })
+    expect(west).toHaveAttribute('aria-pressed', 'true')
+    expect(west).toHaveTextContent('1/4 zones')
+    expect(west).toHaveTextContent('Et 412 · Ev 1840 lux')
+    expect(
+      screen.queryByRole('list', { name: 'Side zones' })
+    ).not.toBeInTheDocument()
+    fireEvent.click(
+      within(sides).getByRole('button', { name: 'north floor plan' })
+    )
+    expect(onSideChange).toHaveBeenCalledWith('north')
+    fireEvent.click(screen.getByRole('button', { name: 'Floors 5–6' }))
+    expect(onBandChange).toHaveBeenCalledWith(2)
+    fireEvent.click(screen.getByRole('button', { name: 'Show all levels' }))
+    expect(onBandChange).toHaveBeenCalledWith(null)
+    expect(
+      screen.getByText(/Rooms and HVAC are illustrative/)
+    ).not.toBeVisible()
+    fireEvent.click(screen.getByText('Scene & model assumptions'))
+    expect(screen.getByText(/Rooms and HVAC are illustrative/)).toBeVisible()
+    rerender(<FloorPanel {...props} controlled={false} />)
     expect(
       screen.queryByLabelText('Daylight at occupied seats')
     ).not.toBeInTheDocument()

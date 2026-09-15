@@ -94,7 +94,7 @@ export function SimulationCharts({
       <div className='grid gap-4'>
         <ChartCard
           title='Sensor cross-check'
-          caption='Expected vs measured · W/m²'
+          caption='Solar/cloud reference vs simulated sensor · W/m²'
         >
           <BaseChart data={chartData} annotations={referenceTimes}>
             <Line
@@ -110,7 +110,7 @@ export function SimulationCharts({
               isAnimationActive={false}
               type='monotone'
               dataKey='measured_irradiance'
-              name='Sensor measured'
+              name='Simulated sensor'
               stroke={COLORS.amber}
               dot={false}
               strokeWidth={2}
@@ -119,7 +119,7 @@ export function SimulationCharts({
         </ChartCard>
         <ChartCard
           title='Facade response'
-          caption='Actual position interpolated between samples · degrees'
+          caption='Simulated position interpolated between samples · degrees'
         >
           <BaseChart
             data={chartData}
@@ -267,7 +267,7 @@ export function SimulationCharts({
         caption={
           scenario === 'co_optimization'
             ? 'Target band · 300–700 lux'
-            : 'Actual position interpolated between 10-minute samples · degrees'
+            : 'Simulated position interpolated between 10-minute samples · degrees'
         }
       >
         {scenario === 'co_optimization' ? (

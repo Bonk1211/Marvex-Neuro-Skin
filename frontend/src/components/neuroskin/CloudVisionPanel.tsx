@@ -163,7 +163,7 @@ export function CloudVisionPanel({
   return (
     <section className='console-card' aria-label='AI cloud vision'>
       <div className='flex items-center justify-between gap-3'>
-        <p className='console-card-title'>Live AI cloud detection</p>
+        <p className='console-card-title'>Cloud vision · demo feed</p>
         <label className='flex items-center gap-2 text-xs'>
           Scan interval
           <select
@@ -200,7 +200,7 @@ export function CloudVisionPanel({
           }}
         />
         <div className='pointer-events-none absolute inset-x-0 top-0 flex justify-between gap-2 bg-gradient-to-b from-black/80 to-transparent p-3 text-[10px] sm:text-xs'>
-          <span>CAM 01 · SKY MONITOR</span>
+          <span>CAM 01 · RECORDED DEMO</span>
           <span className='tabular-nums'>{timestamp} MYT</span>
         </div>
         <div className='pointer-events-none absolute inset-x-0 bottom-0 flex justify-between gap-2 bg-gradient-to-t from-black/80 to-transparent p-3 text-[10px] sm:text-xs'>

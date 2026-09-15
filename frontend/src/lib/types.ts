@@ -89,6 +89,13 @@ export interface ZoneHeat {
   reason?: string
   sensor_trusted?: boolean
   conditions?: ComfortStatePayload
+  control_input?: {
+    irradiance: number
+    open_lux: number
+    irradiance_source: 'sensor' | 'model'
+    daylight_source: 'sensor' | 'model'
+  }
+  cost_breakdown?: CostBreakdown
 }
 
 export interface DaylightProbePayload {

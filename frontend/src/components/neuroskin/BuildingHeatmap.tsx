@@ -35,7 +35,6 @@ import {
 import {
   baselineSurfaceTemperature,
   BUILDING_VARIANTS,
-  surfaceIrradianceComparison,
   type BuildingVariant,
 } from './buildingComparison'
 
@@ -413,6 +412,7 @@ function ZoneBubble({
 }
 
 interface BuildingHeatmapProps {
+  active?: boolean
   cameraMode?: CameraMode
   band?: number
   focusedBand?: number | null
@@ -437,6 +437,7 @@ interface BuildingHeatmapProps {
 }
 
 export function BuildingHeatmap({
+  active = true,
   cameraMode = 'orbit',
   band = 0,
   focusedBand = null,
@@ -457,6 +458,13 @@ export function BuildingHeatmap({
   buildingVariant = 'controlled',
   onBuildingVariantChange,
 }: BuildingHeatmapProps) {
+  const activeRef = useRef(active)
+  activeRef.current = active
+  const [viewControlsOpen, setViewControlsOpen] = useState(true)
+  useEffect(() => {
+    if (window.matchMedia('(max-width: 639px)').matches)
+      setViewControlsOpen(false)
+  }, [])
   const daylightTickRef = useRef<TickPayload | undefined>(undefined)
   daylightTickRef.current = buildingVariant === 'controlled' ? tick : undefined
   const [planAngle, setPlanAngle] = useState<'cutaway' | 'top'>('cutaway')
@@ -1390,6 +1398,7 @@ export function BuildingHeatmap({
       const now = performance.now()
       const delta = Math.min((now - previousTime) / 1000, 0.1)
       previousTime = now
+      if (!activeRef.current || document.hidden) return
       const context = sceneRef.current
       if (cloudCanopy.mesh.visible && !reducedMotion.matches) {
         cloudCanopy.mesh.position.x = Math.sin(now / 30000) * 1.5
@@ -1932,17 +1941,18 @@ export function BuildingHeatmap({
             activeCameraMode === 'plan'
               ? `${planAngle === 'top' ? 'Top-down detail' : 'Stacked 3D view'} of the ${planSide} floor plans · ${focusedBand === null ? 'all four floor groups in colour' : `${floorGroupLabel(focusedBand, floors)} selected; other levels greyed out`} · illustrative interiors; ${showHvac ? 'illustrative overhead HVAC supply, return and air-handling unit shown' : 'HVAC hidden'}; coloured edge shows only the ${planSide} facade readings`
               : surfaceMode === 'irradiance'
-                ? `${BUILDING_VARIANTS[buildingVariant]}. Three-dimensional irradiance heatmap at ${timeLabel}. Blue means low irradiance, red means ${IRRADIANCE_MAX} watts per square metre or more. ${controlled ? 'Roof and louvre' : 'Passive roof and building'} shadows are sampled from the building mesh. Hover a surface for its local irradiance. Unshaded plane-of-array readings are available in the surface readings table.`
+                ? `${BUILDING_VARIANTS[buildingVariant]}. Three-dimensional irradiance heatmap at ${timeLabel}. Blue means low irradiance, red means ${IRRADIANCE_MAX} watts per square metre or more. ${controlled ? 'Roof and louvre' : 'Passive roof and building'} shadows are sampled from the building mesh. Hover a surface for its local irradiance. Use Inspect surface for keyboard selection and the timeline for readings.`
                 : surfaceMode === 'model'
                   ? `${BUILDING_VARIANTS[buildingVariant]}. Three-dimensional architectural model of ${locationName}, with glazing, floor bands, ${controlled ? 'louvres and actuators, ' : 'no external louvres or actuators, '}and a roof skylight. Drag to orbit.`
                   : surfaceMode === 'exposure'
-                    ? `${BUILDING_VARIANTS[buildingVariant]}. Three-dimensional model of the building with every wall shaded by its surface temperature at ${timeLabel} and the roof shaded by its daily solar exposure, ranging from ${(roofRange[0] * 3.6).toFixed(1)} to ${(roofRange[1] * 3.6).toFixed(1)} megajoules per square metre. The roof legend shows the full daily range; the readings table shows the selected time.`
-                    : `${BUILDING_VARIANTS[buildingVariant]}. Three-dimensional model of the building with every wall shaded by its surface temperature at ${timeLabel}. The same values are listed in the wall readings table.`
+                    ? `${BUILDING_VARIANTS[buildingVariant]}. Three-dimensional model of the building with every wall shaded by its surface temperature at ${timeLabel} and the roof shaded by its daily solar exposure, ranging from ${(roofRange[0] * 3.6).toFixed(1)} to ${(roofRange[1] * 3.6).toFixed(1)} megajoules per square metre. The roof legend shows the full daily range; the timeline shows the selected time.`
+                    : `${BUILDING_VARIANTS[buildingVariant]}. Three-dimensional model of the building with every wall shaded by its surface temperature at ${timeLabel}. Select a surface to read its values in the timeline.`
           }
         />
       ) : (
         <p className='absolute inset-0 grid place-items-center p-6 text-center text-xs text-muted-foreground'>
-          The 3D view needs WebGL. The wall readings carry the same data.
+          The 3D view needs WebGL. Select a surface above to inspect its
+          readings in the timeline.
         </p>
       )}
 
@@ -1970,7 +1980,14 @@ export function BuildingHeatmap({
       </div>
 
       <div className='pointer-events-none absolute inset-x-3 top-3 z-10 flex flex-wrap items-start justify-between gap-2'>
-        <div className='stage-panel w-full max-w-[340px]'>
+        <details
+          className='stage-panel w-full max-w-[340px]'
+          open={viewControlsOpen}
+          onToggle={(event) => setViewControlsOpen(event.currentTarget.open)}
+        >
+          <summary className='cursor-pointer text-[11px] font-semibold'>
+            Scene controls
+          </summary>
           <p
             className={
               activeCameraMode === 'plan'
@@ -1999,6 +2016,30 @@ export function BuildingHeatmap({
               ))}
             </select>
           </label>
+          {activeCameraMode !== 'plan' && (
+            <label className='mt-2 block text-[9px] uppercase tracking-wider text-muted-foreground'>
+              Inspect surface
+              <select
+                aria-label='Inspect surface'
+                className='mt-1 block w-full rounded-md border border-border bg-background px-2 py-1.5 text-[11px] font-semibold normal-case tracking-normal text-foreground'
+                value={selected}
+                onChange={(event) => onSelect(event.target.value as SurfaceId)}
+              >
+                {(['wall', 'roof'] as const).map((kind) => (
+                  <optgroup
+                    label={kind === 'wall' ? 'Facade' : 'Roof'}
+                    key={kind}
+                  >
+                    {ORIENTATIONS.map((side) => (
+                      <option key={side} value={`${kind}:${side}`}>
+                        {side} {kind === 'wall' ? 'facade' : 'roof'}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            </label>
+          )}
           <p
             className={
               activeCameraMode === 'plan'
@@ -2295,7 +2336,7 @@ export function BuildingHeatmap({
                 : 'No external louvres, actuators or control brain'}
             </p>
           </details>
-        </div>
+        </details>
 
         <div className='stage-panel hidden flex-col items-end gap-1 sm:flex'>
           <span className='flex items-center gap-1.5 text-[10px] font-semibold'>
@@ -2315,168 +2356,5 @@ export function BuildingHeatmap({
         </div>
       </div>
     </>
-  )
-}
-
-/**
- * The stage's numbers as text, so the heat map is never colour-alone, and a
- * keyboard route to the same wall selection the 3D offers by clicking.
- */
-export function FacadeReadout({
-  tick,
-  selected,
-  onSelect,
-  buildingVariant = 'controlled',
-}: {
-  tick: TickPayload
-  selected: SurfaceId
-  onSelect: (surface: SurfaceId) => void
-  buildingVariant?: BuildingVariant
-}) {
-  const controlled = buildingVariant === 'controlled'
-  const walls = new Map<FacadeOrientation, FacadeHeat>()
-  for (const wall of tick.facade ?? []) walls.set(wall.orientation, wall)
-  const roof = new Map<FacadeOrientation, RoofSegment>()
-  for (const segment of tick.roof ?? []) roof.set(segment.quadrant, segment)
-
-  const readout: Array<{
-    id: SurfaceId
-    label: string
-    tag: string | null
-    angle: string
-    incident: number
-    temperature: number
-  }> = [
-    ...ORIENTATIONS.map((orientation) => {
-      const wall = walls.get(orientation)
-      const angles = wall?.zones?.length
-        ? wall.zones.map((zone) => zone.angle)
-        : [wall?.angle ?? 0]
-      const low = Math.min(...angles).toFixed(1)
-      const high = Math.max(...angles).toFixed(1)
-      return {
-        id: `wall:${orientation}` as SurfaceId,
-        label: orientation,
-        tag: wall?.primary
-          ? 'primary'
-          : wall && wall.sunlit === false
-            ? 'self-shaded'
-            : null,
-        angle: !controlled
-          ? 'N/A — no louvres'
-          : low === high
-            ? `${low}°`
-            : `${low}–${high}°`,
-        incident: wall?.incident ?? 0,
-        temperature: !controlled
-          ? baselineSurfaceTemperature(
-              surfaceIrradianceComparison(tick, `wall:${orientation}`, null)
-                ?.baseline ??
-                wall?.incident ??
-                0,
-              tick.outdoor_temp,
-              tick.wind
-            )
-          : (wall?.sol_air_temp ??
-            (wall
-              ? floorTemperature(wall, 0.5, tick.outdoor_temp, tick.wind)
-              : tick.outdoor_temp)),
-      }
-    }),
-    ...ORIENTATIONS.map((orientation) => {
-      const segment = roof.get(orientation)
-      return {
-        id: `roof:${orientation}` as SurfaceId,
-        label: `roof ${orientation}`,
-        tag: null,
-        // Roof pitch is fixed geometry, not a controlled angle.
-        angle: segment ? `${segment.tilt.toFixed(0)}° pitch` : '—',
-        incident: segment?.incident ?? 0,
-        temperature: segment?.sol_air_temp ?? tick.outdoor_temp,
-      }
-    }),
-  ]
-
-  return (
-    <section className='console-card' aria-label='Surface readings'>
-      <p className='console-card-title'>Surface readings</p>
-      <table className='mt-2 w-full text-left'>
-        <caption className='sr-only'>
-          {BUILDING_VARIANTS[buildingVariant]}. Unshaded plane-of-array
-          irradiance,{' '}
-          {controlled ? 'zone-angle range' : 'absence of external louvres'} and
-          sol-air temperature per wall and roof face. The 3D irradiance map
-          additionally resolves local shadows. Select a row to inspect that
-          surface.
-        </caption>
-        <thead>
-          <tr className='text-[9px] uppercase tracking-wider text-muted-foreground'>
-            <th className='pb-1 font-semibold' scope='col'>
-              Surface
-            </th>
-            <th className='pb-1 text-right font-semibold' scope='col'>
-              Incident
-            </th>
-            <th className='pb-1 text-right font-semibold' scope='col'>
-              Angle
-            </th>
-            <th className='pb-1 text-right font-semibold' scope='col'>
-              Surface
-            </th>
-          </tr>
-        </thead>
-        <tbody className='font-mono text-xs'>
-          {readout.map((surface) => (
-            <tr
-              key={surface.id}
-              aria-selected={surface.id === selected}
-              className={
-                surface.id === selected
-                  ? 'cursor-pointer border-t border-border/50 bg-secondary/60'
-                  : 'cursor-pointer border-t border-border/50 hover:bg-secondary/30'
-              }
-              onClick={() => onSelect(surface.id)}
-            >
-              <th
-                className='py-1 font-sans text-[11px] font-medium capitalize'
-                scope='row'
-              >
-                <button
-                  className='text-left'
-                  type='button'
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    onSelect(surface.id)
-                  }}
-                >
-                  <span
-                    aria-hidden
-                    className='mr-1.5 inline-block h-2 w-2 rounded-full align-middle'
-                    style={{
-                      backgroundColor: `#${rampColor(surface.temperature).getHexString()}`,
-                    }}
-                  />
-                  {surface.label}
-                  {surface.tag && (
-                    <span className='ml-1.5 text-[9px] uppercase tracking-wider text-primary'>
-                      {surface.tag}
-                    </span>
-                  )}
-                </button>
-              </th>
-              <td className='py-1 text-right tabular-nums'>
-                {surface.incident.toFixed(0)} W/m²
-              </td>
-              <td className='whitespace-nowrap py-1 text-right tabular-nums'>
-                {surface.angle}
-              </td>
-              <td className='py-1 text-right tabular-nums'>
-                {surface.temperature.toFixed(1)} °C
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </section>
   )
 }
