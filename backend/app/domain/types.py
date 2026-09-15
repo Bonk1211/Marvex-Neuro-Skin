@@ -101,6 +101,16 @@ class ZoneSensors:
 
 
 @dataclass(frozen=True)
+class ControlInput:
+    """Effective inputs admitted to the incumbent controller, before movement."""
+
+    irradiance: float
+    open_lux: float
+    irradiance_source: Literal["sensor", "model"]
+    daylight_source: Literal["sensor", "model"]
+
+
+@dataclass(frozen=True)
 class ComfortState:
     """Predicted conditions at the achieved angle; glare is a direct-sun screen."""
 
@@ -139,6 +149,8 @@ class ZoneHeat:
     conditions: ComfortState | None = None
     diffuse_incident: float = 0.0
     diffuse_transmitted: float = 0.0
+    control_input: ControlInput | None = None
+    cost_breakdown: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -120,6 +120,10 @@ def test_local_sensors_are_independent_of_roof_faults_but_share_safety() -> None
     normal = run_tick(fault, 0, ControllerWeights(), **kwargs)
     assert normal.decision.sensor_trusted is True
     assert normal.decision.angle_final > 0
+    assert normal.control_input.irradiance == 900
+    assert normal.control_input.open_lux == 1200
+    assert normal.control_input.irradiance_source == "sensor"
+    assert normal.control_input.daylight_source == "sensor"
     # Zero on the facade is legitimate local shade, not a roof-sensor fault.
     dark = run_tick(
         fault,
@@ -139,6 +143,7 @@ def test_local_sensors_are_independent_of_roof_faults_but_share_safety() -> None
     assert measured.lux == pytest.approx(
         max(20, 500 * (1 - 0.72 * measured.decision.angle_final / 60))
     )
+    assert measured.control_input.open_lux == pytest.approx(500)
     invalid = run_tick(
         fault,
         0,
@@ -147,6 +152,26 @@ def test_local_sensors_are_independent_of_roof_faults_but_share_safety() -> None
     )
     assert invalid.decision.sensor_trusted is False
     assert 0 <= invalid.decision.angle_final <= 60
+    assert invalid.control_input.irradiance == gain.incident
+    assert invalid.control_input.open_lux == pytest.approx(680)
+    assert invalid.control_input.irradiance_source == "model"
+    assert invalid.control_input.daylight_source == "model"
+    closed = run_tick(
+        fault, 0, ControllerWeights(), optics=FacadeOptics(1, 45, 270, 270), **kwargs
+    )
+    assert closed.decision.sensor_trusted
+    assert closed.control_input.irradiance == sensors.irradiance
+    assert closed.control_input.irradiance_source == "sensor"
+    assert closed.control_input.daylight_source == "model"
+    assert closed.control_input.open_lux == pytest.approx(680)
+    observed = run_tick(
+        fault,
+        0,
+        ControllerWeights(),
+        daylight_curves=((0, "seat", ([400] * 61, [800] * 61)),),
+        **kwargs,
+    )
+    assert replace(observed, conditions=normal.conditions) == normal
     for safe_env, powered, angle in [
         (fault, False, 60),
         (replace(fault, wind=DEFAULTS.critical_wind), True, 0),
@@ -155,6 +180,7 @@ def test_local_sensors_are_independent_of_roof_faults_but_share_safety() -> None
         result = run_tick(safe_env, 30, ControllerWeights(), power_ok=powered, **kwargs)
         assert result.decision.mode == "SAFE"
         assert result.decision.angle_final == angle
+        assert result.control_input == replace(normal.control_input, open_lux=1875)
 
 
 def test_glare_constraint_moves_gradually_despite_useful_lux_and_high_movement_budget() -> None:

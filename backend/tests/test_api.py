@@ -157,6 +157,15 @@ def test_one_sensor_override_changes_only_its_own_zone_and_future_state() -> Non
         "illuminance": 1200,
         "source": "override",
     }
+    effective = new["control_input"]
+    assert effective["irradiance"] == 900
+    assert effective["irradiance_source"] == effective["daylight_source"] == "sensor"
+    achieved_transmission = new["conditions"]["transmitted"] / effective["irradiance"]
+    assert new["lux"] == pytest.approx(
+        max(20, effective["open_lux"] * achieved_transmission), abs=0.05
+    )
+    assert set(new["cost_breakdown"]) == {"thermal", "lux", "movement", "risk"}
+    assert sum(new["cost_breakdown"].values()) > 0
     assert any(old["angle"] != new["angle"] for old, new in own[97:])
     assert all(new["sensors"]["source"] == "simulated" for _, new in own[97:])
     assert baseline["comparison"] == changed["comparison"]
@@ -357,9 +366,19 @@ def test_request_validation_rejects_bad_values() -> None:
 def test_daylight_off_preserves_the_prechange_http_bytes() -> None:
     import hashlib
 
+    from pydantic_core import to_json
+
     response = client.post("/api/v1/simulations/run", json={"scenario": "overview", "seed": 42})
     assert response.status_code == 200
-    # Captured before Phase B; all pre-existing fields, values and ordering are part of G2.
-    assert hashlib.sha256(response.content).hexdigest() == (
+    # New inspection evidence is additive; every pre-existing field and decision
+    # still reproduces the original pre-Phase-B bytes, including field ordering.
+    payload = response.json()
+    for tick in payload["ticks"]:
+        for wall in tick["facade"]:
+            for zone in wall["zones"]:
+                assert zone.pop("control_input") is not None
+                assert zone.pop("cost_breakdown") is not None
+    legacy = to_json(payload)
+    assert hashlib.sha256(legacy).hexdigest() == (
         "3a2e9e024982b9bb2948510361c9b261587e642b2a8d5167c63efb2431a42210"
     )

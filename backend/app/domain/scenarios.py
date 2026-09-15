@@ -528,6 +528,8 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
                         sensor_trusted=zone_result.decision.sensor_trusted,
                         optics=optics,
                         conditions=zone_result.conditions,
+                        control_input=zone_result.control_input,
+                        cost_breakdown=zone_result.decision.cost_breakdown,
                     )
                 )
             zones[orientation] = heats

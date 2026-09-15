@@ -98,6 +98,13 @@ class ZoneSensorsPayload(BaseModel):
     source: Literal["simulated", "override"]
 
 
+class ControlInputPayload(BaseModel):
+    irradiance: float
+    open_lux: float
+    irradiance_source: Literal["sensor", "model"]
+    daylight_source: Literal["sensor", "model"]
+
+
 class ZoneHeatPayload(BaseModel):
     """One cell of one wall's 4 x 4 zone grid, with its own controller's state."""
 
@@ -120,6 +127,8 @@ class ZoneHeatPayload(BaseModel):
     conditions: "ComfortStatePayload"
     diffuse_incident: float
     diffuse_transmitted: float
+    control_input: ControlInputPayload
+    cost_breakdown: CostBreakdown
 
 
 class DaylightProbePayload(BaseModel):

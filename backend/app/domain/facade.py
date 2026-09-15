@@ -16,6 +16,7 @@ from app.domain.optics import FacadeOptics
 from app.domain.thermal import shade_transmittance
 from app.domain.types import (
     ComfortState,
+    ControlInput,
     FacadeHeat,
     RoofSegment,
     WallGain,
@@ -301,6 +302,8 @@ def zone_heat(
     sensor_trusted: bool = True,
     optics: FacadeOptics | None = None,
     conditions: ComfortState | None = None,
+    control_input: ControlInput | None = None,
+    cost_breakdown: dict[str, float] | None = None,
 ) -> ZoneHeat:
     """One zone's heat state once its own louvres have taken their angle."""
 
@@ -334,6 +337,8 @@ def zone_heat(
         conditions=conditions,
         diffuse_incident=round(diffuse, 2),
         diffuse_transmitted=round(diffuse * diffuse_transmittance, 2),
+        control_input=control_input,
+        cost_breakdown=cost_breakdown or {},
     )
 
 

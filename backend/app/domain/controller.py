@@ -10,6 +10,7 @@ from app.domain.solar import sun_position
 from app.domain.thermal import load_at_angle, predict_load, shade_transmittance
 from app.domain.types import (
     ComfortState,
+    ControlInput,
     ControllerWeights,
     Decision,
     Environment,
@@ -47,6 +48,7 @@ class TickResult:
     naive_load_relative: float
     naive_lux: float
     conditions: ComfortState
+    control_input: ControlInput
 
 
 def run_tick(
@@ -77,6 +79,7 @@ def run_tick(
         )
     expected = expected_irradiance(env, solar)
     incident = env.ghi if gain is None else gain.incident
+    irradiance_source = daylight_source = "model"
     if local_sensors is None:
         trusted, trust_reason = validate(env, solar)
         effective_irradiance = env.measured_irradiance if trusted else expected
@@ -97,6 +100,7 @@ def run_tick(
         trust_reason = f"{source} local sensor pair {local_sensors.sensor_id}: "
         if trusted:
             incident = local_sensors.irradiance
+            irradiance_source = "sensor"
             trust_reason += "range checks passed; this zone uses its own irradiance and lux."
             transmission = (
                 optics.daylight_transmittance(current_angle)
@@ -105,6 +109,7 @@ def run_tick(
             )
             if transmission > 1e-6:
                 available_lux = local_sensors.illuminance / transmission
+                daylight_source = "sensor"
             else:
                 available_lux = env.indoor_lux if gain is None else wall_open_lux(gain)
                 trust_reason += " Closed beam path cannot reveal open lux; use modelled daylight."
@@ -112,6 +117,7 @@ def run_tick(
             available_lux = env.indoor_lux if gain is None else wall_open_lux(gain)
             trust_reason += "out-of-range reading; use this zone's modelled incident and daylight."
         open_lux = available_lux
+    control_input = ControlInput(incident, open_lux, irradiance_source, daylight_source)
     if vision_cloud is not None:
         trust_reason = f"AI vision sky estimate {vision_cloud:.0%}. {trust_reason}"
     load = predict_load(replace(env, ghi=incident), solar)
@@ -208,6 +214,7 @@ def run_tick(
             naive_load_relative=baseline_load,
             naive_lux=baseline_lux,
             conditions=conditions,
+            control_input=control_input,
         )
 
     night_park = solar.elevation <= 0
@@ -293,4 +300,5 @@ def run_tick(
         naive_load_relative=baseline_load,
         naive_lux=baseline_lux,
         conditions=conditions,
+        control_input=control_input,
     )
