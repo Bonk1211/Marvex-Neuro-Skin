@@ -3,6 +3,31 @@
 import type { DaylightProbePayload, DaylightStatusPayload } from '@/lib/types'
 import evidence from '@/lib/daylight-blindness-results.json'
 
+export function daylightSummary(
+  probes: DaylightProbePayload[],
+  status?: DaylightStatusPayload | null
+) {
+  const valid = (value: number | null): value is number =>
+    value != null && Number.isFinite(value) && value >= 0
+  const task =
+    status && !status.night
+      ? probes.map((p) => p.task_illuminance).filter(valid)
+      : []
+  const eye =
+    status && !status.night
+      ? probes
+          .filter((p) => p.kind === 'seat')
+          .map((p) => p.eye_illuminance)
+          .filter(valid)
+      : []
+  return {
+    et: task.length
+      ? task.reduce((sum, value) => sum + value, 0) / task.length
+      : null,
+    ev: eye.length ? Math.max(...eye) : null,
+  }
+}
+
 export function daylightColor(
   probe: DaylightProbePayload,
   status: DaylightStatusPayload
@@ -29,16 +54,36 @@ export function DaylightReadout({
   status: DaylightStatusPayload
 }) {
   const available = probes.filter(
-    (p) => p.kind === 'seat' && p.eye_illuminance != null
+    (p) =>
+      p.kind === 'seat' &&
+      p.eye_illuminance != null &&
+      Number.isFinite(p.eye_illuminance)
   )
   const over = available.filter(
     (p) => p.eye_illuminance! > status.ev_cap_lux
   ).length
+  const summary = daylightSummary(probes, status)
   return (
     <div className='mt-3 border-t pt-3' aria-label='Daylight at occupied seats'>
-      <p className='console-card-title'>
-        Daylight at occupied seats · modelled
-      </p>
+      <p className='console-card-title'>Desk & eye daylight · trained model</p>
+      <dl className='mt-3 grid grid-cols-2 gap-2'>
+        <div className='rounded-lg border bg-background p-2'>
+          <dt className='text-[10px] text-muted-foreground'>
+            Et · mean work-plane
+          </dt>
+          <dd className='mt-1 font-mono text-lg'>
+            {summary.et?.toFixed(0) ?? '—'} <span className='text-xs'>lux</span>
+          </dd>
+        </div>
+        <div className='rounded-lg border bg-background p-2'>
+          <dt className='text-[10px] text-muted-foreground'>
+            Ev · highest at a seat
+          </dt>
+          <dd className='mt-1 font-mono text-lg'>
+            {summary.ev?.toFixed(0) ?? '—'} <span className='text-xs'>lux</span>
+          </dd>
+        </div>
+      </dl>
       <p className='mt-2 text-xs' aria-live='polite'>
         {status.night
           ? 'Night / low sun · seats grey; illuminance unavailable'
@@ -49,8 +94,10 @@ export function DaylightReadout({
           ? 'Occupied tick.'
           : 'Unoccupied tick; fixed probe estimates.'}{' '}
         Seats: green to red at the cap. Desks: blue below, green within, amber
-        above {status.et_band_low_lux}–{status.et_band_high_lux} lux.
-        Uncalibrated room model; controller decisions do not use these
+        above {status.et_band_low_lux}–{status.et_band_high_lux} lux. Fixed
+        probe predictions from {status.model}; Et is averaged over the
+        work-plane probes. Readings stay at the desks and seats as mock people
+        move. Uncalibrated room model; controller decisions do not use these
         estimates.
       </p>
       {!status.night && (
@@ -80,6 +127,9 @@ export function DaylightReadout({
                     {value.toFixed(1)} lux
                     {p.kind === 'seat' && value > status.ev_cap_lux
                       ? ' · over cap'
+                      : ''}
+                    {p.kind === 'seat' && p.task_illuminance != null
+                      ? ` · Et ${p.task_illuminance.toFixed(1)} lux`
                       : ''}
                   </li>
                 )

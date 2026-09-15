@@ -156,7 +156,11 @@ export function NeuroSkinDashboard() {
   const [band, setBand] = useState(0)
   const [floorFocused, setFloorFocused] = useState(false)
   const [visionAgeSeconds, setVisionAgeSeconds] = useState<number | null>(null)
-  const [request, setRequest] = useState(DEFAULT_REQUEST)
+  const [request, setRequest] = useState<SimulationRunRequest>(() => ({
+    ...DEFAULT_REQUEST,
+    daylight_model_enabled: lens === 'floor',
+  }))
+  const initialRequest = useRef(request)
   const [data, setData] = useState<SimulationRunResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -192,7 +196,7 @@ export function NeuroSkinDashboard() {
   // solar positions the run returned.
   const [playing, setPlaying] = useState(false)
   const requestController = useRef<AbortController | null>(null)
-  const appliedRequest = useRef(DEFAULT_REQUEST)
+  const appliedRequest = useRef<SimulationRunRequest>(initialRequest.current)
   const tierRequests = useRef<
     Partial<Record<ScenarioName, SimulationRunRequest>>
   >({})
@@ -259,9 +263,9 @@ export function NeuroSkinDashboard() {
   useEffect(() => {
     // The first load is the sensor read, so the analysis opens with that step
     // already banked and the three tiers waiting on the run button.
-    void execute(DEFAULT_REQUEST).then((response) => {
+    void execute(initialRequest.current).then((response) => {
       if (!response) return
-      tierRequests.current.overview = DEFAULT_REQUEST
+      tierRequests.current.overview = initialRequest.current
       setTierResults((prev) => ({ ...prev, overview: response }))
       setTierStatus((prev) => ({ ...prev, overview: 'done' }))
     })
@@ -681,6 +685,20 @@ export function NeuroSkinDashboard() {
                         onBandChange={focusFloor}
                         selectedZone={selectedZone}
                         controlled={isControlled}
+                        loading={loading || tierRunning}
+                        onEnableDaylight={() => {
+                          setRequest((current) => ({
+                            ...current,
+                            daylight_model_enabled: true,
+                          }))
+                          void execute(
+                            {
+                              ...appliedRequest.current,
+                              daylight_model_enabled: true,
+                            },
+                            timelineIndex
+                          )
+                        }}
                         onSelectZone={(orientation, id) => {
                           setSelectedWall(`wall:${orientation}`)
                           setSelectedZone(id)

@@ -12,6 +12,7 @@ import { Box, Focus, RotateCcw, Sun } from 'lucide-react'
 import type {
   FacadeHeat,
   FacadeOrientation,
+  DaylightProbePayload,
   RoofSegment,
   TickPayload,
 } from '@/lib/types'
@@ -464,6 +465,21 @@ export function BuildingHeatmap({
   const [showHvac, setShowHvac] = useState(true)
   const showHvacRef = useRef(showHvac)
   showHvacRef.current = showHvac
+  const [showPeople, setShowPeople] = useState(true)
+  const [showDetections, setShowDetections] = useState(true)
+  const [peoplePaused, setPeoplePaused] = useState(false)
+  const peopleRef = useRef({
+    showPeople,
+    showDetections,
+    peoplePaused,
+    occupancy: tick.occupancy,
+  })
+  peopleRef.current = {
+    showPeople,
+    showDetections,
+    peoplePaused,
+    occupancy: tick.occupancy,
+  }
   const [cameraOverride, setCameraOverride] = useState<CameraMode | null>(null)
   useEffect(() => setCameraOverride(null), [cameraMode])
   const activeCameraMode = cameraOverride ?? cameraMode
@@ -666,8 +682,9 @@ export function BuildingHeatmap({
     planCamera.layers.set(1)
     const sizePlan = (ratio: number) => {
       const top = planAngleRef.current === 'top'
-      const span = (top ? 5.3 : 10.4) / Math.min(1, ratio)
-      const offset = top ? 0 : 2.4
+      const focused = focusedBandRef.current !== null
+      const span = (top ? 5.3 : focused ? 6.5 : 10.4) / Math.min(1, ratio)
+      const offset = top ? 0 : focused ? 1.3 : 2.4
       Object.assign(planCamera, {
         left: -span * ratio - offset,
         right: span * ratio - offset,
@@ -705,8 +722,12 @@ export function BuildingHeatmap({
         planCamera.position.set(0, elevation + 20, 0.001)
         planControls.target.set(0, elevation + 0.15, 0)
       } else {
-        planCamera.position.set(-10, 17, 13)
-        planControls.target.set(0, FLOOR_STACK_GAP * 1.5, 0)
+        const elevation =
+          focusedBandRef.current === null
+            ? FLOOR_STACK_GAP * 1.5
+            : focusedBandRef.current * FLOOR_STACK_GAP + 0.15
+        planCamera.position.set(-10, elevation + 10.4, 13)
+        planControls.target.set(0, elevation, 0)
       }
       planCamera.zoom = 1
       planCamera.updateProjectionMatrix()
@@ -882,6 +903,13 @@ export function BuildingHeatmap({
       }
       level.group.add(label)
       plan.pickables.push(label)
+      for (const person of level.people) {
+        const tag = labelSprite(person.id, '#087f9c')
+        tag.scale.set(0.48, 0.12, 1)
+        tag.position.y = 0.83
+        tag.layers.set(1)
+        person.marker.add(tag)
+      }
     }
     scene.add(plan.group)
 
@@ -1151,6 +1179,8 @@ export function BuildingHeatmap({
     const pickable = [...[...panels.values()].flat(), ...roofFaces.values()]
     const raycaster = new THREE.Raycaster()
     const pointer = new THREE.Vector2()
+    const visibleInScene = (object: THREE.Object3D): boolean =>
+      object.visible && (!object.parent || visibleInScene(object.parent))
     const pick = (event: PointerEvent) => {
       const rect = renderer.domElement.getBoundingClientRect()
       pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
@@ -1162,7 +1192,7 @@ export function BuildingHeatmap({
         isPlan
           ? plan.pickables.filter(
               (object) =>
-                object.visible &&
+                visibleInScene(object) &&
                 object.userData.surface === `wall:${planSideRef.current}` &&
                 (!object.userData.zone ||
                   availableZones.current.has(object.userData.zone))
@@ -1194,9 +1224,28 @@ export function BuildingHeatmap({
       indices: [number, number, number]
       weights: THREE.Vector3
     } | null = null
+    let inspected: THREE.Object3D | null = null
+    const formatLux = (value: number | null | undefined) =>
+      value != null && Number.isFinite(value)
+        ? `${value.toFixed(1)} lux`
+        : 'unavailable'
     const refreshProbe = () => {
       const probe = probeRef.current
       if (!probe) return
+      if (
+        inspected &&
+        cameraModeRef.current === 'plan' &&
+        visibleInScene(inspected)
+      ) {
+        const data = inspected.userData
+        const light = data.reading as DaylightProbePayload | undefined
+        const place = `${planSideRef.current} · ${floorGroupLabel(data.band, floors)}`
+        probe.hidden = false
+        probe.textContent = data.occupant
+          ? `${place} · ${data.occupant} · ${data.state} · mock detection${data.seatIndex != null ? ` · seat ${data.seatIndex + 1} · Et ${formatLux(light?.task_illuminance)} · Ev ${formatLux(light?.eye_illuminance)}` : ''}`
+          : `${place} · ${data.probe.kind} ${data.probe.index + 1} · Et ${formatLux(light?.task_illuminance)}${data.probe.kind === 'seat' ? ` · Ev ${formatLux(light?.eye_illuminance)}` : ''} · fixed probe`
+        return
+      }
       const values = sample?.mesh.userData.irradiance as
         | Float32Array
         | undefined
@@ -1221,6 +1270,15 @@ export function BuildingHeatmap({
       const probe = probeRef.current
       if (!probe) return
       sample = null
+      inspected =
+        target?.userData.probe || target?.userData.occupant ? target : null
+      const rect = renderer.domElement.getBoundingClientRect()
+      probe.style.left = `${Math.max(8, Math.min(rect.width - 245, event.clientX - rect.left + 14))}px`
+      probe.style.top = `${Math.max(8, event.clientY - rect.top - 60)}px`
+      if (inspected) {
+        refreshProbe()
+        return
+      }
       const values = target?.userData.irradiance as Float32Array | undefined
       probe.hidden =
         surfaceModeRef.current !== 'irradiance' || !hit?.face || !values
@@ -1237,13 +1295,13 @@ export function BuildingHeatmap({
       )
       if (!barycentric) return
       sample = { mesh, indices: [a, b, c], weights: barycentric }
-      const rect = renderer.domElement.getBoundingClientRect()
       refreshProbe()
       probe.style.left = `${Math.max(8, Math.min(rect.width - 205, event.clientX - rect.left + 14))}px`
       probe.style.top = `${Math.max(8, event.clientY - rect.top - 38)}px`
     }
     const onPointerLeave = () => {
       sample = null
+      inspected = null
       hoverOutline.visible = false
       if (probeRef.current) probeRef.current.hidden = true
     }
@@ -1326,6 +1384,7 @@ export function BuildingHeatmap({
     let lastBake = 0
     let lastReadout = 0
     let lastCloudPaint = 0
+    let peopleSeconds = 0
     const animate = () => {
       frame = requestAnimationFrame(animate)
       const now = performance.now()
@@ -1409,6 +1468,17 @@ export function BuildingHeatmap({
           )
         )
           renderer.shadowMap.needsUpdate = true
+        const people = peopleRef.current
+        if (!people.peoplePaused && !reducedMotion.matches)
+          peopleSeconds += delta
+        plan.updatePeople(
+          peopleSeconds,
+          people.occupancy,
+          people.showPeople,
+          people.showDetections,
+          focusedBandRef.current
+        )
+        if (inspected) refreshProbe()
       }
       renderer.render(scene, renderCamera())
       // Keep the bubble pinned to its zone as the model turns.
@@ -1511,10 +1581,7 @@ export function BuildingHeatmap({
 
   useEffect(() => {
     sceneRef.current?.fitPlan()
-  }, [planAngle, floors, overhang, roofPitch])
-  useEffect(() => {
-    if (planAngle === 'top') sceneRef.current?.fitPlan()
-  }, [focusedBand, planAngle])
+  }, [planAngle, focusedBand, floors, overhang, roofPitch])
 
   useEffect(() => {
     const context = sceneRef.current
@@ -1882,7 +1949,7 @@ export function BuildingHeatmap({
       <div
         ref={probeRef}
         hidden
-        className='pointer-events-none absolute z-20 rounded-lg border border-white/20 bg-slate-950/90 px-3 py-2 font-mono text-[11px] capitalize text-white shadow-lg'
+        className='pointer-events-none absolute z-20 max-w-[245px] rounded-lg border border-white/20 bg-slate-950/90 px-3 py-2 font-mono text-[11px] capitalize text-white shadow-lg'
       />
 
       {/* Zone bubble. The render loop positions it; React only fills it in. */}
@@ -2006,6 +2073,53 @@ export function BuildingHeatmap({
                     Return → AHU
                   </span>
                   {' · schematic'}
+                </p>
+              )}
+              <div
+                className='mt-2 flex flex-wrap gap-1'
+                role='group'
+                aria-label='Mock occupant controls'
+              >
+                <button
+                  type='button'
+                  className='band-button'
+                  aria-pressed={showPeople}
+                  onClick={() => setShowPeople((shown) => !shown)}
+                >
+                  People
+                </button>
+                <button
+                  type='button'
+                  className='band-button'
+                  aria-pressed={showDetections}
+                  disabled={!showPeople}
+                  onClick={() => setShowDetections((shown) => !shown)}
+                >
+                  Detection markers
+                </button>
+                <button
+                  type='button'
+                  className='band-button'
+                  aria-pressed={peoplePaused}
+                  disabled={!showPeople}
+                  onClick={() => setPeoplePaused((paused) => !paused)}
+                >
+                  {peoplePaused ? 'Resume people' : 'Pause people'}
+                </button>
+              </div>
+              <p className='mt-1 text-[9px] text-muted-foreground'>
+                Cyan rings: mock detection. Select a floor for tracking IDs.
+                Hover people, seats or desks for details.
+              </p>
+              {controlled && tick.daylight && (
+                <p className='mt-1 text-[9px] leading-4'>
+                  Et desks: <span className='text-blue-700'>low</span> /{' '}
+                  <span className='text-emerald-700'>in band</span> /{' '}
+                  <span className='text-amber-700'>high</span> (
+                  {tick.daylight.et_band_low_lux}–
+                  {tick.daylight.et_band_high_lux} lx). Ev seats: green → red at{' '}
+                  {tick.daylight.ev_cap_lux} lx.
+                  {tick.daylight.night ? ' Night: readings unavailable.' : ''}
                 </p>
               )}
               <p className='mt-2 text-[10px] font-semibold'>

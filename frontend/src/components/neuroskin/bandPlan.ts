@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import type { FacadeOrientation, TickPayload } from '@/lib/types'
 import { roofGrid } from './solarExposure'
 import { FLOOR_PLANS, floorProgram } from './floorWorkspaces'
+import { mockOccupancy, occupantId, walkingPosition } from './floorOccupants'
 
 import { daylightColor } from './DaylightPanel'
 
@@ -515,15 +516,22 @@ export function createBandPlan(
   const grey = new THREE.MeshBasicMaterial({
     color: 0xabb5b0,
     transparent: true,
-    opacity: 0.24,
+    opacity: 0.08,
     depthWrite: false,
   })
   const greySlab = new THREE.MeshBasicMaterial({
     color: 0xbac2be,
     transparent: true,
-    opacity: 0.5,
+    opacity: 0.12,
     depthWrite: false,
   })
+  const skin = material(0xd6a57c)
+  const shirt = material(0x245878)
+  const detection = new THREE.MeshBasicMaterial({
+    color: 0x087f9c,
+    side: THREE.DoubleSide,
+  })
+  const detectionRing = new THREE.RingGeometry(0.19, 0.215, 24)
   const sides = Object.keys(FLOOR_PLANS) as FacadeOrientation[]
   const levels = sides.flatMap((orientation) =>
     Array.from({ length: 4 }, (_, band) => {
@@ -574,6 +582,64 @@ export function createBandPlan(
           mesh,
           color: mesh.material.clone(),
         })
+        mesh.userData = {
+          band,
+          surface: `wall:${orientation}`,
+          probe: object.userData.daylight,
+        }
+        pickables.push(mesh)
+      })
+      const seats = probes.filter((probe) => probe.kind === 'seat')
+      const people = Array.from({ length: 12 }, (_, index) => {
+        const person = new THREE.Group()
+        const id = occupantId(orientation, band, index)
+        person.name = `Mock occupant ${id}`
+        person.visible = false
+        const body = new THREE.Group()
+        person.add(body)
+        cylinder(0.078, 0.22, 0, 0.43, 0, shirt, body)
+        const head = new THREE.Mesh(foliage, skin)
+        head.scale.setScalar(0.079)
+        head.position.y = 0.62
+        body.add(head)
+        const legs = [-1, 1].map((side) => {
+          const thigh = new THREE.Group()
+          thigh.position.set(side * 0.046, 0.32, 0)
+          body.add(thigh)
+          box(0.06, 0.15, 0.065, 0, -0.075, 0, dark, thigh)
+          const shin = new THREE.Group()
+          shin.position.y = -0.15
+          thigh.add(shin)
+          box(0.055, 0.15, 0.06, 0, -0.075, 0, dark, shin)
+          return { thigh, shin }
+        })
+        for (const side of [-1, 1])
+          box(0.045, 0.21, 0.045, side * 0.105, 0.4, 0, shirt, body)
+        const marker = new THREE.Group()
+        const ring = new THREE.Mesh(detectionRing, detection)
+        ring.rotation.x = -Math.PI / 2
+        ring.position.y = 0.045
+        marker.add(ring)
+        person.add(marker)
+        person.userData = { band, surface: `wall:${orientation}`, occupant: id }
+        body.traverse((mesh) => {
+          if (mesh instanceof THREE.Mesh) mesh.userData = person.userData
+        })
+        ring.userData = person.userData
+        pickables.push(ring, head)
+        level.add(person)
+        return {
+          group: person,
+          body,
+          legs,
+          marker,
+          id,
+          seat: seats[
+            index % 2
+              ? seats.length - 1 - Math.floor(index / 2)
+              : Math.floor(index / 2)
+          ],
+        }
       })
       pickables.push(slab)
       group.add(level)
@@ -585,6 +651,7 @@ export function createBandPlan(
         slab,
         materials,
         probes,
+        people,
       }
     })
   )
@@ -686,6 +753,7 @@ export function createBandPlan(
           )
           for (const probe of level.probes) {
             const reading = readings.get(probe.index)
+            probe.mesh.userData.reading = reading
             const color =
               reading && status ? daylightColor(reading, status) : null
             if (color && focused) {
@@ -720,12 +788,58 @@ export function createBandPlan(
       }
       return changed
     },
+    updatePeople(
+      seconds: number,
+      occupancy: number,
+      showPeople = true,
+      showMarkers = true,
+      focusedBand: number | null = null
+    ) {
+      for (const level of levels) {
+        const counts = mockOccupancy(occupancy, level.orientation, level.band)
+        for (const [index, person] of level.people.entries()) {
+          person.group.visible =
+            showPeople &&
+            level.group.visible &&
+            index < counts.total &&
+            (focusedBand === null || level.band === focusedBand)
+          person.marker.visible = showMarkers
+          if (!person.group.visible) continue
+          const walking = index < counts.walking
+          const point = walking
+            ? walkingPosition(seconds, index, level.orientation, level.band)
+            : person.seat
+          person.group.position.set(point.x, 0, point.z)
+          person.group.rotation.y = point.rotation
+          person.body.position.y = walking ? 0 : -0.06
+          person.group.userData.state = walking ? 'walking' : 'seated'
+          person.group.userData.seatIndex = walking ? null : person.seat.index
+          person.group.userData.reading = walking
+            ? undefined
+            : person.seat.mesh.userData.reading
+          for (const [leg, { thigh, shin }] of person.legs.entries()) {
+            thigh.rotation.x = walking
+              ? Math.sin(seconds * 4 + index + leg * Math.PI) * 0.4
+              : Math.PI / 2
+            shin.rotation.x = walking ? 0 : -Math.PI / 2
+          }
+          // Tracking labels appear in the focused floor; rings remain readable in the stack.
+          for (const child of person.marker.children)
+            if (child instanceof THREE.Sprite)
+              child.visible = focusedBand === level.band
+        }
+      }
+    },
     dispose() {
       for (const level of levels)
         for (const probe of level.probes) probe.color.dispose()
       muted.dispose()
       grey.dispose()
       greySlab.dispose()
+      skin.dispose()
+      shirt.dispose()
+      detection.dispose()
+      detectionRing.dispose()
       light.shadow.dispose()
     },
   }
