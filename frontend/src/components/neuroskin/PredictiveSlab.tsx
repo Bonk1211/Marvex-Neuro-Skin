@@ -102,12 +102,12 @@ export function claimStatus(audit: BaselineAudit): {
   if (audit.claim_allowed) {
     return {
       tone: 'ok',
-      headline: `Fixed-timer baseline verified across ${audit.nights} nights`,
+      headline: `Fixed-timer pattern found across ${audit.nights} nights`,
     }
   }
   return {
     tone: audit.verdict === 'load_compensated' ? 'bad' : 'warn',
-    headline: 'Saving not claimable — baseline unverified',
+    headline: 'Fixed-timer baseline unverified',
   }
 }
 
@@ -194,7 +194,10 @@ export function PredictiveSlab() {
   return (
     <main className='landing-shell'>
       <header className='landing-nav'>
-        <nav className='mx-auto flex max-w-[1240px] items-center justify-between px-5 py-5 lg:px-8'>
+        <nav
+          aria-label='Slab planner navigation'
+          className='mx-auto flex max-w-[1240px] items-center justify-between px-5 py-4 lg:px-8'
+        >
           <Link className='flex items-center gap-3' href='/'>
             <span className='brand-mark h-10 w-10 rounded-2xl'>
               <Leaf className='h-5 w-5' />
@@ -204,7 +207,7 @@ export function PredictiveSlab() {
                 NeuroSkin
               </span>
               <span className='block text-[9px] font-semibold uppercase tracking-[0.22em] text-white/40'>
-                Application 7.1
+                Supporting application
               </span>
             </span>
           </Link>
@@ -216,31 +219,32 @@ export function PredictiveSlab() {
               Overview
             </Link>
             <Link className='landing-nav-cta' href='/dashboard'>
-              <ArrowLeft className='h-3.5 w-3.5' /> Digital twin
+              <ArrowLeft className='h-3.5 w-3.5' /> Back to twin
             </Link>
           </div>
         </nav>
       </header>
 
       <section className='landing-hero'>
-        <div className='mx-auto grid max-w-[1240px] items-center gap-8 px-5 pb-10 pt-10 lg:grid-cols-[1fr_0.8fr] lg:px-8 lg:pb-12 lg:pt-12'>
+        <div className='mx-auto grid max-w-[1240px] items-center gap-6 px-5 py-7 lg:grid-cols-[1fr_0.8fr] lg:px-8'>
           <div>
             <span className='landing-eyebrow'>
-              <span className='status-pulse' /> Slab plant online
+              <span className='h-1.5 w-1.5 rounded-full bg-mint' /> Supporting
+              simulation
             </span>
             <h1 className='mt-5 font-display text-3xl font-semibold leading-[1.08] tracking-tight text-white sm:text-4xl'>
-              Night-charge operator
+              Predictive slab charging
             </h1>
-            <p className='mt-3 max-w-xl text-sm leading-relaxed text-white/55'>
-              Set tomorrow&apos;s conditions, generate the 16-zone schedule,
-              inspect the commands, then export them for the plant controller.
+            <p className='mt-3 max-w-xl text-sm leading-relaxed text-white/65'>
+              Forecast tomorrow. Plan tonight&apos;s cooling. Inspect 16
+              modelled zones and download the schedule as JSON.
             </p>
             <div className='mt-6 flex flex-wrap gap-2 text-[10px] font-semibold uppercase tracking-wider text-white/50'>
               <span className='rounded-lg bg-white/[0.07] px-3 py-2'>
                 Site · ST Diamond
               </span>
               <span className='rounded-lg bg-white/[0.07] px-3 py-2'>
-                16 zones
+                16 zones · selected facade
               </span>
               <span className='rounded-lg bg-white/[0.07] px-3 py-2'>
                 {data ? `Plan · ${data.date}` : 'Plan · pending'}
@@ -251,28 +255,32 @@ export function PredictiveSlab() {
           <div className='landing-visual'>
             <div className='landing-visual-top'>
               <span className='text-[10px] font-bold uppercase tracking-[0.2em] text-white/40'>
-                Active plan
+                Modelled night charge
               </span>
               <span className='rounded-full bg-white/10 px-2.5 py-1 text-[9px] font-bold uppercase tracking-wider text-mint'>
-                {data ? `for ${data.date}` : 'planning'}
+                {data
+                  ? `for ${data.date}`
+                  : loading
+                    ? 'planning'
+                    : 'unavailable'}
               </span>
             </div>
             <div className='my-5 grid gap-3'>
               <ChargeBar
                 label='Predictive'
-                value={summary?.predictive_charge_wh_m2 ?? 0}
+                value={summary?.predictive_charge_wh_m2 ?? null}
                 max={chargeScale}
                 accent
               />
               <ChargeBar
                 label='Fixed 22:00–06:00 timer'
-                value={summary?.baseline_charge_wh_m2 ?? 0}
+                value={summary?.baseline_charge_wh_m2 ?? null}
                 max={chargeScale}
               />
             </div>
             <p className='text-[11px] leading-relaxed text-white/45'>
               {loading
-                ? 'Computing zone commands…'
+                ? 'Computing modelled schedule…'
                 : data
                   ? `${data.metadata.forecast_provider} · ${data.metadata.location}`
                   : 'No plan loaded.'}
@@ -281,7 +289,7 @@ export function PredictiveSlab() {
         </div>
       </section>
 
-      <div className='mx-auto max-w-[1240px] px-5 py-8 lg:px-8'>
+      <div className='mx-auto max-w-[1240px] px-5 py-6 lg:px-8'>
         <PlanControls
           value={draft}
           loading={loading}
@@ -309,17 +317,34 @@ export function PredictiveSlab() {
 
         {data && summary && (
           <>
-            <section className='mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-[repeat(4,minmax(0,1fr))_auto]'>
+            <nav
+              aria-label='Plan sections'
+              className='mt-5 flex flex-wrap gap-x-5 gap-y-2 text-xs font-semibold text-primary'
+            >
+              <a className='hover:underline' href='#zone-commands'>
+                Zone schedule
+              </a>
+              <a className='hover:underline' href='#plan-comparison'>
+                Compare outcomes
+              </a>
+              <a className='hover:underline' href='#plan-charts'>
+                24-hour charts
+              </a>
+              <a className='hover:underline' href='#measurement-protocol'>
+                Field validation
+              </a>
+            </nav>
+            <section className='mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-[repeat(4,minmax(0,1fr))_auto]'>
               <Fact
                 label='Tonight charge'
                 value={`${summary.predictive_charge_wh_m2} Wh/m²`}
               />
               <Fact
-                label='Plant energy'
+                label='Modelled electricity'
                 value={`${summary.predictive_kwh} kWh`}
               />
               <Fact
-                label='Slab floor'
+                label='Temperature floor'
                 value={`${summary.slab_floor_temp} °C`}
               />
               <Fact
@@ -334,9 +359,10 @@ export function PredictiveSlab() {
                   Inspect zones
                 </a>
                 <button
-                  aria-label='Export controller schedule'
-                  className='grid min-h-14 w-14 place-items-center rounded-xl bg-forest text-white transition hover:bg-forest/90'
+                  aria-label='Download plan JSON'
+                  className='grid min-h-14 w-14 place-items-center rounded-xl bg-forest text-white transition hover:bg-forest/90 disabled:cursor-wait disabled:opacity-50'
                   onClick={download}
+                  disabled={loading}
                   type='button'
                 >
                   <Download className='h-4 w-4' />
@@ -344,14 +370,14 @@ export function PredictiveSlab() {
               </div>
             </section>
 
-            <section className='mt-8 grid gap-5 lg:grid-cols-2'>
+            <section className='mt-5 grid gap-3 lg:grid-cols-2'>
               <GateCard
                 icon={Ruler}
-                kicker='Constraint O1'
+                kicker='Model applicability'
                 title={
                   data.applicable
-                    ? 'Thermal-mass building confirmed'
-                    : 'No usable thermal mass'
+                    ? 'Model capacity passes threshold'
+                    : 'Model below capacity threshold'
                 }
                 tone={data.applicable ? 'ok' : 'bad'}
                 body={data.applicability_note}
@@ -364,15 +390,172 @@ export function PredictiveSlab() {
               <BaselineCard audit={data.baseline_audit} />
             </section>
 
-            <section className='mt-10'>
-              <p className='eyebrow'>The gap</p>
+            <section
+              className='mt-6 grid scroll-mt-6 gap-5 lg:grid-cols-[1.15fr_0.85fr]'
+              id='zone-commands'
+            >
+              <article className='surface-card p-6'>
+                <div className='flex items-center justify-between gap-4'>
+                  <div>
+                    <p className='eyebrow'>4×4 zone schedule</p>
+                    <h3 className='mt-1 font-display text-lg font-semibold'>
+                      Inspect tonight&apos;s targets
+                    </h3>
+                  </div>
+                  <span className='synthetic-badge'>{summary.zones} zones</span>
+                </div>
+                <p className='mt-2 text-xs leading-relaxed text-muted-foreground'>
+                  Select a zone to inspect its modelled charge and timing. JSON
+                  export does not send a plant command.
+                </p>
+                <div className='mt-5 grid gap-1.5'>
+                  {grid.map((row, index) => (
+                    <div
+                      className='grid grid-cols-4 gap-1.5'
+                      key={`row-${row[0]?.row ?? index}`}
+                    >
+                      {row.map((zone) => (
+                        <ZoneCell
+                          key={zone.zone}
+                          zone={zone}
+                          peak={peakZoneCharge}
+                          selected={zone.zone === activeZone?.zone}
+                          onSelect={() => setSelectedZone(zone.zone)}
+                        />
+                      ))}
+                    </div>
+                  ))}
+                </div>
+                {activeZone && (
+                  <div className='mt-5 rounded-2xl border border-primary/20 bg-emerald-50/50 p-4'>
+                    <div className='flex items-center justify-between'>
+                      <div>
+                        <p className='eyebrow'>Selected · {activeZone.zone}</p>
+                        <p className='mt-1 font-display text-xl font-semibold'>
+                          {activeZone.charge_target_wh} Wh/m²
+                        </p>
+                      </div>
+                      <span className='synthetic-badge'>Modelled</span>
+                    </div>
+                    <dl className='mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4'>
+                      <Fact
+                        label='Charge hours'
+                        value={
+                          activeZone.charge_hours.length
+                            ? activeZone.charge_hours
+                                .map(
+                                  (hour) =>
+                                    `${String(hour).padStart(2, '0')}:00`
+                                )
+                                .join(', ')
+                            : 'Off'
+                        }
+                      />
+                      <Fact
+                        label='Delivered'
+                        value={`${activeZone.delivered_wh} Wh/m²`}
+                      />
+                      <Fact
+                        label='Slab low'
+                        value={`${activeZone.min_slab_temp} °C`}
+                      />
+                      <Fact
+                        label='Plant energy'
+                        value={`${activeZone.predictive_kwh} kWh`}
+                      />
+                    </dl>
+                  </div>
+                )}
+                <button
+                  className='mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-forest text-sm font-semibold text-white transition hover:bg-forest/90 disabled:cursor-not-allowed disabled:opacity-50'
+                  disabled={loading}
+                  onClick={download}
+                  type='button'
+                >
+                  <Download className='h-4 w-4' /> Download schedule JSON
+                </button>
+              </article>
+
+              <div className='grid content-start gap-5'>
+                <article className='surface-card p-6'>
+                  <p className='eyebrow'>Slab response model</p>
+                  <h3 className='mt-1 font-display text-lg font-semibold'>
+                    {data.model_fit.source === 'measured'
+                      ? 'Fit from supplied observations'
+                      : data.model_fit.source === 'synthetic'
+                        ? 'Fit from simulated observations'
+                        : 'Assumed model constants'}
+                  </h3>
+                  <dl className='mt-4 grid grid-cols-2 gap-3'>
+                    <Fact
+                      label='Capacity'
+                      value={`${data.model_fit.capacity_wh_per_m2k} Wh/m²K`}
+                    />
+                    <Fact
+                      label='Surface UA'
+                      value={`${data.model_fit.surface_ua} W/m²K`}
+                    />
+                    <Fact
+                      label='Time constant'
+                      value={`${data.model_fit.time_constant_h} h`}
+                    />
+                    <Fact
+                      label='Fit quality'
+                      value={`r² ${data.model_fit.r_squared}`}
+                    />
+                  </dl>
+                  <details className='mt-4 text-xs text-muted-foreground'>
+                    <summary className='cursor-pointer font-semibold text-primary'>
+                      Fit evidence · {data.model_fit.samples} samples
+                    </summary>
+                    <p className='mt-2 leading-relaxed'>
+                      {data.model_fit.note}
+                    </p>
+                  </details>
+                </article>
+
+                <article className='surface-card p-6'>
+                  <p className='eyebrow'>Forecast</p>
+                  <h3 className='mt-1 font-display text-lg font-semibold'>
+                    {data.metadata.forecast_provider}
+                  </h3>
+                  <div className='mt-3 flex flex-wrap gap-2'>
+                    <span className='proof-chip'>
+                      {data.metadata.forecast_status}
+                    </span>
+                    {data.metadata.forecast_dataset && (
+                      <span className='proof-chip'>
+                        {data.metadata.forecast_dataset}
+                      </span>
+                    )}
+                    <span className='proof-chip'>{data.metadata.location}</span>
+                  </div>
+                  {data.metadata.forecast_fallback && (
+                    <p className='mt-3 text-[11px] leading-relaxed text-amber-700'>
+                      {data.metadata.forecast_fallback}
+                    </p>
+                  )}
+                  <details className='mt-4 text-xs text-muted-foreground'>
+                    <summary className='cursor-pointer font-semibold text-primary'>
+                      Source and limitations
+                    </summary>
+                    <p className='mt-2 leading-relaxed'>
+                      {data.metadata.data_notice}
+                    </p>
+                  </details>
+                </article>
+              </div>
+            </section>
+
+            <section className='mt-8 scroll-mt-6' id='plan-comparison'>
+              <p className='eyebrow'>Modelled comparison</p>
               <h2 className='mt-1 font-display text-2xl font-semibold tracking-tight'>
                 Predictive charge versus the fixed timer
               </h2>
               <p className='mt-2 max-w-2xl text-sm text-muted-foreground'>
                 {data.baseline_audit.claim_allowed
-                  ? 'The incumbent schedule has been shown to be a clock, so this is the comparison that counts.'
-                  : 'Modelled for this day only. Until the incumbent schedule is audited as genuinely fixed, every number below is a hypothesis, not a saving.'}
+                  ? 'Generated log passes the fixed-timer check. Energy and comfort differences remain modelled.'
+                  : 'Modelled differences only; the fixed-timer baseline is unverified.'}
               </p>
               <div className='mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4'>
                 <MetricCard
@@ -410,7 +593,7 @@ export function PredictiveSlab() {
                 />
                 <MetricCard
                   icon={BatteryCharging}
-                  label='Charge leaked away'
+                  label='Standby loss'
                   ours={`${summary.predictive_standby_loss_wh_m2} Wh/m²`}
                   base={`${summary.baseline_standby_loss_wh_m2} Wh/m²`}
                   better={
@@ -418,15 +601,18 @@ export function PredictiveSlab() {
                     summary.baseline_standby_loss_wh_m2
                   }
                   claimable={data.baseline_audit.claim_allowed}
-                  detail='Cold the building never got to use'
+                  detail='Stored cooling lost before use'
                 />
               </div>
             </section>
 
-            <section className='mt-10 grid gap-6'>
+            <section
+              className='mt-8 grid scroll-mt-6 gap-5 lg:grid-cols-2'
+              id='plan-charts'
+            >
               <ChartCard
                 title='The slab through 24 hours'
-                caption='Charged overnight, discharged into the next day. Below the floor line the soffit would sweat, so no controller may go there.'
+                caption='Slab temperature and proxy indoor dew point. Dashed red line: the modelled temperature floor.'
               >
                 <ResponsiveContainer width='100%' height='100%'>
                   <LineChart
@@ -490,7 +676,7 @@ export function PredictiveSlab() {
 
               <ChartCard
                 title='Where the plant runs'
-                caption='Charge power at night, trim power by day, against the cooling load the forecast says is coming. The timer spends before it knows.'
+                caption='Night charging and daytime air-side trim against forecast cooling demand.'
               >
                 <ResponsiveContainer width='100%' height='100%'>
                   <ComposedChart
@@ -557,151 +743,16 @@ export function PredictiveSlab() {
               </ChartCard>
             </section>
 
-            <section
-              className='mt-10 grid scroll-mt-6 gap-6 lg:grid-cols-[1.15fr_0.85fr]'
-              id='zone-commands'
+            <details
+              className='surface-card mt-8 scroll-mt-6 p-6'
+              id='measurement-protocol'
             >
-              <article className='surface-card p-6'>
-                <div className='flex items-center justify-between gap-4'>
-                  <div>
-                    <p className='eyebrow'>Zone command matrix</p>
-                    <h3 className='mt-1 font-display text-lg font-semibold'>
-                      Inspect tonight&apos;s targets
-                    </h3>
-                  </div>
-                  <span className='synthetic-badge'>{summary.zones} zones</span>
-                </div>
-                <p className='mt-2 text-xs leading-relaxed text-muted-foreground'>
-                  Select a zone to inspect the command that will be exported to
-                  the plant controller.
-                </p>
-                <div className='mt-5 grid gap-1.5'>
-                  {grid.map((row, index) => (
-                    <div
-                      className='grid grid-cols-4 gap-1.5'
-                      key={`row-${row[0]?.row ?? index}`}
-                    >
-                      {row.map((zone) => (
-                        <ZoneCell
-                          key={zone.zone}
-                          zone={zone}
-                          peak={peakZoneCharge}
-                          selected={zone.zone === activeZone?.zone}
-                          onSelect={() => setSelectedZone(zone.zone)}
-                        />
-                      ))}
-                    </div>
-                  ))}
-                </div>
-                {activeZone && (
-                  <div className='mt-5 rounded-2xl border border-primary/20 bg-emerald-50/50 p-4'>
-                    <div className='flex items-center justify-between'>
-                      <div>
-                        <p className='eyebrow'>Selected · {activeZone.zone}</p>
-                        <p className='mt-1 font-display text-xl font-semibold'>
-                          {activeZone.charge_target_wh} Wh/m²
-                        </p>
-                      </div>
-                      <span className='winner-badge'>Ready</span>
-                    </div>
-                    <dl className='mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4'>
-                      <Fact
-                        label='Charge hours'
-                        value={
-                          activeZone.charge_hours.length
-                            ? activeZone.charge_hours
-                                .map(
-                                  (hour) =>
-                                    `${String(hour).padStart(2, '0')}:00`
-                                )
-                                .join(', ')
-                            : 'Off'
-                        }
-                      />
-                      <Fact
-                        label='Delivered'
-                        value={`${activeZone.delivered_wh} Wh/m²`}
-                      />
-                      <Fact
-                        label='Slab low'
-                        value={`${activeZone.min_slab_temp} °C`}
-                      />
-                      <Fact
-                        label='Plant energy'
-                        value={`${activeZone.predictive_kwh} kWh`}
-                      />
-                    </dl>
-                  </div>
-                )}
-                <button
-                  className='mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-forest text-sm font-semibold text-white transition hover:bg-forest/90 disabled:cursor-not-allowed disabled:opacity-50'
-                  disabled={loading}
-                  onClick={download}
-                  type='button'
-                >
-                  <Download className='h-4 w-4' /> Export controller schedule
-                </button>
-              </article>
-
-              <div className='grid gap-6'>
-                <article className='surface-card p-6'>
-                  <p className='eyebrow'>Learned mass response</p>
-                  <h3 className='mt-1 font-display text-lg font-semibold'>
-                    The building&apos;s own slab, identified
-                  </h3>
-                  <dl className='mt-4 grid grid-cols-2 gap-3'>
-                    <Fact
-                      label='Capacity'
-                      value={`${data.model_fit.capacity_wh_per_m2k} Wh/m²K`}
-                    />
-                    <Fact
-                      label='Surface UA'
-                      value={`${data.model_fit.surface_ua} W/m²K`}
-                    />
-                    <Fact
-                      label='Time constant'
-                      value={`${data.model_fit.time_constant_h} h`}
-                    />
-                    <Fact
-                      label='Fit quality'
-                      value={`r² ${data.model_fit.r_squared}`}
-                    />
-                  </dl>
-                  <p className='mt-4 text-[11px] leading-relaxed text-muted-foreground'>
-                    {data.model_fit.note}
-                  </p>
-                </article>
-
-                <article className='surface-card p-6'>
-                  <p className='eyebrow'>Forecast</p>
-                  <h3 className='mt-1 font-display text-lg font-semibold'>
-                    {data.metadata.forecast_provider}
-                  </h3>
-                  <div className='mt-3 flex flex-wrap gap-2'>
-                    <span className='proof-chip'>
-                      {data.metadata.forecast_status}
-                    </span>
-                    {data.metadata.forecast_dataset && (
-                      <span className='proof-chip'>
-                        {data.metadata.forecast_dataset}
-                      </span>
-                    )}
-                    <span className='proof-chip'>{data.metadata.location}</span>
-                  </div>
-                  {data.metadata.forecast_fallback && (
-                    <p className='mt-3 text-[11px] leading-relaxed text-amber-700'>
-                      {data.metadata.forecast_fallback}
-                    </p>
-                  )}
-                </article>
-              </div>
-            </section>
-
-            <section className='surface-card mt-10 p-6'>
-              <p className='eyebrow'>Cleanly verifiable</p>
-              <h3 className='mt-1 font-display text-lg font-semibold'>
-                How to measure the gap for real
-              </h3>
+              <summary className='cursor-pointer font-display text-lg font-semibold'>
+                Field measurement protocol
+                <span className='ml-3 text-xs font-normal text-muted-foreground'>
+                  {data.measurement_protocol.length} validation steps
+                </span>
+              </summary>
               <ol className='mt-4 grid gap-3'>
                 {data.measurement_protocol.map((step, index) => (
                   <li className='flex gap-3' key={step}>
@@ -714,7 +765,7 @@ export function PredictiveSlab() {
                   </li>
                 ))}
               </ol>
-            </section>
+            </details>
           </>
         )}
 
@@ -760,7 +811,7 @@ function ChargeBar({
   accent = false,
 }: {
   label: string
-  value: number
+  value: number | null
   max: number
   accent?: boolean
 }) {
@@ -770,12 +821,12 @@ function ChargeBar({
         <span className={accent ? 'font-semibold text-mint' : 'text-white/50'}>
           {label}
         </span>
-        <span className='font-mono text-white/70'>{value} Wh/m²</span>
+        <span className='font-mono text-white/70'>{value ?? '—'} Wh/m²</span>
       </div>
       <div className='mt-1.5 h-2 overflow-hidden rounded-full bg-white/10'>
         <div
           className={accent ? 'h-full bg-mint' : 'h-full bg-white/30'}
-          style={{ width: `${Math.min(100, (value / max) * 100)}%` }}
+          style={{ width: `${Math.min(100, ((value ?? 0) / max) * 100)}%` }}
         />
       </div>
     </div>
@@ -804,7 +855,7 @@ function GateCard({
         ? 'border-amber-200 bg-amber-50/50'
         : 'border-rose-200 bg-rose-50/40'
   return (
-    <article className={`rounded-[1.25rem] border p-6 ${skin}`}>
+    <article className={`rounded-[1.25rem] border p-4 ${skin}`}>
       <div className='flex items-start gap-3'>
         <span className='landing-proof-icon'>
           <Icon className='h-4 w-4' />
@@ -818,18 +869,21 @@ function GateCard({
           </h3>
         </div>
       </div>
-      <p className='mt-3 text-xs leading-relaxed text-muted-foreground'>
-        {body}
-      </p>
-      {facts.length > 0 && (
-        <div className='mt-3 flex flex-wrap gap-1.5'>
-          {facts.map((fact) => (
-            <span className='proof-chip' key={fact}>
-              {fact}
-            </span>
-          ))}
-        </div>
-      )}
+      <details className='mt-3 text-xs text-muted-foreground'>
+        <summary className='cursor-pointer font-semibold'>
+          Evidence and assumptions
+        </summary>
+        <p className='mt-2 leading-relaxed'>{body}</p>
+        {facts.length > 0 && (
+          <div className='mt-3 flex flex-wrap gap-1.5'>
+            {facts.map((fact) => (
+              <span className='proof-chip' key={fact}>
+                {fact}
+              </span>
+            ))}
+          </div>
+        )}
+      </details>
     </article>
   )
 }
@@ -839,7 +893,11 @@ function BaselineCard({ audit }: { audit: BaselineAudit }) {
   return (
     <GateCard
       icon={audit.claim_allowed ? CheckCircle2 : ShieldQuestion}
-      kicker='Baseline audit'
+      kicker={
+        audit.nights
+          ? 'Baseline audit · generated demo log'
+          : 'Baseline audit · no log supplied'
+      }
       title={status.headline}
       tone={status.tone}
       body={audit.note}
@@ -881,7 +939,7 @@ function MetricCard({
         </span>
         {better &&
           (claimable ? (
-            <span className='winner-badge'>Better</span>
+            <span className='winner-badge'>Lower in model</span>
           ) : (
             <span className='rounded-full bg-secondary px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-muted-foreground'>
               Unverified
@@ -921,6 +979,7 @@ function ZoneCell({
   return (
     <button
       aria-label={`Inspect ${zone.zone}`}
+      aria-pressed={selected}
       className={`rounded-xl border p-2 text-center transition hover:-translate-y-0.5 hover:shadow-sm ${selected ? 'border-primary ring-2 ring-primary/20' : 'border-border/60'}`}
       onClick={onSelect}
       style={{ background: `rgba(15,138,99,${0.06 + share * 0.34})` }}
@@ -1004,8 +1063,8 @@ export function PlanControls({
       </label>
 
       <div className='grid gap-1'>
-        <span className='field-label'>Sky</span>
-        <div className='setting-segments'>
+        <span className='field-label'>Fallback sky</span>
+        <div className='setting-segments grid-cols-3'>
           {profiles.map((profile) => (
             <button
               className={
@@ -1014,6 +1073,7 @@ export function PlanControls({
                   : 'setting-segment'
               }
               key={profile}
+              aria-pressed={value.cloud_profile === profile}
               onClick={() => onChange({ ...value, cloud_profile: profile })}
               type='button'
             >
@@ -1050,8 +1110,8 @@ export function PlanControls({
       </label>
 
       <div className='grid gap-1'>
-        <span className='field-label'>Incumbent schedule log</span>
-        <div className='setting-segments'>
+        <span className='field-label'>Demo baseline log</span>
+        <div className='setting-segments grid-cols-3'>
           <button
             className={
               logged === 0 ? 'setting-segment-active' : 'setting-segment'
@@ -1076,6 +1136,9 @@ export function PlanControls({
             compensated
           </button>
         </div>
+        <span className='text-[10px] text-muted-foreground'>
+          Generated examples · field baseline unverified
+        </span>
       </div>
 
       <button

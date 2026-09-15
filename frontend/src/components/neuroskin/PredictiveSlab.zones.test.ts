@@ -60,7 +60,7 @@ describe('slab zone grid', () => {
 })
 
 describe('baseline claim gate', () => {
-  it('only calls the saving claimable once the audit says so', () => {
+  it('reports a fixed-timer pattern without claiming a verified field baseline', () => {
     expect(claimStatus(audit({})).tone).toBe('warn')
     expect(
       claimStatus(audit({ verdict: 'load_compensated', nights: 14 })).tone
@@ -69,7 +69,7 @@ describe('baseline claim gate', () => {
       audit({ verdict: 'fixed_schedule', nights: 14, claim_allowed: true })
     )
     expect(passed.tone).toBe('ok')
-    expect(passed.headline).toContain('14 nights')
+    expect(passed.headline).toBe('Fixed-timer pattern found across 14 nights')
   })
 })
 
@@ -102,6 +102,15 @@ describe('slab operator controls', () => {
         onSample: () => undefined,
       })
     )
+
+    expect(screen.getByText('Fallback sky')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'scattered' })).toHaveAttribute(
+      'aria-pressed',
+      'true'
+    )
+    expect(
+      screen.getByText('Generated examples · field baseline unverified')
+    ).toBeInTheDocument()
 
     fireEvent.change(screen.getByLabelText('Day to charge for'), {
       target: { value: '2026-08-15' },
