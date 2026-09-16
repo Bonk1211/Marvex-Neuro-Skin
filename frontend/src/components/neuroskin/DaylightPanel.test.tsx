@@ -278,8 +278,39 @@ describe('occupant-plane daylight', () => {
     expect((mesh.material as THREE.MeshStandardMaterial).color.getStyle()).toBe(
       'rgb(171,43,43)'
     )
+    plan.update(0, 'north', new Set(), false, true, tick, {
+      tick,
+      mode: 'et',
+      controlled: true,
+    })
+    expect(boardroom.probes[0].halo.visible).toBe(true)
+    expect(boardroom.probes[0].halo.material.color.getHexString()).toBe(
+      '43836c'
+    )
+    expect(
+      (mesh.material as THREE.MeshStandardMaterial).color.getHexString()
+    ).toBe('43836c')
+    expect(boardroom.probes.filter((p) => p.halo.visible)).toHaveLength(1)
+    plan.update(0, 'north', new Set(), false, true, tick, {
+      tick,
+      mode: 'ev',
+      controlled: true,
+    })
+    expect(boardroom.probes[0].halo.material.color.getStyle()).toBe(
+      'rgb(171,43,43)'
+    )
+    const ghost = plan.levels.find(
+      (l) => l.orientation === 'north' && l.band === 1
+    )!
+    expect([...ghost.materials.keys()].every((mesh) => !mesh.castShadow)).toBe(
+      true
+    )
+    expect(
+      [...boardroom.materials.keys()].some((mesh) => mesh.castShadow)
+    ).toBe(true)
     const night = { ...tick, daylight: { ...status, night: true } }
     plan.update(0, 'north', new Set(), false, true, night)
+    expect(boardroom.probes.every((p) => !p.halo.visible)).toBe(true)
     expect(
       (mesh.material as THREE.MeshStandardMaterial).color.getHexString()
     ).toBe('a8b0ad')

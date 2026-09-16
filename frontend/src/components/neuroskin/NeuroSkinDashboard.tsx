@@ -894,6 +894,10 @@ export function NeuroSkinDashboard() {
                     onSelectZone={selectZone}
                     sunTrack={sunTrack}
                     ticks={data.ticks}
+                    onSelectTick={(index) => {
+                      setPlaying(false)
+                      setTimelineIndex(index)
+                    }}
                   />
                 </div>
                 {lens === 'brains' && isControlled && (

@@ -5,6 +5,7 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import { createBandPlan, FLOOR_STACK_GAP } from './bandPlan'
+import { floorBeam, type FloorLightView } from './floorSunlight'
 import { FLOOR_PLANS, floorGroupLabel, floorProgram } from './floorWorkspaces'
 import { createCloudCanopy } from './cloudCanopy'
 import type { SkyObservation } from './CloudVisionPanel'
@@ -432,6 +433,7 @@ interface BuildingHeatmapProps {
   sunTrack?: Array<[number, number]>
   /** The whole run, for the optional daily roof-exposure bake. */
   ticks?: TickPayload[]
+  onSelectTick?: (index: number) => void
   buildingVariant?: BuildingVariant
   onBuildingVariantChange?: (variant: BuildingVariant) => void
 }
@@ -455,6 +457,7 @@ export function BuildingHeatmap({
   onSelectZone,
   sunTrack,
   ticks,
+  onSelectTick,
   buildingVariant = 'controlled',
   onBuildingVariantChange,
 }: BuildingHeatmapProps) {
@@ -470,7 +473,18 @@ export function BuildingHeatmap({
   const [planAngle, setPlanAngle] = useState<'cutaway' | 'top'>('cutaway')
   const planAngleRef = useRef(planAngle)
   planAngleRef.current = planAngle
-  const [showHvac, setShowHvac] = useState(true)
+  const [showHvac, setShowHvac] = useState(false)
+  const [floorLight, setFloorLight] = useState<FloorLightView>('sun')
+  const lightingRef = useRef({
+    tick,
+    mode: floorLight,
+    controlled: buildingVariant === 'controlled',
+  })
+  lightingRef.current = {
+    tick,
+    mode: floorLight,
+    controlled: buildingVariant === 'controlled',
+  }
   const showHvacRef = useRef(showHvac)
   showHvacRef.current = showHvac
   const [showPeople, setShowPeople] = useState(true)
@@ -557,6 +571,18 @@ export function BuildingHeatmap({
     ? (selected.split(':')[1] as FacadeOrientation)
     : (tick.facade.find((wall) => wall.primary)?.orientation ?? 'west')
   const planSide = selected.split(':')[1] as FacadeOrientation
+  const bestSunlight = useMemo(() => {
+    let index = -1,
+      strongest = 1
+    ticks?.forEach((sample, at) => {
+      const strength = floorBeam(sample, planSide, band, controlled)
+      if (strength > strongest) {
+        strongest = strength
+        index = at
+      }
+    })
+    return index
+  }, [ticks, planSide, band, controlled])
   const planSideRef = useRef(planSide)
   planSideRef.current = planSide
   const activeWallRef = useRef(activeWall)
@@ -1367,6 +1393,7 @@ export function BuildingHeatmap({
     scene.traverse((object) => {
       if (
         object instanceof THREE.Mesh &&
+        !object.userData.floorLight &&
         object !== ground &&
         object !== sunMarker
       ) {
@@ -1392,6 +1419,7 @@ export function BuildingHeatmap({
     let lastBake = 0
     let lastReadout = 0
     let lastCloudPaint = 0
+    let lastPeopleShadow = 0
     let peopleSeconds = 0
     const animate = () => {
       frame = requestAnimationFrame(animate)
@@ -1459,6 +1487,8 @@ export function BuildingHeatmap({
         dirtyWalls.clear()
       }
       const isPlan = cameraModeRef.current === 'plan'
+      ambient.intensity = isPlan ? 0.65 : 1.6
+      scene.environmentIntensity = isPlan ? 0.35 : 0.65
       controls.enabled = !isPlan
       controls.enableRotate = !isPlan
       planControls.enabled = isPlan
@@ -1473,7 +1503,8 @@ export function BuildingHeatmap({
             availableZones.current,
             showHvacRef.current,
             planAngleRef.current === 'top',
-            daylightTickRef.current
+            daylightTickRef.current,
+            lightingRef.current
           )
         )
           renderer.shadowMap.needsUpdate = true
@@ -1487,6 +1518,15 @@ export function BuildingHeatmap({
           people.showDetections,
           focusedBandRef.current
         )
+        if (
+          !people.peoplePaused &&
+          people.occupancy > 0 &&
+          focusedBandRef.current !== null &&
+          now - lastPeopleShadow > 200
+        ) {
+          renderer.shadowMap.needsUpdate = true
+          lastPeopleShadow = now
+        }
         if (inspected) refreshProbe()
       }
       renderer.render(scene, renderCamera())
@@ -2069,6 +2109,70 @@ export function BuildingHeatmap({
           </div>
           {activeCameraMode === 'plan' && (
             <>
+              <div
+                role='group'
+                aria-label='Floor light visualisation'
+                className='mt-3 flex flex-wrap gap-1'
+              >
+                {(
+                  [
+                    ['sun', 'Sun & shadows'],
+                    ['et', 'Et · desk light'],
+                    ['ev', 'Ev · eye light'],
+                    ['off', 'Off'],
+                  ] as const
+                ).map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    type='button'
+                    className='band-button'
+                    aria-pressed={floorLight === mode}
+                    disabled={
+                      (mode === 'et' || mode === 'ev') &&
+                      (!controlled || !tick.daylight)
+                    }
+                    onClick={() => setFloorLight(mode)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <p className='mt-1 text-[9px] leading-4' aria-live='polite'>
+                {floorLight === 'sun'
+                  ? tick.solar_elevation <= 0
+                    ? 'Night · no direct sunlight'
+                    : floorBeam(tick, planSide, band, controlled) <= 1
+                      ? 'This side is shaded now. Find sunlight or move the timeline.'
+                      : 'Gold: window sunlight · lines: sun paths · dark: furniture shadows.'
+                  : floorLight === 'off'
+                    ? 'Light overlay hidden'
+                    : !controlled || !tick.daylight
+                      ? 'Et/Ev readings are unavailable in this run'
+                      : tick.daylight?.night
+                        ? 'Night / low sun · probe readings unavailable'
+                        : floorLight === 'et'
+                          ? 'Et markers: blue = low · green = in band · amber = high'
+                          : 'Ev markers: green → red as eye light reaches the cap'}
+              </p>
+              <p className='mt-1 text-[9px] text-muted-foreground'>
+                Sun paths are illustrative. Et/Ev colours use fixed model
+                probes.
+              </p>
+              {floorLight === 'sun' && onSelectTick && (
+                <button
+                  type='button'
+                  className='band-button mt-2 w-full'
+                  disabled={bestSunlight < 0}
+                  onClick={() => {
+                    onSelectBand?.(band)
+                    onSelectTick(bestSunlight)
+                  }}
+                >
+                  {bestSunlight < 0
+                    ? 'No direct sun on this side in this run'
+                    : 'Find sunlight on this side'}
+                </button>
+              )}
               <div className='mt-2 flex flex-wrap gap-1'>
                 <div
                   role='group'

@@ -5,6 +5,11 @@ import { FLOOR_PLANS, floorProgram } from './floorWorkspaces'
 import { mockOccupancy, occupantId, walkingPosition } from './floorOccupants'
 
 import { daylightColor } from './DaylightPanel'
+import {
+  createFloorSunlight,
+  floorSunDirection,
+  type FloorLightView,
+} from './floorSunlight'
 
 export const FLOOR_STACK_GAP = 4.4
 
@@ -532,6 +537,13 @@ export function createBandPlan(
     side: THREE.DoubleSide,
   })
   const detectionRing = new THREE.RingGeometry(0.19, 0.215, 24)
+  const probeRing = new THREE.RingGeometry(0.19, 0.31, 32)
+  const floorShadowGeometry = new THREE.PlaneGeometry(6.2, 6.2)
+  const floorShadowMaterial = new THREE.ShadowMaterial({
+    color: 0x152a35,
+    opacity: 0.5,
+    depthWrite: false,
+  })
   const sides = Object.keys(FLOOR_PLANS) as FacadeOrientation[]
   const levels = sides.flatMap((orientation) =>
     Array.from({ length: 4 }, (_, band) => {
@@ -562,6 +574,7 @@ export function createBandPlan(
         rotation: number
         mesh: THREE.Mesh
         color: THREE.MeshStandardMaterial
+        halo: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>
       }[] = []
       level.updateMatrixWorld(true)
       interior.traverse((object) => {
@@ -571,6 +584,21 @@ export function createBandPlan(
           THREE.BufferGeometry,
           THREE.MeshStandardMaterial
         >
+        const halo = new THREE.Mesh(
+          probeRing,
+          new THREE.MeshBasicMaterial({
+            color: 0xffffff,
+            transparent: true,
+            opacity: 0.9,
+            side: THREE.DoubleSide,
+            depthWrite: false,
+          })
+        )
+        halo.rotation.x = -Math.PI / 2
+        halo.position.set(point.x, 0.79, point.z)
+        halo.visible = false
+        halo.userData.floorLight = true
+        level.add(halo)
         probes.push({
           ...object.userData.daylight,
           x: point.x,
@@ -581,13 +609,15 @@ export function createBandPlan(
           ),
           mesh,
           color: mesh.material.clone(),
+          halo,
         })
         mesh.userData = {
           band,
           surface: `wall:${orientation}`,
           probe: object.userData.daylight,
         }
-        pickables.push(mesh)
+        halo.userData = { ...mesh.userData, floorLight: true }
+        pickables.push(mesh, halo)
       })
       const seats = probes.filter((probe) => probe.kind === 'seat')
       const people = Array.from({ length: 12 }, (_, index) => {
@@ -642,6 +672,23 @@ export function createBandPlan(
         }
       })
       pickables.push(slab)
+      const sunlight = createFloorSunlight(orientation, band)
+      level.add(sunlight.group)
+      const shadow = new THREE.Mesh(floorShadowGeometry, floorShadowMaterial)
+      shadow.rotation.x = -Math.PI / 2
+      shadow.position.y = 0.085
+      shadow.receiveShadow = true
+      shadow.userData.floorLight = true
+      level.add(shadow)
+      const occluders: THREE.Object3D[] = []
+      for (const root of [level.children[0], interior])
+        root.traverse((object) => {
+          if (
+            object instanceof THREE.Mesh &&
+            !(object.material as THREE.Material).transparent
+          )
+            occluders.push(object)
+        })
       group.add(level)
       return {
         group: level,
@@ -652,6 +699,9 @@ export function createBandPlan(
         materials,
         probes,
         people,
+        sunlight,
+        occluders,
+        shadow,
       }
     })
   )
@@ -703,20 +753,29 @@ export function createBandPlan(
   group.traverse((object) => object.layers.set(1))
   let previousView = ''
   let previousDaylight: TickPayload | undefined
+  let previousSun: TickPayload | undefined
   return {
     group,
     levels,
     cells,
     pickables,
+    light,
     update(
       focusedBand: number | null,
       orientation: FacadeOrientation,
       available: Set<string>,
       showHvac = true,
       topDown = false,
-      daylightTick?: TickPayload
+      daylightTick?: TickPayload,
+      lighting?: {
+        tick: TickPayload
+        mode: FloorLightView
+        controlled: boolean
+      }
     ) {
-      const view = `${orientation}:${focusedBand}:${showHvac}:${topDown}`
+      const mode = lighting?.mode ?? 'sun'
+      const solar = lighting?.tick ?? daylightTick
+      const view = `${orientation}:${focusedBand}:${showHvac}:${topDown}:${mode}:${lighting?.controlled}`
       const changed = previousView !== view
       if (changed) {
         for (const level of levels) {
@@ -725,12 +784,25 @@ export function createBandPlan(
             level.orientation === orientation && (!topDown || focused)
           level.slab.visible = level.group.visible
           level.hvac.visible = showHvac
-          for (const [mesh, original] of level.materials)
+          for (const [mesh, original] of level.materials) {
             mesh.material = focused
               ? original
               : mesh === level.slab
                 ? greySlab
                 : grey
+            // Exploded/ghost levels are presentation, not ceilings above the selected room.
+            mesh.castShadow =
+              focusedBand !== null &&
+              focused &&
+              !(original as THREE.Material).transparent
+          }
+          level.hvac.traverse((object) => {
+            object.castShadow = false
+          })
+          for (const person of level.people)
+            person.body.traverse((object) => {
+              object.castShadow = focusedBand !== null && focused
+            })
           for (const child of level.group.children) {
             if (child instanceof THREE.Sprite) {
               child.visible = level.group.visible
@@ -754,8 +826,28 @@ export function createBandPlan(
           for (const probe of level.probes) {
             const reading = readings.get(probe.index)
             probe.mesh.userData.reading = reading
+            probe.halo.userData.reading = reading
+            const markerColor =
+              reading && status
+                ? daylightColor(
+                    mode === 'et' ? { ...reading, kind: 'desk' } : reading,
+                    status
+                  )
+                : null
+            probe.halo.visible =
+              focused &&
+              !!markerColor &&
+              !status?.night &&
+              (mode === 'et' || (mode === 'ev' && probe.kind === 'seat'))
+            if (markerColor) probe.halo.material.color.set(markerColor)
             const color =
-              reading && status ? daylightColor(reading, status) : null
+              mode === 'et'
+                ? markerColor
+                : mode === 'ev' && probe.kind === 'desk'
+                  ? null
+                  : reading && status
+                    ? daylightColor(reading, status)
+                    : null
             if (color && focused) {
               probe.color.color.set(color)
               probe.mesh.material = probe.color
@@ -767,6 +859,44 @@ export function createBandPlan(
           }
         }
         previousDaylight = daylightTick
+      }
+      const sunChanged = previousSun !== solar
+      if (changed || sunChanged) {
+        const centre = (focusedBand ?? 1.5) * FLOOR_STACK_GAP
+        light.target.position.set(0, centre, 0)
+        light.position.copy(
+          solar &&
+            Number.isFinite(solar.solar_azimuth) &&
+            Number.isFinite(solar.solar_elevation)
+            ? floorSunDirection(
+                solar.solar_azimuth,
+                solar.solar_elevation
+              ).multiplyScalar(20)
+            : new THREE.Vector3(-3, 20, 5)
+        )
+        light.position.y += centre
+        light.intensity = solar && solar.solar_elevation <= 0 ? 0.2 : 3.2
+        group.updateMatrixWorld(true)
+        for (const level of levels) {
+          level.shadow.visible =
+            level.group.visible &&
+            level.band === focusedBand &&
+            mode === 'sun' &&
+            !!solar &&
+            solar.solar_elevation > 0
+          const visible =
+            level.group.visible &&
+            (focusedBand === null || level.band === focusedBand) &&
+            mode === 'sun'
+          if (visible)
+            level.sunlight.update(
+              solar,
+              lighting?.controlled ?? true,
+              level.occluders
+            )
+          else level.sunlight.group.visible = false
+        }
+        previousSun = solar
       }
       for (const cell of cells) {
         const source = cell.userData.source as THREE.Mesh
@@ -786,7 +916,7 @@ export function createBandPlan(
           if (attribute) cell.geometry.setAttribute(name, attribute)
         }
       }
-      return changed
+      return changed || sunChanged
     },
     updatePeople(
       seconds: number,
@@ -840,6 +970,9 @@ export function createBandPlan(
       shirt.dispose()
       detection.dispose()
       detectionRing.dispose()
+      probeRing.dispose()
+      floorShadowGeometry.dispose()
+      floorShadowMaterial.dispose()
       light.shadow.dispose()
     },
   }
