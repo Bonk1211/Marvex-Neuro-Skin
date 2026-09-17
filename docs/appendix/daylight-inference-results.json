@@ -1,0 +1,35 @@
+{
+  "runs": [
+    {
+      "mode": "off",
+      "seconds": 1.9341501250164583,
+      "bytes": 6973222
+    },
+    {
+      "mode": "1 degree",
+      "seconds": 17.64773745799903,
+      "bytes": 11899498
+    },
+    {
+      "mode": "5 degree",
+      "seconds": 7.227199666987872,
+      "bytes": 11899571
+    },
+    {
+      "mode": "5 degree cached",
+      "seconds": 2.2969044580240734,
+      "bytes": 11899571
+    }
+  ],
+  "model_load_seconds": 3.0333028330060188,
+  "seat_ticks_compared": 18200,
+  "coarsening_mae_et_ev_lux": [
+    1.9144661806307977,
+    0.8235178600791816
+  ],
+  "coarsening_max_et_ev_lux": [
+    523.0915812751782,
+    252.397553572403
+  ],
+  "ev_cap_classification_changes": 6
+}

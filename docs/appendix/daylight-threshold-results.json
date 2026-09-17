@@ -1,0 +1,176 @@
+{
+  "assessment_date": "2026-09-13",
+  "model": "extra trees",
+  "seed": 42,
+  "dataset_sha256": "b69fb674df4594977c5e8c9965d8fee2869537203617da32f5511e2df4a8a170",
+  "training_git_sha": "69d60576906b7fd3d38f85805de25d9451c2eba8",
+  "sources": [
+    "backend/data/daylight/dataset/*.parquet",
+    "backend/data/daylight/models/ev.joblib",
+    "backend/data/daylight/models/et.joblib",
+    "backend/app/domain/daylight/training.py",
+    "docs/appendix/daylight-runs.jsonl"
+  ],
+  "evaluation_method": "Rebuild build_splits(frame, target=target, seed=42); apply the saved model directly to feature_matrix(split); compare predictions with the oracle target for each row. No fitting, retuning or runtime angle interpolation.",
+  "sample_unit": "One probe/day/tick/louvre-angle row; rows are correlated evaluations, not independent occupants or occupied hours.",
+  "thresholds": {
+    "ev_cap_lux": 1000.0,
+    "et_band_low_lux": 300.0,
+    "et_band_high_lux": 500.0
+  },
+  "definitions": {
+    "ev_population": "Seat probes only.",
+    "et_population": "Horizontal work-plane estimates at both seat and desk probe positions.",
+    "over_cap_recall": "Rows with both oracle and predicted Ev > 1000 divided by rows with oracle Ev > 1000.",
+    "over_cap_precision": "Rows with both oracle and predicted Ev > 1000 divided by rows with predicted Ev > 1000.",
+    "missed_over_cap": "Oracle Ev > 1000 and predicted Ev <= 1000.",
+    "in_band_precision": "Rows where oracle and predicted Et are both in [300, 500] divided by rows with predicted Et in [300, 500].",
+    "in_band_recall": "Rows where oracle and predicted Et are both in [300, 500] divided by rows with oracle Et in [300, 500].",
+    "three_class_accuracy": "Fraction agreeing on Et below 300, within [300, 500], or above 500 lux.",
+    "p95_abs_error": "95th percentile of absolute prediction minus oracle error, in lux; not a confidence bound.",
+    "p99_abs_error": "99th percentile of absolute prediction minus oracle error, in lux; not a confidence bound.",
+    "bias": "Mean prediction minus oracle value, in lux."
+  },
+  "limitations": [
+    "Structural holdout selected the model family and is a validation set.",
+    "Transfer is three east/north days from the same fixed illustrative room model.",
+    "Repeated seed-42 training proves reproducibility, not robustness across independent data or splits.",
+    "These direct model checks do not measure the deployed continuous-angle interpolation path or real-building accuracy."
+  ],
+  "results": {
+    "ev": {
+      "holdout": {
+        "n": 6656,
+        "mae": 106.97847464056409,
+        "p95_abs_error": 398.5313531846597,
+        "p99_abs_error": 652.5871537673421,
+        "max_abs_error": 4437.276740733945,
+        "bias": 28.028964769791806,
+        "days": [
+          "2026-01-21",
+          "2026-08-21",
+          "2026-09-15"
+        ],
+        "orientations": [
+          "south",
+          "west"
+        ],
+        "actual_over_cap": 1952,
+        "missed_over_cap": 37,
+        "false_alarms": 54,
+        "over_cap_recall": 0.9810450819672131,
+        "over_cap_precision": 0.9725749111223971,
+        "max_missed_actual_lux": 1096.6912328708881,
+        "by_orientation": {
+          "south": {
+            "n": 2912,
+            "mae": 91.49849481817043
+          },
+          "west": {
+            "n": 3744,
+            "mae": 119.01845894687027
+          }
+        }
+      },
+      "transfer": {
+        "n": 30030,
+        "mae": 141.35354628781093,
+        "p95_abs_error": 540.5420020769919,
+        "p99_abs_error": 791.1755393192611,
+        "max_abs_error": 2783.020354337452,
+        "bias": 43.27282861391412,
+        "days": [
+          "2026-03-20",
+          "2026-06-21",
+          "2026-12-21"
+        ],
+        "orientations": [
+          "east",
+          "north"
+        ],
+        "actual_over_cap": 9848,
+        "missed_over_cap": 358,
+        "false_alarms": 923,
+        "over_cap_recall": 0.9636474411047928,
+        "over_cap_precision": 0.9113607990012484,
+        "max_missed_actual_lux": 2264.8873441523792,
+        "by_orientation": {
+          "east": {
+            "n": 16731,
+            "mae": 121.31713079183928
+          },
+          "north": {
+            "n": 13299,
+            "mae": 166.56064965371075
+          }
+        }
+      }
+    },
+    "et": {
+      "holdout": {
+        "n": 8320,
+        "mae": 105.89271627790488,
+        "p95_abs_error": 320.0204420346357,
+        "p99_abs_error": 753.0382564412484,
+        "max_abs_error": 7832.589069229052,
+        "bias": 46.341469432188525,
+        "days": [
+          "2026-01-21",
+          "2026-08-21",
+          "2026-09-15"
+        ],
+        "orientations": [
+          "south",
+          "west"
+        ],
+        "actual_in_band": 1200,
+        "predicted_in_band": 1181,
+        "in_band_precision": 0.8602878916172735,
+        "in_band_recall": 0.8466666666666667,
+        "three_class_accuracy": 0.9579326923076923,
+        "by_orientation": {
+          "south": {
+            "n": 4160,
+            "mae": 85.71464882979186
+          },
+          "west": {
+            "n": 4160,
+            "mae": 126.07078372601788
+          }
+        }
+      },
+      "transfer": {
+        "n": 39039,
+        "mae": 94.6010635353614,
+        "p95_abs_error": 355.633792428444,
+        "p99_abs_error": 657.1525458408587,
+        "max_abs_error": 3514.998900138585,
+        "bias": 30.898724970122334,
+        "days": [
+          "2026-03-20",
+          "2026-06-21",
+          "2026-12-21"
+        ],
+        "orientations": [
+          "east",
+          "north"
+        ],
+        "actual_in_band": 6087,
+        "predicted_in_band": 6055,
+        "in_band_precision": 0.7960363336085879,
+        "in_band_recall": 0.7918514867750944,
+        "three_class_accuracy": 0.9266118496887727,
+        "by_orientation": {
+          "east": {
+            "n": 20592,
+            "mae": 120.91373344324694
+          },
+          "north": {
+            "n": 18447,
+            "mae": 65.22878084748915
+          }
+        }
+      }
+    }
+  }
+}

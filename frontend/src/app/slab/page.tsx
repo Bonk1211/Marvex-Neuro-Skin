@@ -4,7 +4,7 @@ import { PredictiveSlab } from '@/components/neuroskin/PredictiveSlab'
 export const metadata: Metadata = {
   title: 'NeuroSkin OS — Predictive radiant-slab charging',
   description:
-    'Application 7.1: forecast tomorrow’s cooling load and charge the night-cooled slab to exactly the level the next day needs.',
+    'Supporting simulation: compare forecast-based night cooling with a fixed schedule and inspect a proposed slab-charging plan.',
 }
 
 export default function SlabPage() {

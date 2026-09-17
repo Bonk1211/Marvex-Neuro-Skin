@@ -1,10 +1,12 @@
-from dataclasses import replace
-from datetime import time
+from dataclasses import asdict, replace
+from datetime import datetime, time, timezone
 
 import numpy as np
 
 from app.config import DEFAULTS
-from app.domain.controller import run_tick
+from app.domain.controller import WALL_LUX_PER_IRRADIANCE, run_tick
+from app.domain.daylight.room import RoomGeometry, probes_for, zone_for
+from app.domain.daylight.surrogate import curves_for, models
 from app.domain.environment import generate_day, inject_sensor_fault, solar_frame
 from app.domain.facade import (
     ORIENTATIONS,
@@ -15,18 +17,21 @@ from app.domain.facade import (
     zone_gains,
     zone_heat,
 )
+from app.domain.optics import FacadeOptics
+from app.domain.solar import sun_position
 from app.domain.types import (
     ControllerWeights,
     Environment,
     Site,
-    SolarState,
     WallGain,
     WallState,
     ZoneHeat,
+    ZoneSensors,
 )
 from app.schemas import (
     ComparisonMetric,
     CostBreakdown,
+    DaylightStatusPayload,
     EventAnnotation,
     FacadeHeatPayload,
     RoofSegmentPayload,
@@ -209,14 +214,10 @@ def _metric_payload(ticks: list[TickPayload]) -> list[ComparisonMetric]:
     # neither strategy can do anything about that. Cooling load still covers
     # every occupied tick.
     daylight_window = [
-        tick
-        for tick in occupied
-        if _primary_incident(tick) >= DEFAULTS.daylight_evaluation_ghi
+        tick for tick in occupied if _primary_incident(tick) >= DEFAULTS.daylight_evaluation_ghi
     ] or occupied
     ours_compliant = np.mean([300 <= tick.lux <= 700 for tick in daylight_window]) * 100
-    naive_compliant = np.mean(
-        [300 <= tick.naive_lux <= 700 for tick in daylight_window]
-    ) * 100
+    naive_compliant = np.mean([300 <= tick.naive_lux <= 700 for tick in daylight_window]) * 100
     ours_load = float(np.mean([tick.load_relative for tick in occupied]))
     naive_load = float(np.mean([tick.naive_load_relative for tick in occupied]))
     ours_moves = sum(tick.moved for tick in ticks)
@@ -251,9 +252,69 @@ def _metric_payload(ticks: list[TickPayload]) -> list[ComparisonMetric]:
     ]
 
 
+def _prepare_daylight(request, environments, suns, grids, observation=None):
+    """Observe aperture flux at each registered probe, independently of sensor noise."""
+    if not request.daylight_model_enabled:
+        return None
+    # Fixed geometry/site were evaluated offline; other sites/tilts have no evidence.
+    if (request.latitude, request.longitude, request.facade_tilt) != (
+        DEFAULTS.latitude,
+        DEFAULTS.longitude,
+        DEFAULTS.facade_tilt,
+    ):
+        return None
+    artifacts = models()
+    if artifacts is None:
+        return None
+    scope = set(artifacts[0]["orientations"]) & set(artifacts[1]["orientations"])
+    room, inputs, keys = RoomGeometry(), [], []
+    for index, (env, solar, grid) in enumerate(zip(environments, suns, grids)):
+        for orientation in ORIENTATIONS:
+            if orientation not in scope:
+                continue
+            for band in range(DEFAULTS.facade_zone_rows):
+                gain = grid[orientation][band * DEFAULTS.facade_zone_columns]
+                diffuse = gain.sky_diffuse + gain.ground_diffuse
+                optics = FacadeOptics(
+                    beam_fraction=max(0, gain.incident - diffuse) / gain.incident
+                    if gain.incident
+                    else 0,
+                    sky_fraction=gain.sky_diffuse / diffuse if diffuse else 1,
+                    solar_elevation=solar.elevation,
+                    solar_azimuth=solar.azimuth,
+                    wall_azimuth=gain.azimuth,
+                    facade_tilt=request.facade_tilt,
+                )
+                local_env = replace(
+                    env,
+                    ghi=gain.incident,
+                    cloud=observation.cloud_cover
+                    if observation is not None and observation.tick_index == index
+                    else env.cloud,
+                )
+                for probe_index, probe in enumerate(probes_for(orientation, band)):
+                    keys.append(
+                        (index, zone_for(probe, orientation, band, room), probe_index, probe.kind)
+                    )
+                    inputs.append((probe, optics, solar, local_env, room))
+    curves = curves_for(tuple(inputs), DEFAULTS.daylight_angle_step)
+    if curves is None:
+        return None
+    result = {}
+    for (index, zone, probe_index, kind), curve in zip(keys, curves):
+        result.setdefault((index, zone), []).append((probe_index, kind, curve))
+    return result
+
+
 def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
     site = _site(request)
     environments, weather_context, open_meteo = _prepare_environment(request, site)
+    observation = request.vision_observation
+    if (
+        observation
+        and not 0 <= (datetime.now(timezone.utc) - observation.captured_at).total_seconds() <= 60
+    ):
+        observation = None
     times, position, _location = solar_frame(request.date, site=site)
     # Heat map runs on the irradiance the walls actually see, doctored ticks included.
     poa = poa_series(
@@ -273,6 +334,14 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
         np.array([env.dhi for env in environments]),
         tilt=request.roof_pitch,
     )
+    suns = [
+        sun_position(env.t, site.latitude, site.longitude, site.timezone) for env in environments
+    ]
+    grids = [
+        zone_gains(wall_gains(poa, i), solar_elevation=s.elevation, solar_azimuth=s.azimuth)
+        for i, s in enumerate(suns)
+    ]
+    daylight = _prepare_daylight(request, environments, suns, grids, observation)
     weights = ControllerWeights(**request.weights.model_dump())
     ticks: list[TickPayload] = []
     annotations: list[EventAnnotation] = []
@@ -280,6 +349,21 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
     wall_angles = dict.fromkeys(ORIENTATIONS, 0.0)
     # Every zone keeps its own actuator position too, keyed (wall, zone id).
     zone_angles: dict[tuple[str, str], float] = {}
+    zone_ids = [
+        f"{orientation[0].upper()}{index + 1}"
+        for orientation in ORIENTATIONS
+        for index in range(DEFAULTS.facade_zone_rows * DEFAULTS.facade_zone_columns)
+    ]
+    sensor_streams = {
+        zone: np.random.default_rng(np.random.SeedSequence([request.seed, 23041, index]))
+        for index, zone in enumerate(zone_ids)
+    }
+    # ponytail: assumed glazing/room-depth transfer (+/-25%), fixed per zone;
+    # replace with measured room calibration when available, never angle offsets.
+    daylight_transfer = {
+        zone: WALL_LUX_PER_IRRADIANCE * stream.uniform(0.75, 1.25)
+        for zone, stream in sensor_streams.items()
+    }
     # A window rather than one tick: the moment the primary facade actually wants
     # to move depends on which wall it is and where the sun is, so let the run
     # find it instead of hard-coding a clock time that only suits one facade.
@@ -289,6 +373,11 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
     power_loss_end = time(14, 30)
 
     for index, env in enumerate(environments):
+        vision_cloud = (
+            observation.cloud_cover
+            if observation is not None and observation.tick_index == index
+            else None
+        )
         local_time = env.t.time()
         power_ok = request.power_ok
         movement_threshold = DEFAULTS.movement_threshold
@@ -297,26 +386,40 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
                 movement_threshold = 1.0
             if power_loss_start <= local_time <= power_loss_end:
                 power_ok = False
-        # One controller per wall, each reading the irradiance on its own plane.
-        # The first call resolves the sun; the rest reuse it.
+        # Resolve the sun once; each controller projects it onto its own aperture.
         gains = wall_gains(poa, index)
-        solar: SolarState | None = None
+        solar = suns[index]
+        wall_optics = {
+            gain.orientation: FacadeOptics(
+                beam_fraction=gain.direct / gain.incident if gain.incident > 0 else 0,
+                sky_fraction=(
+                    gain.sky_diffuse / (gain.sky_diffuse + gain.ground_diffuse)
+                    if gain.sky_diffuse + gain.ground_diffuse > 0
+                    else 1.0
+                ),
+                solar_elevation=solar.elevation,
+                solar_azimuth=solar.azimuth,
+                wall_azimuth=gain.azimuth,
+                facade_tilt=request.facade_tilt,
+            )
+            for gain in gains
+        }
         wall_results = {}
         for gain in gains:
             wall_result = run_tick(
                 env,
                 wall_angles[gain.orientation],
                 weights,
+                vision_cloud=vision_cloud,
                 power_ok=power_ok,
                 movement_threshold=movement_threshold,
                 site=site,
                 solar=solar,
                 gain=gain,
-            )
-            solar = SolarState(
-                azimuth=wall_result.solar_azimuth,
-                elevation=wall_result.solar_elevation,
-                clear_sky_ghi=wall_result.clear_sky_ghi,
+                optics=wall_optics[gain.orientation],
+                glazing_shgc=request.glazing_shgc,
+                glare_limit_w_m2=request.glare_limit_w_m2,
+                actuator_speed_deg_per_min=request.actuator_speed_deg_per_min,
             )
             wall_angles[gain.orientation] = wall_result.decision.angle_final
             wall_results[gain.orientation] = wall_result
@@ -327,31 +430,80 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
         breakdown = CostBreakdown(**decision.cost_breakdown)
 
         # Under each wall's controller sits one controller per zone of its 4 x 4
-        # grid, each holding its own actuator position between ticks. They run
-        # the same optimiser on their own gain, so a corner bay answering for two
-        # facades lands on a different angle from the bays beside it.
-        grid = zone_gains(
-            gains,
-            solar_elevation=result.solar_elevation,
-            solar_azimuth=result.solar_azimuth,
-        )
+        # grid, each holding its own actuator position and independent local
+        # sensor stream. One shared brain applies the same policy to every zone.
+        grid = grids[index]
         zones: dict[str, list[ZoneHeat]] = {}
         for orientation, cells in grid.items():
             heats: list[ZoneHeat] = []
             for cell in cells:
                 key = (orientation, cell.zone)
+                current_angle = zone_angles.get(key, 0.0)
+                # The row's roof-shaded beam split excludes corner-neighbour
+                # daylight: that must never invent direct sun on this aperture.
+                direct = max(0.0, cell.incident - cell.sky_diffuse - cell.ground_diffuse)
+                optics = replace(
+                    wall_optics[orientation],
+                    beam_fraction=direct / cell.incident if cell.incident > 0 else 0,
+                    sky_fraction=(
+                        cell.sky_diffuse / (cell.sky_diffuse + cell.ground_diffuse)
+                        if cell.sky_diffuse + cell.ground_diffuse > 0
+                        else 1.0
+                    ),
+                )
+                stream = sensor_streams[cell.zone]
+                sensors = ZoneSensors(
+                    sensor_id=cell.zone,
+                    irradiance=round(
+                        float(np.clip(cell.incident * (1 + stream.normal(0, 0.01)), 0, 1600)), 2
+                    ),
+                    illuminance=round(
+                        float(
+                            np.clip(
+                                cell.daylight
+                                * daylight_transfer[cell.zone]
+                                * optics.daylight_transmittance(current_angle)
+                                * (1 + stream.normal(0, 0.01)),
+                                0,
+                                10000,
+                            )
+                        ),
+                        1,
+                    ),
+                )
+                # Always sample first: an override cannot advance another zone's
+                # random stream or alter its subsequent observations.
+                override = request.zone_sensor_overrides.get(cell.zone)
+                if override is not None and override.tick_index == index:
+                    sensors = replace(
+                        sensors,
+                        irradiance=override.irradiance,
+                        illuminance=override.illuminance,
+                        source="override",
+                    )
                 zone_result = run_tick(
                     env,
-                    zone_angles.get(key, 0.0),
+                    current_angle,
                     weights,
+                    vision_cloud=vision_cloud,
                     power_ok=power_ok,
                     movement_threshold=movement_threshold,
                     site=site,
                     solar=solar,
+                    local_sensors=sensors,
+                    daylight_curves=(
+                        tuple(daylight.get((index, cell.zone), ()))
+                        if daylight is not None
+                        else None
+                    ),
+                    optics=optics,
+                    glazing_shgc=request.glazing_shgc,
+                    glare_limit_w_m2=request.glare_limit_w_m2,
+                    actuator_speed_deg_per_min=request.actuator_speed_deg_per_min,
                     gain=WallGain(
                         orientation=orientation,
                         azimuth=cell.azimuth,
-                        incident=cell.daylight,
+                        incident=cell.incident,
                         sky_diffuse=cell.sky_diffuse,
                         ground_diffuse=cell.ground_diffuse,
                         aoi=cell.aoi,
@@ -371,6 +523,13 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
                         ),
                         outdoor_temp=env.outdoor_temp,
                         wind=env.wind,
+                        sensors=sensors,
+                        angle_target=zone_result.decision.angle_target,
+                        sensor_trusted=zone_result.decision.sensor_trusted,
+                        optics=optics,
+                        conditions=zone_result.conditions,
+                        control_input=zone_result.control_input,
+                        cost_breakdown=zone_result.decision.cost_breakdown,
                     )
                 )
             zones[orientation] = heats
@@ -392,6 +551,7 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
             wind=env.wind,
             primary=request.facade_orientation,
             zones=zones,
+            optics=wall_optics,
         )
         roof = roof_segments(
             roof_poa,
@@ -401,13 +561,21 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
             pitch=request.roof_pitch,
         )
         payload = TickPayload(
+            daylight=DaylightStatusPayload(
+                night=solar.elevation <= DEFAULTS.min_elevation,
+                occupied=env.occupancy >= DEFAULTS.daylight_occupied_min,
+            )
+            if daylight is not None
+            else None,
             timestamp=env.t,
             ghi=round(env.ghi, 2),
             expected_ghi=round(result.expected_ghi, 2),
             solar_azimuth=round(result.solar_azimuth, 2),
             solar_elevation=round(result.solar_elevation, 2),
             measured_irradiance=round(env.measured_irradiance, 2),
-            cloud=round(env.cloud, 3),
+            cloud=round(env.cloud if vision_cloud is None else vision_cloud, 3),
+            cloud_source="environment" if vision_cloud is None else "vision",
+            environment_cloud=round(env.cloud, 3),
             outdoor_temp=round(env.outdoor_temp, 2),
             occupancy=round(env.occupancy, 3),
             wind=round(env.wind, 2),
@@ -425,12 +593,7 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
             sensor_trusted=decision.sensor_trusted,
             reason=decision.reason,
             cost_breakdown=breakdown,
-            facade=[
-                FacadeHeatPayload(
-                    **{**vars(wall), "zones": [vars(zone) for zone in wall.zones]}
-                )
-                for wall in walls
-            ],
+            facade=[FacadeHeatPayload(**asdict(wall)) for wall in walls],
             roof=[RoofSegmentPayload(**vars(segment)) for segment in roof],
         )
         ticks.append(payload)
@@ -520,7 +683,12 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
         roof_pitch=request.roof_pitch,
         floors=DEFAULTS.floors,
         synthetic=True,
-        data_notice=_data_notice(weather_context, open_meteo, site),
+        data_notice=_data_notice(weather_context, open_meteo, site)
+        + (
+            " AI vision supplies a demo sky estimate at one selected tick."
+            if observation is not None
+            else ""
+        ),
         load_unit="relative cooling-load index",
         weather_context=(
             _open_meteo_payload(open_meteo, request, site)

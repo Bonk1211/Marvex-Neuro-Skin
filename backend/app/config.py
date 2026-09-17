@@ -10,11 +10,16 @@ class SimulationDefaults:
     seed: int = 42
     angle_min: float = 0.0
     angle_max: float = 60.0
-    angle_step: float = 5.0
+    angle_step: float = 5.0  # Search brackets, not a mechanical angle increment.
     shaded_default: float = 60.0
     retract_flat: float = 0.0
     critical_wind: float = 15.0
-    movement_threshold: float = 0.025
+    movement_threshold: float = 0.0002
+    # Commissioning assumptions, not measured hardware/glazing specifications.
+    actuator_speed_deg_per_min: float = 1.2
+    glazing_shgc: float = 0.4
+    # Direct solar exposure screen, not an occupant-view glare index (DGP).
+    glare_limit_w_m2: float = 25.0
     min_elevation: float = 8.0
     expected_irradiance_threshold: float = 250.0
     near_zero_irradiance: float = 25.0
@@ -46,6 +51,42 @@ class SimulationDefaults:
     # behind it is glazed on two sides. This is the share of the neighbouring
     # facade's gain that its controller has to answer for as well.
     corner_daylight_coupling: float = 0.45
+    # Occupant-plane assumptions, not measured comfort. Manesh et al. (2025),
+    # doi:10.1016/j.autcon.2025.106474 supplies the screening thresholds/reflectances.
+    ev_comfort_lux: float = 500.0
+    ev_cap_lux: float = 1000.0
+    et_band_low_lux: float = 300.0
+    et_band_high_lux: float = 500.0
+    daylight_angle_step: int = 5
+    daylight_model_enabled: bool = False
+    daylight_model_dir: str = "data/daylight/models"
+    daylight_wall_reflectance: float = 0.5
+    daylight_floor_reflectance: float = 0.2
+    daylight_ceiling_reflectance: float = 0.8
+    daylight_room_width_m: float = 6.4
+    daylight_room_depth_m: float = 6.4
+    daylight_eye_height_m: float = 1.2
+    daylight_desk_height_m: float = 0.75
+    daylight_oracle_bounces: int = 4
+    daylight_patch_divisions: int = 4
+    # Broad daylight approximation: Littlefair (1988), doi:10.1177/096032718802000405
+    # measured mean global efficacy 107-109 lm/W; no spectral/glazing calibration.
+    luminous_efficacy_lm_per_w: float = 110.0
+    daylight_train_orientations: tuple[str, ...] = ("west", "south")
+    daylight_transfer_orientations: tuple[str, ...] = ("east", "north")
+    # Declination coverage: solstices/equinoxes, both overhead passages (~Mar 28/Sep 15).
+    daylight_dataset_days: tuple[str, ...] = (
+        "2026-01-21", "2026-02-21", "2026-03-20", "2026-03-28",
+        "2026-04-21", "2026-06-21", "2026-07-21", "2026-08-21",
+        "2026-09-15", "2026-09-23", "2026-10-21", "2026-12-21",
+    )
+    daylight_transfer_days: tuple[str, ...] = ("2026-03-20", "2026-06-21", "2026-12-21")
+    daylight_dataset_tick_stride: int = 6
+    daylight_dataset_bands: tuple[int, ...] = (1, 3)
+    daylight_occupied_min: float = 0.2
+    daylight_negligible_exceedance_percent: float = 1.0
+    daylight_transfer_mae_ratio: float = 1.5
+    daylight_transfer_mae_margin_lux: float = 50.0
 
 
 DEFAULTS = SimulationDefaults()

@@ -1,9 +1,9 @@
 from datetime import date as Date
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 from app.config import DEFAULTS
 
@@ -11,12 +11,20 @@ ScenarioName = Literal["overview", "lie_detector", "co_optimization", "budget_fa
 CloudProfile = Literal["clear", "scattered", "overcast"]
 EnvironmentSource = Literal["synthetic", "met_anchored", "open_meteo"]
 FacadeOrientation = Literal["north", "east", "south", "west"]
+ZoneId = Annotated[str, Field(pattern=r"^[NESW](?:[1-9]|1[0-6])$")]
+
+
+class ZoneSensorOverride(BaseModel):
+    tick_index: int = Field(ge=0, le=143, strict=True)
+    irradiance: float = Field(ge=0, le=1600, allow_inf_nan=False)
+    illuminance: float = Field(ge=0, le=10000, allow_inf_nan=False)
 
 
 class WeightInput(BaseModel):
+    # Match ControllerWeights: the optimiser now receives per-facade POA.
     thermal: float = Field(0.45, ge=0, le=1)
-    lux: float = Field(0.35, ge=0, le=1)
-    movement: float = Field(0.15, ge=0, le=1)
+    lux: float = Field(0.45, ge=0, le=1)
+    movement: float = Field(0.05, ge=0, le=1)
     risk: float = Field(0.05, ge=0, le=1)
 
     @field_validator("risk")
@@ -28,16 +36,33 @@ class WeightInput(BaseModel):
         return value
 
 
+class VisionObservation(BaseModel):
+    tick_index: int = Field(ge=0, le=143, strict=True)
+    captured_at: AwareDatetime
+    cloud_cover: float = Field(ge=0, le=1, allow_inf_nan=False)
+
+
 class SimulationRunRequest(BaseModel):
+    daylight_model_enabled: bool = DEFAULTS.daylight_model_enabled
     scenario: ScenarioName = "overview"
     date: Date = Date(2026, 3, 21)
     seed: int = Field(42, ge=0, le=2_147_483_647)
     environment_source: EnvironmentSource = "synthetic"
     cloud_profile: CloudProfile = "scattered"
+    vision_observation: VisionObservation | None = None
     occupancy_scale: float = Field(1.0, ge=0, le=1.5)
     wind_override: float | None = Field(None, ge=0, le=40)
     power_ok: bool = True
     weights: WeightInput = Field(default_factory=WeightInput)
+    zone_sensor_overrides: dict[ZoneId, ZoneSensorOverride] = Field(
+        default_factory=dict, max_length=64
+    )
+    # Calibrate against the installed glazing, actuator and occupant assessment.
+    glazing_shgc: float = Field(DEFAULTS.glazing_shgc, ge=0, le=1, allow_inf_nan=False)
+    glare_limit_w_m2: float = Field(DEFAULTS.glare_limit_w_m2, ge=0, le=2000, allow_inf_nan=False)
+    actuator_speed_deg_per_min: float = Field(
+        DEFAULTS.actuator_speed_deg_per_min, ge=0.1, le=12, allow_inf_nan=False
+    )
     latitude: float = Field(DEFAULTS.latitude, ge=-90, le=90)
     longitude: float = Field(DEFAULTS.longitude, ge=-180, le=180)
     timezone: str = Field(DEFAULTS.timezone, min_length=1, max_length=64)
@@ -66,6 +91,20 @@ class CostBreakdown(BaseModel):
     risk: float = 0
 
 
+class ZoneSensorsPayload(BaseModel):
+    sensor_id: str
+    irradiance: float
+    illuminance: float
+    source: Literal["simulated", "override"]
+
+
+class ControlInputPayload(BaseModel):
+    irradiance: float
+    open_lux: float
+    irradiance_source: Literal["sensor", "model"]
+    daylight_source: Literal["sensor", "model"]
+
+
 class ZoneHeatPayload(BaseModel):
     """One cell of one wall's 4 x 4 zone grid, with its own controller's state."""
 
@@ -81,6 +120,35 @@ class ZoneHeatPayload(BaseModel):
     moved: bool
     lux: float
     load_relative: float
+    sensors: ZoneSensorsPayload
+    angle_target: float
+    reason: str
+    sensor_trusted: bool
+    conditions: "ComfortStatePayload"
+    diffuse_incident: float
+    diffuse_transmitted: float
+    control_input: ControlInputPayload
+    cost_breakdown: CostBreakdown
+
+
+class DaylightProbePayload(BaseModel):
+    index: int
+    kind: Literal["seat", "desk"]
+    task_illuminance: float | None
+    eye_illuminance: float | None
+
+
+class ComfortStatePayload(BaseModel):
+    daylight_status: Literal["low", "useful", "high"]
+    transmitted: float
+    solar_heat_gain: float
+    direct_sun: float
+    glare_risk: bool
+    glare_limit_w_m2: float
+    glazing_shgc: float
+    task_illuminance: float | None = Field(None, exclude_if=lambda v: v is None)
+    eye_illuminance: float | None = Field(None, exclude_if=lambda v: v is None)
+    daylight_probes: list[DaylightProbePayload] | None = Field(None, exclude_if=lambda v: v is None)
 
 
 class FacadeHeatPayload(BaseModel):
@@ -119,7 +187,19 @@ class RoofSegmentPayload(BaseModel):
     sol_air_temp: float
 
 
+class DaylightStatusPayload(BaseModel):
+    model: str = "extra trees · modelled"
+    night: bool
+    ev_cap_lux: float = DEFAULTS.ev_cap_lux
+    et_band_low_lux: float = DEFAULTS.et_band_low_lux
+    et_band_high_lux: float = DEFAULTS.et_band_high_lux
+    occupied: bool
+
+
 class TickPayload(BaseModel):
+    daylight: DaylightStatusPayload | None = Field(None, exclude_if=lambda v: v is None)
+    environment_cloud: float | None = None
+    cloud_source: Literal["environment", "vision"] = "environment"
     timestamp: datetime
     ghi: float
     expected_ghi: float
@@ -287,9 +367,7 @@ class SlabPlanRequest(BaseModel):
     roof_pitch: float = Field(DEFAULTS.roof_pitch, ge=0, le=60)
     model: SlabModelInput = Field(default_factory=SlabModelInput)
     history: list[SlabObservationInput] = Field(default_factory=list, max_length=8760)
-    baseline_nights: list[BaselineNightInput] = Field(
-        default_factory=list, max_length=1000
-    )
+    baseline_nights: list[BaselineNightInput] = Field(default_factory=list, max_length=1000)
 
     @field_validator("timezone")
     @classmethod

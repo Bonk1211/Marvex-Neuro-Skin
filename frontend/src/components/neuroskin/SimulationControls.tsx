@@ -17,11 +17,13 @@ import type {
   FacadeOrientation,
   SimulationRunRequest,
 } from '@/lib/types'
+import type { BuildingVariant } from './buildingComparison'
 
 interface SimulationControlsProps {
   value: SimulationRunRequest
   onChange: (value: SimulationRunRequest) => void
   onReset: () => void
+  buildingVariant?: BuildingVariant
 }
 
 const cloudProfiles: Array<{ value: CloudProfile; label: string }> = [
@@ -44,7 +46,7 @@ const environmentSources: Array<{
   {
     value: 'open_meteo',
     label: 'Open-Meteo',
-    hint: 'Measured hourly irradiance, temperature, cloud, wind and rain',
+    hint: 'Modelled hourly irradiance, temperature, cloud, wind and rain',
   },
 ]
 
@@ -130,7 +132,9 @@ export function SimulationControls({
   value,
   onChange,
   onReset,
+  buildingVariant = 'controlled',
 }: SimulationControlsProps) {
+  const controlled = buildingVariant === 'controlled'
   return (
     <aside className='settings-rail' aria-label='Environment settings'>
       <div className='settings-rail-header'>
@@ -149,6 +153,25 @@ export function SimulationControls({
       </div>
 
       <div className='settings-rail-body'>
+        <label className='flex items-start gap-2 text-xs'>
+          <input
+            type='checkbox'
+            checked={value.daylight_model_enabled ?? false}
+            onChange={(event) =>
+              onChange({
+                ...value,
+                daylight_model_enabled: event.target.checked,
+              })
+            }
+          />
+          <span>
+            Modelled seat daylight
+            <span className='block text-[10px] text-muted-foreground'>
+              Apply with the next run. Available for the Putrajaya tilted facade
+              when models are installed.
+            </span>
+          </span>
+        </label>
         <ControlGroup
           icon={<CloudSun className='h-4 w-4' />}
           number='01'
@@ -268,7 +291,7 @@ export function SimulationControls({
 
           <div data-tour='control-orientation'>
             <p className='field-label flex items-center gap-1.5'>
-              <Compass className='h-3.5 w-3.5' /> Controlled facade
+              <Compass className='h-3.5 w-3.5' /> Primary reporting facade
             </p>
             <div className='setting-segments mt-2 grid-cols-4'>
               {orientations.map((orientation) => (
@@ -289,8 +312,9 @@ export function SimulationControls({
               ))}
             </div>
             <p className='mt-2 text-[10px] text-muted-foreground'>
-              Only this wall carries louvres. The other three show unshaded
-              gain.
+              {controlled
+                ? 'All four sides have 16 independent sensor-controlled zones. This selection only chooses the headline comparison metrics.'
+                : 'Each side has 16 surface zones. This reporting selection also applies to the controlled-building comparison.'}
             </p>
           </div>
 
@@ -333,12 +357,16 @@ export function SimulationControls({
             <RangeControl
               icon={<Gauge className='h-3.5 w-3.5' />}
               label='Occupancy'
-              formula={{
-                title: 'Occupancy load',
-                expression: 'Linternal = 0.12 × occupancy',
-                description:
-                  'Occupancy also increases the latent humidity load.',
-              }}
+              formula={
+                controlled
+                  ? {
+                      title: 'Occupancy load',
+                      expression: 'Linternal = 0.12 × occupancy',
+                      description:
+                        'Occupancy also increases the latent humidity load.',
+                    }
+                  : undefined
+              }
               value={value.occupancy_scale}
               min={0}
               max={1.5}
@@ -346,17 +374,28 @@ export function SimulationControls({
               suffix='×'
               onChange={(next) => onChange({ ...value, occupancy_scale: next })}
             />
+            {!controlled && (
+              <p className='mt-2 text-[10px] text-muted-foreground'>
+                Occupancy applies to the controlled-building demand comparison;
+                baseline comfort is not estimated.
+              </p>
+            )}
           </div>
 
           <div data-tour='control-wind'>
             <RangeControl
               icon={<Wind className='h-3.5 w-3.5' />}
               label='Wind override'
-              formula={{
-                title: 'Wind exposure cost',
-                expression: 'R(θ) = (v / 15)² × θ / 60',
-                description: 'At 15 m/s, the safety rule bypasses this cost.',
-              }}
+              formula={
+                controlled
+                  ? {
+                      title: 'Wind exposure cost',
+                      expression: 'R(θ) = (v / 15)² × θ / 60',
+                      description:
+                        'At 15 m/s, the safety rule bypasses this cost.',
+                    }
+                  : undefined
+              }
               value={value.wind_override ?? 3}
               min={0}
               max={20}
@@ -366,35 +405,41 @@ export function SimulationControls({
             />
             <div className='mt-2 flex items-center justify-between text-[10px] text-muted-foreground'>
               <span>Calm</span>
-              <span className='text-amber-700'>15 m/s safety limit</span>
+              <span className={controlled ? 'text-amber-700' : ''}>
+                {controlled ? '15 m/s safety limit' : 'Shared wind input'}
+              </span>
             </div>
           </div>
         </ControlGroup>
 
-        <ControlGroup
-          icon={<ShieldCheck className='h-4 w-4' />}
-          number='04'
-          title='Safety'
-        >
-          <label className='setting-toggle-row' data-tour='control-power'>
-            <span>
-              <span className='block text-xs font-semibold'>Facade power</span>
-              <span className='mt-0.5 block text-[10px] text-muted-foreground'>
-                {value.power_ok
-                  ? 'Powered · controller active'
-                  : 'Off · fail-shaded at 60°'}
+        {controlled && (
+          <ControlGroup
+            icon={<ShieldCheck className='h-4 w-4' />}
+            number='04'
+            title='Safety'
+          >
+            <label className='setting-toggle-row' data-tour='control-power'>
+              <span>
+                <span className='block text-xs font-semibold'>
+                  Facade power
+                </span>
+                <span className='mt-0.5 block text-[10px] text-muted-foreground'>
+                  {value.power_ok
+                    ? 'Powered · controller active'
+                    : 'Off · fail-shaded at 60°'}
+                </span>
               </span>
-            </span>
-            <input
-              className='power-toggle-light'
-              type='checkbox'
-              checked={value.power_ok}
-              onChange={(event) =>
-                onChange({ ...value, power_ok: event.target.checked })
-              }
-            />
-          </label>
-        </ControlGroup>
+              <input
+                className='power-toggle-light'
+                type='checkbox'
+                checked={value.power_ok}
+                onChange={(event) =>
+                  onChange({ ...value, power_ok: event.target.checked })
+                }
+              />
+            </label>
+          </ControlGroup>
+        )}
       </div>
     </aside>
   )

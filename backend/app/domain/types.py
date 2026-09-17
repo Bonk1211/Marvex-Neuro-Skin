@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,42 @@ class ZoneGain:
 
 
 @dataclass(frozen=True)
+class ZoneSensors:
+    """Local facade irradiance and indoor lux measured before this tick's movement."""
+
+    sensor_id: str
+    irradiance: float
+    illuminance: float
+    source: Literal["simulated", "override"] = "simulated"
+
+
+@dataclass(frozen=True)
+class ControlInput:
+    """Effective inputs admitted to the incumbent controller, before movement."""
+
+    irradiance: float
+    open_lux: float
+    irradiance_source: Literal["sensor", "model"]
+    daylight_source: Literal["sensor", "model"]
+
+
+@dataclass(frozen=True)
+class ComfortState:
+    """Predicted conditions at the achieved angle; glare is a direct-sun screen."""
+
+    daylight_status: Literal["low", "useful", "high"]
+    transmitted: float
+    solar_heat_gain: float
+    direct_sun: float
+    glare_risk: bool
+    glare_limit_w_m2: float
+    glazing_shgc: float
+    task_illuminance: float | None = None
+    eye_illuminance: float | None = None
+    daylight_probes: tuple[dict, ...] | None = None
+
+
+@dataclass(frozen=True)
 class ZoneHeat:
     """One zone of the 4 x 4 facade grid, once its own controller has acted."""
 
@@ -105,6 +142,15 @@ class ZoneHeat:
     moved: bool
     lux: float
     load_relative: float
+    sensors: ZoneSensors | None = None
+    angle_target: float = 0.0
+    reason: str = ""
+    sensor_trusted: bool = True
+    conditions: ComfortState | None = None
+    diffuse_incident: float = 0.0
+    diffuse_transmitted: float = 0.0
+    control_input: ControlInput | None = None
+    cost_breakdown: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -181,6 +227,7 @@ class LoadEstimate:
     total: float
     shadeable: float
     latent: float
+    internal: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -196,9 +243,10 @@ class Decision:
 
 @dataclass(frozen=True)
 class ControllerWeights:
+    # Tune movement cost for the lower per-facade POA, not horizontal roof irradiance.
     thermal: float = 0.45
-    lux: float = 0.35
-    movement: float = 0.15
+    lux: float = 0.45
+    movement: float = 0.05
     risk: float = 0.05
 
     def normalized(self) -> "ControllerWeights":

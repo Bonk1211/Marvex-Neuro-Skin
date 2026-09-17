@@ -16,6 +16,12 @@ export interface ControllerWeights {
 }
 
 export interface SimulationRunRequest {
+  daylight_model_enabled?: boolean
+  vision_observation?: {
+    tick_index: number
+    captured_at: string
+    cloud_cover: number
+  } | null
   scenario: ScenarioName
   date: string
   seed: number
@@ -32,6 +38,13 @@ export interface SimulationRunRequest {
   facade_orientation: FacadeOrientation
   facade_tilt: number
   roof_pitch: number
+  glare_limit_w_m2?: number
+  glazing_shgc?: number
+  actuator_speed_deg_per_min?: number
+  zone_sensor_overrides?: Record<
+    string,
+    { tick_index: number; irradiance: number; illuminance: number }
+  >
 }
 
 export type CostBreakdown = ControllerWeights
@@ -55,6 +68,8 @@ export interface ZoneHeat {
   zone: string
   incident: number
   transmitted: number
+  diffuse_incident?: number
+  diffuse_transmitted?: number
   /** Share of the row the roof overhang has not shaded yet. */
   sunlit_fraction: number
   sol_air_temp: number
@@ -64,6 +79,52 @@ export interface ZoneHeat {
   moved: boolean
   lux: number
   load_relative: number
+  sensors?: {
+    sensor_id: string
+    irradiance: number
+    illuminance: number
+    source: 'simulated' | 'override'
+  }
+  angle_target?: number
+  reason?: string
+  sensor_trusted?: boolean
+  conditions?: ComfortStatePayload
+  control_input?: {
+    irradiance: number
+    open_lux: number
+    irradiance_source: 'sensor' | 'model'
+    daylight_source: 'sensor' | 'model'
+  }
+  cost_breakdown?: CostBreakdown
+}
+
+export interface DaylightProbePayload {
+  index: number
+  kind: 'seat' | 'desk'
+  task_illuminance: number | null
+  eye_illuminance: number | null
+}
+
+export interface ComfortStatePayload {
+  daylight_status: 'low' | 'useful' | 'high'
+  transmitted: number
+  solar_heat_gain: number
+  direct_sun: number
+  glare_risk: boolean
+  glare_limit_w_m2: number
+  glazing_shgc: number
+  task_illuminance?: number | null
+  eye_illuminance?: number | null
+  daylight_probes?: DaylightProbePayload[] | null
+}
+
+export interface DaylightStatusPayload {
+  model: string
+  night: boolean
+  occupied: boolean
+  ev_cap_lux: number
+  et_band_low_lux: number
+  et_band_high_lux: number
 }
 
 export interface FacadeHeat {
@@ -89,6 +150,9 @@ export interface FacadeHeat {
 }
 
 export interface TickPayload {
+  daylight?: DaylightStatusPayload | null
+  environment_cloud?: number | null
+  cloud_source?: 'environment' | 'vision'
   timestamp: string
   ghi: number
   expected_ghi: number

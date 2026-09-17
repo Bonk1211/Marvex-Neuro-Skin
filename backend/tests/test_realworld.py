@@ -75,6 +75,10 @@ def test_open_meteo_context_reads_every_hourly_channel():
     assert context.observed.cloud[0] == pytest.approx(0.4)  # percent converted to fraction
     assert context.observed.ghi[13] == pytest.approx(900.0)
     assert context.fallback_reason is None
+    from app.feed_health import feed_health
+
+    assert feed_health()["open_meteo"]["last_status"] == "applied"
+    assert feed_health()["open_meteo"]["last_success_at"] == context.fetched_at.isoformat()
 
 
 def test_open_meteo_falls_back_when_upstream_fails():
@@ -86,6 +90,9 @@ def test_open_meteo_falls_back_when_upstream_fails():
     assert context.status == "fallback"
     assert context.observed is None
     assert "upstream unavailable" in (context.fallback_reason or "")
+    from app.feed_health import feed_health
+
+    assert feed_health()["open_meteo"]["last_status"] == "fallback"
 
 
 def test_open_meteo_rejects_a_short_day():
@@ -188,7 +195,11 @@ def test_each_wall_reaches_its_own_angle():
     angles = {wall.orientation: wall.angle for wall in late}
 
     assert len(set(angles.values())) > 1, angles
-    assert angles["west"] > angles["north"], angles
+    # More irradiance does not imply a larger blade angle: beam cut-off depends
+    # on the sun's profile relative to the blade, not a linear closure fraction.
+    assert angles["west"] != angles["north"], angles
+    gains = {wall.orientation: wall.incident for wall in late}
+    assert gains["west"] > gains["north"]
 
 
 def test_the_tilt_leaves_the_louvres_little_to_do():
@@ -398,6 +409,69 @@ def test_a_corner_zone_answers_for_two_facades():
     # and the middle bays, glazed on one side only, have the least.
     assert row[3].daylight > row[0].daylight > row[1].daylight == row[2].daylight
     assert row[1].daylight == row[1].incident
+
+
+def test_zone_optics_preserves_roof_shaded_beam_without_inventing_corner_sun():
+    from app.domain.optics import FacadeOptics
+
+    grid = _lit_grid()
+    top = grid["west"][-1]
+    beam = max(0.0, top.incident - top.sky_diffuse - top.ground_diffuse)
+    assert beam == pytest.approx((500 - 90 - 110) * top.sunlit_fraction)
+    assert 0 < top.sunlit_fraction < 1
+    assert 0 < top.sky_diffuse < 90
+    optics = FacadeOptics(
+        beam / top.incident,
+        60,
+        270,
+        top.azimuth,
+        sky_fraction=top.sky_diffuse / (top.sky_diffuse + top.ground_diffuse),
+    )
+    state = WallState(
+        angle=60, mode="HOLD", moved=False, lux=400, load_relative=0.4, reason=""
+    )
+    heat = zone_heat(top, state, outdoor_temp=31, wind=2, optics=optics)
+    diffuse = top.sky_diffuse + top.ground_diffuse
+    assert heat.diffuse_incident == pytest.approx(diffuse, abs=0.01)
+    assert heat.diffuse_transmitted == pytest.approx(
+        diffuse * optics.diffuse_transmittance(state.angle), abs=0.01
+    )
+    assert 0 <= heat.diffuse_transmitted < heat.diffuse_incident
+    horizontal = zone_heat(
+        top,
+        WallState(angle=0, mode="HOLD", moved=False, lux=400, load_relative=0.4, reason=""),
+        outdoor_temp=31,
+        wind=2,
+        optics=optics,
+    )
+    assert 0 < horizontal.diffuse_transmitted < horizontal.diffuse_incident
+    legacy = zone_heat(top, state, outdoor_temp=31, wind=2)
+    assert legacy.diffuse_transmitted == pytest.approx(diffuse * 0.22, abs=0.01)
+    assert legacy.transmitted == pytest.approx(top.incident * 0.22, abs=0.01)
+    # Pre-glazing solar irradiance remains the quantity consumed by the slab.
+    expected = beam * optics.beam_transmittance(60) + (
+        top.sky_diffuse + top.ground_diffuse
+    ) * optics.diffuse_transmittance(60)
+    assert heat.transmitted == pytest.approx(expected, abs=0.01)
+    assert heat.transmitted > top.incident * optics.diffuse_transmittance(60)
+
+    corner = grid["north"][3]
+    assert corner.daylight > corner.incident
+    assert corner.aoi < 90  # Inherited from the bright neighbouring west aperture.
+    own_beam = max(0.0, corner.incident - corner.sky_diffuse - corner.ground_diffuse)
+    assert own_beam == pytest.approx(0, abs=1e-10)
+    own_optics = FacadeOptics(
+        own_beam / corner.incident,
+        60,
+        270,
+        corner.azimuth,
+        sky_fraction=corner.sky_diffuse / (corner.sky_diffuse + corner.ground_diffuse),
+    )
+    assert own_optics.beam_transmittance(60) == 0
+    corner_heat = zone_heat(corner, state, outdoor_temp=31, wind=2, optics=own_optics)
+    assert corner_heat.transmitted == pytest.approx(
+        corner.incident * own_optics.diffuse_transmittance(60), abs=0.01
+    )
 
 
 def test_every_zone_carries_its_own_controller():

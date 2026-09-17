@@ -10,6 +10,8 @@ from app.config import DEFAULTS
 from app.domain.facade import ORIENTATIONS
 from app.domain.scenarios import SCENARIO_TITLES, run_scenario
 from app.domain.slab import plan_slab
+from app.feed_health import feed_health
+from app.hardware import router as hardware_router
 from app.logging_config import configure_logging
 from app.schemas import (
     SimulationRunRequest,
@@ -17,6 +19,7 @@ from app.schemas import (
     SlabPlanRequest,
     SlabPlanResponse,
 )
+from app.vision import router as vision_router
 
 configure_logging()
 logger = logging.getLogger("neuroskin.api")
@@ -26,9 +29,11 @@ app = FastAPI(
     version="0.1.0",
     description=(
         "Stateless deterministic simulation for the NeuroSkin decision-brain proof. "
-        "Cooling load is always a relative proxy and all inputs are synthetic."
+        "Cooling load is a relative proxy, with optional weather and AI sky inputs."
     ),
 )
+app.include_router(hardware_router)
+app.include_router(vision_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -83,8 +88,13 @@ async def log_http_request(request: Request, call_next):
 
 
 @app.get("/api/v1/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "service": "neuroskin-api", "model": "deterministic"}
+def health() -> dict[str, object]:
+    return {
+        "status": "ok",
+        "service": "neuroskin-api",
+        "model": "deterministic",
+        "dependencies": feed_health(),
+    }
 
 
 @app.get("/api/v1/config")
@@ -107,7 +117,11 @@ def config() -> dict[str, object]:
             "tick_minutes": DEFAULTS.tick_minutes,
             "seed": DEFAULTS.seed,
             "angle_range": [DEFAULTS.angle_min, DEFAULTS.angle_max],
-            "angle_step": DEFAULTS.angle_step,
+            "optimizer_bracket_degrees": DEFAULTS.angle_step,
+            "continuous_angles": True,
+            "actuator_speed_deg_per_min": DEFAULTS.actuator_speed_deg_per_min,
+            "glazing_shgc": DEFAULTS.glazing_shgc,
+            "glare_limit_w_m2": DEFAULTS.glare_limit_w_m2,
             "critical_wind": DEFAULTS.critical_wind,
             "movement_threshold": DEFAULTS.movement_threshold,
             "daylight_evaluation_ghi": DEFAULTS.daylight_evaluation_ghi,
@@ -176,6 +190,30 @@ def run_simulation(request: SimulationRunRequest, http_request: Request) -> Simu
             "movement_count": result.summary["movement_count"],
             "sensor_fault_ticks": result.summary["sensor_fault_ticks"],
             "safe_mode_ticks": result.summary["safe_mode_ticks"],
+            "daylight_model": "extra trees" if any(t.daylight for t in result.ticks) else "off",
+            "ev_exceedance_ticks": sum(
+                any(
+                    p.eye_illuminance is not None and p.eye_illuminance > tick.daylight.ev_cap_lux
+                    for wall in tick.facade
+                    for zone in wall.zones
+                    for p in zone.conditions.daylight_probes or ()
+                )
+                for tick in result.ticks
+                if tick.daylight and tick.daylight.occupied
+            ),
+            "et_in_band_ticks": sum(
+                any(
+                    p.task_illuminance is not None
+                    and tick.daylight.et_band_low_lux
+                    <= p.task_illuminance
+                    <= tick.daylight.et_band_high_lux
+                    for wall in tick.facade
+                    for zone in wall.zones
+                    for p in zone.conditions.daylight_probes or ()
+                )
+                for tick in result.ticks
+                if tick.daylight and tick.daylight.occupied
+            ),
         },
     )
     return result

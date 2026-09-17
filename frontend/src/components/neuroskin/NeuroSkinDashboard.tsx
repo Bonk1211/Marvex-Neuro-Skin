@@ -1,34 +1,69 @@
 'use client'
 
 import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
+import { ProvenanceStrip } from './ProvenanceStrip'
+import { CostBreakdownPanel } from './CostBreakdownPanel'
+import { ModelLimitsPanel } from './ModelLimitsPanel'
+import { FeedsPanel } from './FeedsPanel'
+import { GlareBlindnessPanel } from './DaylightPanel'
+import { FloorPanel } from './FloorPanel'
+import { BrainFlow } from './BrainFlow'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity,
+  Building2,
+  Layers,
+  BrainCircuit,
+  Radio,
   AlertTriangle,
   ArrowLeft,
   BatteryCharging,
   CheckCircle2,
   Leaf,
-  LoaderCircle,
   Pause,
   Play,
   ShieldCheck,
+  Wrench,
 } from 'lucide-react'
+import {
+  GaugeCard,
+  ImpactStrip,
+  StatusBadge,
+  LoadingState,
+  ErrorState,
+  timeLabel,
+} from './DashboardCards'
 import { runSimulation } from '@/lib/api-client'
 import type {
-  ComparisonMetric,
   FacadeOrientation,
   ScenarioName,
   SimulationRunRequest,
   SimulationRunResponse,
 } from '@/lib/types'
-import { BuildingHeatmap, FacadeReadout } from './BuildingHeatmap'
+import { BuildingHeatmap } from './BuildingHeatmap'
 import type { SurfaceId } from './BuildingHeatmap'
-import { ControllerPanel } from './ControllerPanel'
+import {
+  baselineSurfaceTemperature,
+  surfaceIrradianceComparison,
+  type BuildingVariant,
+} from './buildingComparison'
+import { ControllerPanel, DEFAULT_WEIGHTS } from './ControllerPanel'
+import { CloudVisionPanel, type SkyObservation } from './CloudVisionPanel'
 import { SimulationCharts } from './SimulationCharts'
 import { SimulationControls } from './SimulationControls'
+import { ZoneSensorPanel } from './ZoneSensorPanel'
+import { LiveHardwarePanel } from './LiveHardwarePanel'
 import { TIER_STEPS, TierCard, TierRunner } from './TierAnalysis'
 import type { TierStatus } from './TierAnalysis'
+
+const LENSES = [
+  ['building', 'Building', Building2],
+  ['floor', 'Floor', Layers],
+  ['brains', 'Brains', BrainCircuit],
+  ['feeds', 'Feeds', Radio],
+] as const
+type Lens = (typeof LENSES)[number][0]
 
 const DEFAULT_REQUEST: SimulationRunRequest = {
   scenario: 'overview',
@@ -39,7 +74,7 @@ const DEFAULT_REQUEST: SimulationRunRequest = {
   occupancy_scale: 1,
   wind_override: 3,
   power_ok: true,
-  weights: { thermal: 0.45, lux: 0.35, movement: 0.15, risk: 0.05 },
+  weights: DEFAULT_WEIGHTS,
   latitude: 2.922,
   longitude: 101.6885,
   timezone: 'Asia/Kuala_Lumpur',
@@ -47,21 +82,16 @@ const DEFAULT_REQUEST: SimulationRunRequest = {
   facade_orientation: 'west',
   facade_tilt: 115,
   roof_pitch: 10,
+  glare_limit_w_m2: 25,
+  glazing_shgc: 0.4,
+  actuator_speed_deg_per_min: 1.2,
 }
-
-const sourceLabels: Record<SimulationRunRequest['environment_source'], string> =
-  {
-    synthetic: 'Synthetic',
-    met_anchored: 'MET anchored',
-    open_meteo: 'Open-Meteo',
-  }
 
 /** How long a finished tier stays on screen before the next one starts. */
 const STEP_PAUSE_MS = 700
 
-// One tick every 45 ms walks the 144-tick day in about 6.5 seconds, which is
-// slow enough to read the sun across the sky and fast enough to sit through.
-const PLAY_INTERVAL_MS = 45
+// Leave time to see the actuator response; a full day takes about 43 seconds.
+const PLAY_INTERVAL_MS = 300
 
 const pause = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve) => {
@@ -123,16 +153,17 @@ function RailHandle({
   )
 }
 
-const timeLabel = (timestamp: string, timeZone = 'Asia/Kuala_Lumpur') =>
-  new Intl.DateTimeFormat('en-MY', {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-    timeZone,
-  }).format(new Date(timestamp))
-
 export function NeuroSkinDashboard() {
-  const [request, setRequest] = useState(DEFAULT_REQUEST)
+  const view = useSearchParams().get('view')
+  const lens: Lens = LENSES.find(([id]) => id === view)?.[0] ?? 'building'
+  const [band, setBand] = useState(0)
+  const [floorFocused, setFloorFocused] = useState(false)
+  const [visionAgeSeconds, setVisionAgeSeconds] = useState<number | null>(null)
+  const [request, setRequest] = useState<SimulationRunRequest>(() => ({
+    ...DEFAULT_REQUEST,
+    daylight_model_enabled: lens === 'floor',
+  }))
+  const initialRequest = useRef(request)
   const [data, setData] = useState<SimulationRunResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -140,6 +171,19 @@ export function NeuroSkinDashboard() {
   const [selectedWall, setSelectedWall] = useState<SurfaceId>(
     `wall:${DEFAULT_REQUEST.facade_orientation}`
   )
+  const [selectedZone, setSelectedZone] = useState<string | null>(null)
+  const focusFloor = useCallback((next: number | null) => {
+    setFloorFocused(next !== null)
+    if (next !== null) setBand(next)
+    setSelectedZone(null)
+  }, [])
+  const [buildingVariant, setBuildingVariant] =
+    useState<BuildingVariant>('controlled')
+  const isControlled = buildingVariant === 'controlled'
+  const selectSurface = useCallback((surface: SurfaceId) => {
+    setSelectedWall(surface)
+    setSelectedZone(null)
+  }, [])
   // The three-tier run: one stored result per tier, so a finished tier can be
   // revisited without paying for it again.
   const [tierStatus, setTierStatus] = useState<
@@ -155,6 +199,11 @@ export function NeuroSkinDashboard() {
   // solar positions the run returned.
   const [playing, setPlaying] = useState(false)
   const requestController = useRef<AbortController | null>(null)
+  const appliedRequest = useRef<SimulationRunRequest>(initialRequest.current)
+  const tierRequests = useRef<
+    Partial<Record<ScenarioName, SimulationRunRequest>>
+  >({})
+  const [visionSky, setVisionSky] = useState<SkyObservation | null>(null)
 
   const tickCount = data?.ticks.length ?? 0
   useEffect(() => {
@@ -177,7 +226,11 @@ export function NeuroSkinDashboard() {
   }, [])
 
   const execute = useCallback(
-    async (nextRequest: SimulationRunRequest) => {
+    async (
+      nextRequest: SimulationRunRequest,
+      preserveTick?: number,
+      keepClock = false
+    ) => {
       requestController.current?.abort()
       const controller = new AbortController()
       requestController.current = controller
@@ -185,7 +238,25 @@ export function NeuroSkinDashboard() {
       setError(null)
       try {
         const response = await runSimulation(nextRequest, controller.signal)
-        focusOn(response)
+        if (controller.signal.aborted) return
+        if (
+          JSON.stringify({ ...nextRequest, scenario: null }) !==
+          JSON.stringify({ ...appliedRequest.current, scenario: null })
+        ) {
+          setTierResults({})
+          setTierStatus({})
+          setActiveTier(null)
+          tierRequests.current = {}
+        }
+        appliedRequest.current = nextRequest
+        if (preserveTick === undefined) focusOn(response)
+        else {
+          setData(response)
+          if (!keepClock)
+            setTimelineIndex(
+              Math.max(0, Math.min(preserveTick, response.ticks.length - 1))
+            )
+        }
         return response
       } catch (cause) {
         if (cause instanceof DOMException && cause.name === 'AbortError') return
@@ -204,8 +275,9 @@ export function NeuroSkinDashboard() {
   useEffect(() => {
     // The first load is the sensor read, so the analysis opens with that step
     // already banked and the three tiers waiting on the run button.
-    void execute(DEFAULT_REQUEST).then((response) => {
+    void execute(initialRequest.current).then((response) => {
       if (!response) return
+      tierRequests.current.overview = initialRequest.current
       setTierResults((prev) => ({ ...prev, overview: response }))
       setTierStatus((prev) => ({ ...prev, overview: 'done' }))
     })
@@ -226,6 +298,7 @@ export function NeuroSkinDashboard() {
     setError(null)
     setTierResults({})
     setTierStatus({})
+    tierRequests.current = {}
     // Run the clock for the whole analysis: the sun keeps crossing the sky on
     // each tier's own solar data while the next tier is still being computed.
     setTimelineIndex(0)
@@ -237,16 +310,16 @@ export function NeuroSkinDashboard() {
         setActiveTier(step.scenario)
         setTierStatus((prev) => ({ ...prev, [step.scenario]: 'running' }))
         setLoading(true)
-        const response = await runSimulation(
-          { ...request, scenario: step.scenario },
-          controller.signal
-        )
+        const stepRequest = { ...request, scenario: step.scenario }
+        const response = await runSimulation(stepRequest, controller.signal)
         if (controller.signal.aborted) return
         last = response
+        tierRequests.current[step.scenario] = stepRequest
         setTierResults((prev) => ({ ...prev, [step.scenario]: response }))
         setTierStatus((prev) => ({ ...prev, [step.scenario]: 'done' }))
         setRequest((prev) => ({ ...prev, scenario: step.scenario }))
         // Swap the data under the running clock rather than jumping the time.
+        appliedRequest.current = stepRequest
         setData(response)
         setLoading(false)
         // Let the step land on screen before the next one starts.
@@ -286,6 +359,10 @@ export function NeuroSkinDashboard() {
       // A tier already run is shown from its stored result, not fetched again.
       const stored = tierResults[scenario]
       if (stored) {
+        appliedRequest.current = tierRequests.current[scenario] ?? {
+          ...appliedRequest.current,
+          scenario,
+        }
         setRequest((prev) => ({ ...prev, scenario }))
         focusOn(stored)
         return
@@ -301,8 +378,10 @@ export function NeuroSkinDashboard() {
           ...prev,
           [scenario]: response ? 'done' : 'failed',
         }))
-        if (response)
+        if (response) {
+          tierRequests.current[scenario] = next
           setTierResults((prev) => ({ ...prev, [scenario]: response }))
+        }
       })
     },
     [execute, focusOn, request, tierResults]
@@ -328,6 +407,13 @@ export function NeuroSkinDashboard() {
   )
   const selectedTick =
     data?.ticks[Math.min(timelineIndex, Math.max(0, data.ticks.length - 1))]
+  const primaryOrientation = selectedTick?.facade.find(
+    (wall) => wall.primary
+  )?.orientation
+  useEffect(() => {
+    if (lens === 'brains' && !selectedZone && primaryOrientation)
+      setSelectedWall(`wall:${primaryOrientation}`)
+  }, [lens, selectedZone, primaryOrientation])
   const trustedPercent = data?.ticks.length
     ? (data.ticks.filter((tick) => tick.sensor_trusted).length /
         data.ticks.length) *
@@ -350,6 +436,74 @@ export function NeuroSkinDashboard() {
           (segment) => segment.quadrant === selectedOrientation
         )
       : undefined
+  const selectedZoneState = selectedWallState?.zones?.find(
+    (zone) => zone.zone === selectedZone
+  )
+  const selectZone = (id: string | null) => {
+    setSelectedZone(id)
+    if (!id) {
+      const primary = selectedTick?.facade.find((wall) => wall.primary)
+      if (primary) setSelectedWall(`wall:${primary.orientation}`)
+      return
+    }
+    const wall = selectedTick?.facade.find((wall) =>
+      wall.zones?.some((zone) => zone.zone === id)
+    )
+    const zone = wall?.zones?.find((zone) => zone.zone === id)
+    if (wall && zone) {
+      setSelectedWall(`wall:${wall.orientation}`)
+      setBand(zone.row)
+      setFloorFocused(true)
+    }
+  }
+  const selectedController = selectedZoneState ?? selectedWallState
+  const irradianceComparison = selectedTick
+    ? surfaceIrradianceComparison(selectedTick, selectedWall, selectedZone)
+    : null
+  const sensorTrusted =
+    selectedZoneState?.sensor_trusted ?? selectedTick?.sensor_trusted
+  const updateZoneSensor = async (
+    zoneId: string,
+    reading: { irradiance: number; illuminance: number } | null
+  ) => {
+    const sensorTick = Math.min(timelineIndex, Math.max(0, tickCount - 1))
+    const overrides = { ...appliedRequest.current.zone_sensor_overrides }
+    if (reading) overrides[zoneId] = { ...reading, tick_index: sensorTick }
+    else delete overrides[zoneId]
+    const nextRequest = {
+      ...appliedRequest.current,
+      zone_sensor_overrides: overrides,
+    }
+    setPlaying(false)
+    // Testing one sensor must not also apply unrelated, unsaved global settings.
+    setRequest((draft) => ({ ...draft, zone_sensor_overrides: overrides }))
+    // Cached tier results describe the old sensor inputs.
+    setTierResults({})
+    setTierStatus({})
+    setActiveTier(null)
+    await execute(nextRequest, sensorTick)
+  }
+
+  const updateSkyObservation = async (observation: SkyObservation | null) => {
+    if (loading || tierRunning || !tickCount) return null
+    const sensorTick = Math.min(timelineIndex, tickCount - 1)
+    const vision_observation = observation
+      ? {
+          captured_at: observation.captured_at,
+          cloud_cover: observation.cloud_cover,
+          tick_index: sensorTick,
+        }
+      : null
+    const nextRequest = { ...appliedRequest.current, vision_observation }
+    const response = await execute(nextRequest, sensorTick, true)
+    if (!response) return null
+    setRequest((draft) => ({ ...draft, vision_observation }))
+    setTierResults({})
+    setTierStatus({})
+    setActiveTier(null)
+    const tick = response.ticks[sensorTick]
+    return `Brain updated · ${timeLabel(tick.timestamp, response.metadata.timezone)} · ${tick.mode} → ${tick.angle_final.toFixed(1)}° · ${tick.cloud_source === 'vision' ? 'vision + light sensors + weather' : 'weather fallback'}`
+  }
 
   return (
     <div className='console-shell'>
@@ -357,13 +511,35 @@ export function NeuroSkinDashboard() {
         <div className='brand-mark h-10 w-10 shrink-0 rounded-xl'>
           <Leaf className='h-4 w-4' />
         </div>
+        {LENSES.map(([id, label, Icon]) => (
+          <Link
+            key={id}
+            href={`/dashboard?view=${id}`}
+            scroll={false}
+            aria-label={label}
+            aria-current={lens === id ? 'page' : undefined}
+            className={`lens-nav-button ${lens === id ? 'console-nav-button-active' : 'console-nav-button'}`}
+            title={label}
+          >
+            <Icon className='h-4 w-4' />
+            <span>{label}</span>
+          </Link>
+        ))}
         <Link
           aria-label='Predictive slab charging'
           className='console-nav-button'
           href='/slab'
-          title='7.1 Predictive radiant-slab charging'
+          title='Supporting simulation · predictive slab charging'
         >
           <BatteryCharging className='h-4 w-4' />
+        </Link>
+        <Link
+          aria-label='Actuator calibration'
+          className='console-nav-button'
+          href='/hardware'
+          title='Hardware · actuator calibration'
+        >
+          <Wrench className='h-4 w-4' />
         </Link>
         <div className='ml-auto xl:ml-0 xl:mt-auto'>
           <Link
@@ -377,484 +553,630 @@ export function NeuroSkinDashboard() {
         </div>
       </nav>
 
-      <aside
-        className='console-rail console-rail-left'
-        aria-label='Simulation results'
-        aria-live='polite'
-      >
-        <header className='flex items-start justify-between gap-3 px-1'>
-          <div>
-            <p className='eyebrow'>24-hour result</p>
-            <h1 className='mt-0.5 font-display text-lg font-semibold tracking-tight'>
-              Three-tier analysis
-            </h1>
-            {activeStep && (
-              <p className='text-[10px] text-muted-foreground'>
-                Stage showing {activeStep.tier} · {activeStep.label}
-              </p>
-            )}
-          </div>
-          <div className='flex flex-col items-end gap-1 text-[9px] text-muted-foreground'>
-            <span className='flex items-center gap-1.5'>
-              <span
-                className={
-                  loading
-                    ? 'status-pulse'
-                    : 'h-2 w-2 rounded-full bg-emerald-500'
-                }
-              />
-              {loading ? 'Running' : 'Ready'}
-            </span>
-            {data && (
-              <span className='flex items-center gap-1'>
-                <span>{sourceLabels[data.metadata.environment_source]}</span>
-                <span>· seed {data.metadata.seed}</span>
-              </span>
-            )}
-          </div>
-        </header>
-
-        <div data-tour='scenario-tabs'>
-          <TierRunner
-            statuses={tierStatus}
-            results={tierResults}
-            active={activeTier}
-            running={tierRunning}
-            onRun={() => void runTiers()}
-            onSelect={focusTier}
+      <div className='console-workspace'>
+        {data && !error && (
+          <ProvenanceStrip
+            metadata={data.metadata}
+            visionAgeSeconds={visionAgeSeconds}
           />
-        </div>
+        )}
+        <div className='console-rails'>
+          <aside
+            className='console-rail console-rail-left'
+            aria-label='Simulation results'
+            aria-live='polite'
+          >
+            {lens === 'building' && (
+              <>
+                <header className='flex items-start justify-between gap-3 px-1'>
+                  <div>
+                    <p className='eyebrow'>24-hour result</p>
+                    <h1 className='mt-0.5 font-display text-lg font-semibold tracking-tight'>
+                      {isControlled
+                        ? 'Facade performance'
+                        : 'No external facade'}
+                    </h1>
+                    {isControlled && activeStep && (
+                      <p className='text-[10px] text-muted-foreground'>
+                        Stage showing {activeStep.tier} · {activeStep.label}
+                      </p>
+                    )}
+                  </div>
+                  <div className='flex flex-col items-end gap-1 text-[9px] text-muted-foreground'>
+                    <span className='flex items-center gap-1.5'>
+                      <span
+                        className={
+                          loading
+                            ? 'status-pulse'
+                            : 'h-2 w-2 rounded-full bg-emerald-500'
+                        }
+                      />
+                      {loading ? 'Running' : 'Ready'}
+                    </span>
+                  </div>
+                </header>
 
-        {data && (
-          <>
-            <div className='grid grid-cols-3 gap-2' data-tour='kpi-grid'>
-              <GaugeCard
-                icon={Activity}
-                label='Mean load'
-                display={Number(data.summary.mean_relative_load).toFixed(3)}
-                fraction={Number(data.summary.mean_relative_load)}
-                detail='Lower better'
-              />
-              <GaugeCard
-                icon={CheckCircle2}
-                label='Sensor trust'
-                display={`${trustedPercent.toFixed(0)}%`}
-                fraction={trustedPercent / 100}
-                detail={`${data.summary.sensor_fault_ticks} rejected`}
-              />
-              <GaugeCard
-                icon={ShieldCheck}
-                label='Movements'
-                display={String(data.summary.movement_count)}
-                fraction={Number(data.summary.movement_count) / 144}
-                detail={`${data.summary.safe_mode_ticks} SAFE`}
-              />
-            </div>
-
-            {data.comparison.length > 0 && (
-              <ImpactStrip metrics={data.comparison} />
+                {isControlled && (
+                  <div data-tour='scenario-tabs'>
+                    <TierRunner
+                      statuses={tierStatus}
+                      results={tierResults}
+                      active={activeTier}
+                      running={tierRunning}
+                      onRun={() => void runTiers()}
+                      onSelect={focusTier}
+                    />
+                  </div>
+                )}
+              </>
             )}
 
-            {selectedTick && (
-              <FacadeReadout
-                tick={selectedTick}
-                selected={selectedWall}
-                onSelect={setSelectedWall}
-              />
-            )}
+            {data && (
+              <>
+                {lens === 'building' && (
+                  <>
+                    {irradianceComparison && (
+                      <section
+                        className='console-card'
+                        aria-label='Building irradiance comparison'
+                      >
+                        <p className='console-card-title'>Facade comparison</p>
+                        <p className='mt-1 text-xs font-semibold'>
+                          {irradianceComparison.label}
+                        </p>
+                        <dl className='mt-3 grid grid-cols-2 gap-3'>
+                          <div>
+                            <dt className='text-[10px] text-muted-foreground'>
+                              Controlled
+                            </dt>
+                            <dd className='font-mono text-base font-semibold'>
+                              {irradianceComparison.controlled.toFixed(0)}{' '}
+                              <span className='text-[10px]'>W/m²</span>
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className='text-[10px] text-muted-foreground'>
+                              No external facade
+                            </dt>
+                            <dd className='font-mono text-base font-semibold'>
+                              {irradianceComparison.baseline.toFixed(0)}{' '}
+                              <span className='text-[10px]'>W/m²</span>
+                            </dd>
+                          </div>
+                        </dl>
+                        <p className='mt-2 text-xs font-semibold text-primary'>
+                          {selectedKind === 'roof'
+                            ? 'Same roof · unchanged exposure'
+                            : irradianceComparison.reduction === null
+                              ? 'No solar exposure at this tick'
+                              : `${irradianceComparison.reduction.toFixed(1)}% less irradiance with louvres`}
+                        </p>
+                        <p className='mt-2 text-[10px] leading-4 text-muted-foreground'>
+                          Same sun, weather and colour scale.{' '}
+                          {selectedKind === 'roof'
+                            ? 'Modelled roof irradiance.'
+                            : 'Modelled zone irradiance before glazing; wall means weight zones equally.'}{' '}
+                          The heatmap shows local mesh shadows.
+                        </p>
+                      </section>
+                    )}
+                    {isControlled && (
+                      <div
+                        className='grid grid-cols-3 gap-2'
+                        data-tour='kpi-grid'
+                      >
+                        <GaugeCard
+                          icon={Activity}
+                          label='Mean load'
+                          display={Number(
+                            data.summary.mean_relative_load
+                          ).toFixed(3)}
+                          fraction={Number(data.summary.mean_relative_load)}
+                          detail='Lower better'
+                        />
+                        <GaugeCard
+                          icon={CheckCircle2}
+                          label='Sensor trust'
+                          display={`${trustedPercent.toFixed(0)}%`}
+                          fraction={trustedPercent / 100}
+                          detail={`${data.summary.sensor_fault_ticks} rejected`}
+                        />
+                        <GaugeCard
+                          icon={ShieldCheck}
+                          label='Movements'
+                          display={String(data.summary.movement_count)}
+                          fraction={Number(data.summary.movement_count) / 144}
+                          detail={`${data.summary.safe_mode_ticks} SAFE`}
+                        />
+                      </div>
+                    )}
 
-            {data.annotations.length > 0 && (
-              <section className='console-card' data-tour='events'>
-                <p className='console-card-title'>Events</p>
-                <div className='mt-2 flex flex-col gap-1.5'>
-                  {data.annotations.map((annotation) => (
-                    <button
-                      key={`${annotation.kind}-${annotation.timestamp}`}
-                      className='event-marker justify-start'
-                      type='button'
-                      onClick={() => {
-                        const index = data.ticks.findIndex(
-                          (tick) => tick.timestamp === annotation.timestamp
-                        )
-                        if (index >= 0) setTimelineIndex(index)
-                      }}
-                    >
-                      <AlertTriangle className='h-3.5 w-3.5 shrink-0' />
-                      <span className='truncate'>{annotation.title}</span>
-                      <span className='ml-auto font-mono text-[9px] opacity-60'>
-                        {timeLabel(annotation.timestamp, zone)}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </section>
-            )}
+                    {isControlled && data.comparison.length > 0 && (
+                      <ImpactStrip metrics={data.comparison} />
+                    )}
 
-            {/* Each tier keeps its own charts on the page. One clock drives all
+                    <p className='px-1 text-[10px] text-muted-foreground'>
+                      Building-wide simulated occupancy:{' '}
+                      {((selectedTick?.occupancy ?? 0) * 100).toFixed(0)}%
+                    </p>
+                  </>
+                )}
+
+                {lens === 'feeds' && (
+                  <>
+                    <FeedsPanel visionAgeSeconds={visionAgeSeconds} />
+                    <ModelLimitsPanel metadata={data.metadata} />
+                  </>
+                )}
+
+                {lens === 'floor' && (
+                  <>
+                    {selectedTick && (
+                      <FloorPanel
+                        orientation={selectedOrientation}
+                        onSideChange={(orientation) =>
+                          selectSurface(`wall:${orientation}`)
+                        }
+                        tick={selectedTick}
+                        floors={data.metadata.floors}
+                        focusedBand={floorFocused ? band : null}
+                        onBandChange={focusFloor}
+                        controlled={isControlled}
+                        loading={loading || tierRunning}
+                        onEnableDaylight={() => {
+                          setRequest((current) => ({
+                            ...current,
+                            daylight_model_enabled: true,
+                          }))
+                          void execute(
+                            {
+                              ...appliedRequest.current,
+                              daylight_model_enabled: true,
+                            },
+                            timelineIndex
+                          )
+                        }}
+                      />
+                    )}
+                    {selectedWallState &&
+                      (selectedWallState.zones?.length ?? 0) > 0 && (
+                        <ZoneSensorPanel
+                          buildingVariant={buildingVariant}
+                          wall={selectedWallState}
+                          selectedZone={selectedZone}
+                          onSelectZone={selectZone}
+                          onOverride={(zoneId, reading) =>
+                            void updateZoneSensor(zoneId, reading)
+                          }
+                          onClearOverride={(zoneId) =>
+                            void updateZoneSensor(zoneId, null)
+                          }
+                          overriddenZoneIds={Object.keys(
+                            request.zone_sensor_overrides ?? {}
+                          )}
+                          loading={loading || tierRunning}
+                        />
+                      )}
+                  </>
+                )}
+
+                {lens === 'brains' && isControlled && (
+                  <>
+                    {selectedTick && (
+                      <>
+                        <CostBreakdownPanel
+                          tick={selectedTick}
+                          weights={appliedRequest.current.weights}
+                          zone={selectedZoneState}
+                        />
+                      </>
+                    )}
+                    <details className='console-card'>
+                      <summary className='cursor-pointer text-xs font-semibold'>
+                        Offline daylight benchmark
+                      </summary>
+                      <div className='mt-3'>
+                        <GlareBlindnessPanel />
+                      </div>
+                    </details>
+                    {isControlled && data.annotations.length > 0 && (
+                      <section className='console-card' data-tour='events'>
+                        <p className='console-card-title'>Events</p>
+                        <div className='mt-2 flex flex-col gap-1.5'>
+                          {data.annotations.map((annotation) => (
+                            <button
+                              key={`${annotation.kind}-${annotation.timestamp}`}
+                              className='event-marker justify-start'
+                              type='button'
+                              onClick={() => {
+                                const index = data.ticks.findIndex(
+                                  (tick) =>
+                                    tick.timestamp === annotation.timestamp
+                                )
+                                if (index >= 0) setTimelineIndex(index)
+                              }}
+                            >
+                              <AlertTriangle className='h-3.5 w-3.5 shrink-0' />
+                              <span className='truncate'>
+                                {annotation.title}
+                              </span>
+                              <span className='ml-auto font-mono text-[9px] opacity-60'>
+                                {timeLabel(annotation.timestamp, zone)}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      </section>
+                    )}
+
+                    <p className='px-1 text-[10px] text-muted-foreground'>
+                      Scenario charts · primary reporting controller · full day
+                    </p>
+                    {/* Each tier keeps its own charts on the page. One clock drives all
                 of them, so the three read side by side instead of one chart
                 area swapping its contents as the analysis moves on. */}
-            {tierCharts.length > 0 ? (
-              tierCharts.map(({ step, response }) => (
-                <section
-                  aria-label={`${step.tier} charts`}
-                  className='grid gap-2'
-                  key={step.scenario}
-                >
-                  <p className='console-card-title'>
-                    {step.tier} · {step.label}
-                  </p>
-                  <SimulationCharts
-                    scenario={step.scenario}
-                    ticks={response.ticks}
-                    annotations={response.annotations}
-                    cursor={Math.min(timelineIndex, response.ticks.length - 1)}
-                    revealing={playing}
-                  />
-                </section>
-              ))
-            ) : (
-              <SimulationCharts
-                scenario={request.scenario}
-                ticks={data.ticks}
-                annotations={data.annotations}
-                cursor={Math.min(timelineIndex, data.ticks.length - 1)}
-                revealing={playing}
-              />
+                    {isControlled &&
+                      (tierCharts.length > 0 ? (
+                        tierCharts.map(({ step, response }) => (
+                          <section
+                            aria-label={`${step.tier} charts`}
+                            className='grid gap-2'
+                            key={step.scenario}
+                          >
+                            <p className='console-card-title'>
+                              {step.tier} · {step.label}
+                            </p>
+                            <SimulationCharts
+                              scenario={step.scenario}
+                              ticks={response.ticks}
+                              annotations={response.annotations}
+                              cursor={Math.min(
+                                timelineIndex,
+                                response.ticks.length - 1
+                              )}
+                              revealing={playing}
+                            />
+                          </section>
+                        ))
+                      ) : (
+                        <SimulationCharts
+                          scenario={request.scenario}
+                          ticks={data.ticks}
+                          annotations={data.annotations}
+                          cursor={Math.min(
+                            timelineIndex,
+                            data.ticks.length - 1
+                          )}
+                          revealing={playing}
+                        />
+                      ))}
+                  </>
+                )}
+              </>
             )}
-          </>
-        )}
-      </aside>
+          </aside>
 
-      <RailHandle side='left' label='Resize results panel' />
+          <RailHandle side='left' label='Resize results panel' />
 
-      <section className='console-stage' aria-label='Building model'>
-        {activeStep && !cardDismissed && (
-          <TierCard
-            step={activeStep}
-            status={tierStatus[activeStep.scenario] ?? 'pending'}
-            response={tierResults[activeStep.scenario]}
-            onDismiss={() => setCardDismissed(true)}
-          />
-        )}
+          <section className='console-stage' aria-label='Building model'>
+            {lens === 'building' &&
+              isControlled &&
+              activeStep &&
+              !cardDismissed && (
+                <TierCard
+                  step={activeStep}
+                  status={tierStatus[activeStep.scenario] ?? 'pending'}
+                  response={tierResults[activeStep.scenario]}
+                  onDismiss={() => setCardDismissed(true)}
+                />
+              )}
 
-        {error ? (
-          <ErrorState message={error} onRetry={() => void execute(request)} />
-        ) : loading && !data ? (
-          <LoadingState />
-        ) : data && selectedTick ? (
-          <>
-            <BuildingHeatmap
-              tick={selectedTick}
-              floors={data.metadata.floors}
-              facadeTilt={data.metadata.facade_tilt}
-              roofPitch={data.metadata.roof_pitch}
-              locationName={data.metadata.location}
-              timeLabel={timeLabel(selectedTick.timestamp, zone)}
-              selected={selectedWall}
-              onSelect={setSelectedWall}
-              sunTrack={sunTrack}
-            />
-
-            <div className='stage-toolbar' data-tour='timeline-inspector'>
-              <div className='flex flex-wrap items-center gap-2'>
-                <button
-                  aria-label={
-                    playing ? 'Pause sun movement' : 'Play sun movement'
-                  }
-                  aria-pressed={playing}
-                  className='play-button'
-                  onClick={() => setPlaying((value) => !value)}
-                  type='button'
-                >
-                  {playing ? (
-                    <Pause className='h-3 w-3 fill-current' />
-                  ) : (
-                    <Play className='h-3 w-3 fill-current' />
-                  )}
-                </button>
-                <p className='font-mono text-sm font-semibold'>
-                  {timeLabel(selectedTick.timestamp, zone)}
-                </p>
-                <span className='text-[10px] text-muted-foreground'>
-                  {`sun ${selectedTick.solar_elevation.toFixed(0)}° elev · ${selectedTick.solar_azimuth.toFixed(0)}° az`}
-                </span>
-                <span className='text-[11px] font-semibold capitalize'>
-                  {selectedKind === 'roof'
-                    ? `${selectedOrientation} roof face`
-                    : `${selectedOrientation} facade`}
-                </span>
-                {selectedKind === 'wall' && (
-                  <StatusBadge
-                    mode={selectedWallState?.mode ?? selectedTick.mode}
-                  />
-                )}
-                <span
-                  className={
-                    selectedTick.sensor_trusted ? 'trust-badge' : 'fault-badge'
-                  }
-                >
-                  {selectedTick.sensor_trusted ? 'Trusted' : 'Rejected'}
-                </span>
-                <span className='ml-auto text-[10px] uppercase tracking-wider text-muted-foreground'>
-                  Selected tick
-                </span>
-              </div>
-
-              <input
-                aria-label='Simulation timeline'
-                className='timeline-range'
-                type='range'
-                min={0}
-                max={Math.max(0, data.ticks.length - 1)}
-                value={timelineIndex}
-                onChange={(event) =>
-                  setTimelineIndex(Number(event.target.value))
-                }
+            {error ? (
+              <ErrorState
+                message={error}
+                onRetry={() => void execute(request)}
               />
-
-              <div className='flex flex-wrap items-center gap-1.5'>
-                {selectedRoofState ? (
-                  <>
-                    <span className='stage-chip'>
-                      {selectedRoofState.tilt.toFixed(0)}° pitch
-                    </span>
-                    <span className='stage-chip'>
-                      {selectedRoofState.incident.toFixed(0)} W/m² on roof
-                    </span>
-                    <span className='stage-chip'>
-                      {selectedRoofState.sky_diffuse.toFixed(0)} W/m² sky
-                    </span>
-                    <span className='stage-chip'>
-                      {selectedRoofState.sol_air_temp.toFixed(1)} °C surface
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <span className='stage-chip'>
-                      {(
-                        selectedWallState?.angle ?? selectedTick.angle_final
-                      ).toFixed(0)}
-                      ° angle
-                    </span>
-                    <span className='stage-chip'>
-                      {(selectedWallState?.lux ?? selectedTick.lux).toFixed(0)}{' '}
-                      lux
-                    </span>
-                    <span className='stage-chip'>
-                      {(
-                        selectedWallState?.incident ??
-                        selectedTick.measured_irradiance
-                      ).toFixed(0)}{' '}
-                      W/m² on wall
-                    </span>
-                    <span className='stage-chip'>
-                      {(
-                        selectedWallState?.load_relative ??
-                        selectedTick.load_relative
-                      ).toFixed(3)}{' '}
-                      load
-                    </span>
-                  </>
+            ) : loading && !data ? (
+              <LoadingState />
+            ) : data && selectedTick ? (
+              <>
+                <div
+                  className={`absolute inset-0 ${lens === 'brains' || lens === 'feeds' ? 'invisible' : ''}`}
+                >
+                  <BuildingHeatmap
+                    active={lens === 'building' || lens === 'floor'}
+                    cameraMode={lens === 'floor' ? 'plan' : 'orbit'}
+                    band={band}
+                    focusedBand={floorFocused ? band : null}
+                    onSelectBand={focusFloor}
+                    visionSky={visionSky}
+                    buildingVariant={buildingVariant}
+                    onBuildingVariantChange={setBuildingVariant}
+                    tick={selectedTick}
+                    floors={data.metadata.floors}
+                    facadeTilt={data.metadata.facade_tilt}
+                    roofPitch={data.metadata.roof_pitch}
+                    locationName={data.metadata.location}
+                    timeLabel={timeLabel(selectedTick.timestamp, zone)}
+                    selected={selectedWall}
+                    onSelect={selectSurface}
+                    selectedZone={selectedZone}
+                    onSelectZone={selectZone}
+                    sunTrack={sunTrack}
+                    ticks={data.ticks}
+                    onSelectTick={(index) => {
+                      setPlaying(false)
+                      setTimelineIndex(index)
+                    }}
+                  />
+                </div>
+                {lens === 'brains' && isControlled && (
+                  <div className='absolute inset-0 overflow-y-auto p-4 pb-44 sm:p-5 sm:pb-44'>
+                    <BrainFlow
+                      tick={selectedTick}
+                      selectedZone={selectedZoneState}
+                      onSelectZone={selectZone}
+                    />
+                  </div>
                 )}
-                <span className='stage-chip'>
-                  {selectedTick.wind.toFixed(1)} m/s
-                </span>
-                <span className='stage-chip'>
-                  {selectedTick.outdoor_temp.toFixed(1)} °C
-                </span>
-              </div>
-              {selectedWallState && (
-                <p className='text-[10px] leading-4 text-muted-foreground'>
-                  {selectedWallState.reason}
-                </p>
-              )}
-              {selectedRoofState && (
-                <p className='text-[10px] leading-4 text-muted-foreground'>
-                  Roof faces carry no louvres, so this is raw plane-of-array
-                  gain. A flat roof reads the same on every quadrant.
-                </p>
-              )}
-            </div>
-          </>
-        ) : null}
-      </section>
+                {lens === 'brains' && !isControlled && (
+                  <div className='absolute inset-0 flex items-center justify-center p-6 pb-44'>
+                    <section className='console-card max-w-sm text-center'>
+                      <h1 className='font-display text-xl font-semibold'>
+                        No facade controller
+                      </h1>
+                      <p className='mt-2 text-sm text-muted-foreground'>
+                        This comparison building has no external louvres or
+                        actuators.
+                      </p>
+                      <Link
+                        className='run-button-light mt-4'
+                        href='/dashboard?view=building'
+                      >
+                        Choose a controlled building
+                      </Link>
+                    </section>
+                  </div>
+                )}
+                <div
+                  hidden={lens !== 'feeds'}
+                  className='absolute inset-0 overflow-y-auto p-4 pb-44 sm:p-5 sm:pb-44'
+                >
+                  <header className='mb-4'>
+                    <p className='eyebrow'>Evidence sources</p>
+                    <h1 className='mt-1 font-display text-2xl font-semibold'>
+                      Sky context, with a traceable source
+                    </h1>
+                  </header>
+                  <CloudVisionPanel
+                    onObservation={updateSkyObservation}
+                    onSkyChange={setVisionSky}
+                    onAgeChange={setVisionAgeSeconds}
+                  />
+                </div>
 
-      <RailHandle side='right' label='Resize settings panel' />
+                <div className='stage-toolbar' data-tour='timeline-inspector'>
+                  <div className='flex flex-wrap items-center gap-2'>
+                    <button
+                      aria-label={
+                        playing ? 'Pause sun movement' : 'Play sun movement'
+                      }
+                      aria-pressed={playing}
+                      className='play-button'
+                      onClick={() => setPlaying((value) => !value)}
+                      type='button'
+                    >
+                      {playing ? (
+                        <Pause className='h-3 w-3 fill-current' />
+                      ) : (
+                        <Play className='h-3 w-3 fill-current' />
+                      )}
+                    </button>
+                    <p className='font-mono text-sm font-semibold'>
+                      {timeLabel(selectedTick.timestamp, zone)}
+                    </p>
+                    <span className='text-[10px] text-muted-foreground'>
+                      {`sun ${selectedTick.solar_elevation.toFixed(0)}° elev · ${selectedTick.solar_azimuth.toFixed(0)}° az`}
+                    </span>
+                    <span className='text-[11px] font-semibold capitalize'>
+                      {selectedKind === 'roof'
+                        ? `${selectedOrientation} roof face`
+                        : `${selectedOrientation} facade${selectedZoneState ? ` · ${selectedZoneState.zone}` : ''}`}
+                    </span>
+                    {isControlled && selectedKind === 'wall' && (
+                      <StatusBadge
+                        mode={selectedController?.mode ?? selectedTick.mode}
+                      />
+                    )}
+                    {isControlled ? (
+                      <span
+                        className={
+                          sensorTrusted ? 'trust-badge' : 'fault-badge'
+                        }
+                      >
+                        {sensorTrusted ? 'Trusted' : 'Rejected'}
+                      </span>
+                    ) : (
+                      <span className='stage-chip'>No controller</span>
+                    )}
+                    <span className='ml-auto text-[10px] uppercase tracking-wider text-muted-foreground'>
+                      Selected tick
+                    </span>
+                  </div>
 
-      <aside className='console-rail console-rail-right'>
-        <SimulationControls
-          value={request}
-          onChange={setRequest}
-          onReset={() => {
-            const reset = { ...DEFAULT_REQUEST, scenario: request.scenario }
-            setRequest(reset)
-            void execute(reset)
-          }}
-        />
-        <ControllerPanel
-          value={request}
-          loading={loading}
-          onChange={setRequest}
-          onRun={() => void execute(request)}
-        />
-      </aside>
-    </div>
-  )
-}
+                  <input
+                    aria-label='Simulation timeline'
+                    className='timeline-range'
+                    type='range'
+                    min={0}
+                    max={Math.max(0, data.ticks.length - 1)}
+                    value={timelineIndex}
+                    onChange={(event) =>
+                      setTimelineIndex(Number(event.target.value))
+                    }
+                  />
 
-/** Bounded value as a 270-degree arc. Unbounded counts pass a rough fraction. */
-function GaugeCard({
-  icon: Icon,
-  label,
-  display,
-  detail,
-  fraction,
-}: {
-  icon: React.ElementType
-  label: string
-  display: string
-  detail: string
-  fraction: number
-}) {
-  const radius = 26
-  const circumference = 2 * Math.PI * radius
-  const sweep = 0.75
-  const filled = Math.min(1, Math.max(0, fraction)) * sweep
+                  <div className='flex flex-wrap items-center gap-1.5'>
+                    {selectedRoofState ? (
+                      <>
+                        <span className='stage-chip'>
+                          {selectedRoofState.tilt.toFixed(0)}° pitch
+                        </span>
+                        <span className='stage-chip'>
+                          {selectedRoofState.incident.toFixed(0)} W/m² on roof
+                        </span>
+                        <span className='stage-chip'>
+                          {selectedRoofState.sky_diffuse.toFixed(0)} W/m² sky
+                        </span>
+                        <span className='stage-chip'>
+                          {selectedRoofState.sol_air_temp.toFixed(1)} °C surface
+                        </span>
+                      </>
+                    ) : !isControlled ? (
+                      <>
+                        <span className='stage-chip'>
+                          {(
+                            irradianceComparison?.baseline ??
+                            selectedWallState?.incident ??
+                            0
+                          ).toFixed(0)}{' '}
+                          W/m² before glazing
+                        </span>
+                        <span className='stage-chip'>
+                          {baselineSurfaceTemperature(
+                            irradianceComparison?.baseline ??
+                              selectedWallState?.incident ??
+                              0,
+                            selectedTick.outdoor_temp,
+                            selectedTick.wind
+                          ).toFixed(1)}{' '}
+                          °C surface estimate
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span className='stage-chip'>
+                          {(
+                            selectedController?.angle ??
+                            selectedTick.angle_final
+                          ).toFixed(1)}
+                          ° angle
+                        </span>
+                        <span className='stage-chip'>
+                          {(
+                            selectedController?.lux ?? selectedTick.lux
+                          ).toFixed(0)}{' '}
+                          lux
+                        </span>
+                        <span className='stage-chip'>
+                          {(
+                            selectedZoneState?.sensors?.irradiance ??
+                            selectedController?.incident ??
+                            selectedTick.measured_irradiance
+                          ).toFixed(0)}{' '}
+                          W/m² {selectedZoneState ? 'zone sensor' : 'on wall'}
+                        </span>
+                        <span className='stage-chip'>
+                          {(
+                            selectedController?.load_relative ??
+                            selectedTick.load_relative
+                          ).toFixed(3)}{' '}
+                          load
+                        </span>
+                        {selectedController && (
+                          <span className='stage-chip'>
+                            {selectedController.sol_air_temp.toFixed(1)} °C
+                            surface
+                          </span>
+                        )}
+                      </>
+                    )}
+                    <span className='stage-chip'>
+                      {selectedTick.wind.toFixed(1)} m/s
+                    </span>
+                    <span className='stage-chip'>
+                      {selectedTick.outdoor_temp.toFixed(1)} °C
+                    </span>
+                  </div>
+                  {selectedWallState && lens === 'building' && (
+                    <details className='text-[10px] leading-4 text-muted-foreground'>
+                      <summary className='cursor-pointer'>
+                        Selected action details
+                      </summary>
+                      <p className='mt-1'>
+                        {isControlled
+                          ? (selectedZoneState?.reason ??
+                            selectedWallState.reason)
+                          : 'Same structure, glazing and roof; external louvres, actuators and mechatronic controller removed.'}
+                      </p>
+                    </details>
+                  )}
+                  {selectedRoofState && (
+                    <p className='text-[10px] leading-4 text-muted-foreground'>
+                      Roof faces carry no louvres, so this is raw plane-of-array
+                      gain. A flat roof reads the same on every quadrant.
+                    </p>
+                  )}
+                </div>
+              </>
+            ) : null}
+          </section>
 
-  return (
-    <article className='gauge-card'>
-      <div className='relative'>
-        <svg viewBox='0 0 64 64' className='h-16 w-16 -rotate-[135deg]'>
-          <circle
-            cx='32'
-            cy='32'
-            r={radius}
-            fill='none'
-            strokeWidth='6'
-            strokeLinecap='round'
-            className='stroke-secondary'
-            strokeDasharray={`${circumference * sweep} ${circumference}`}
-          />
-          <circle
-            cx='32'
-            cy='32'
-            r={radius}
-            fill='none'
-            strokeWidth='6'
-            strokeLinecap='round'
-            className='stroke-primary'
-            strokeDasharray={`${circumference * filled} ${circumference}`}
-          />
-        </svg>
-        <span className='absolute inset-0 grid place-items-center'>
-          <Icon className='h-4 w-4 text-primary' />
-        </span>
+          <RailHandle side='right' label='Resize settings panel' />
+
+          <aside className='console-rail console-rail-right'>
+            {lens !== 'building' && (
+              <button
+                className='run-button-light shrink-0'
+                type='button'
+                disabled={loading || tierRunning}
+                onClick={() => void execute(request, timelineIndex)}
+              >
+                {loading ? 'Applying settings…' : 'Apply settings and re-run'}
+              </button>
+            )}
+            <SimulationControls
+              buildingVariant={buildingVariant}
+              value={request}
+              onChange={setRequest}
+              onReset={() => {
+                const reset = { ...DEFAULT_REQUEST, scenario: request.scenario }
+                setRequest(reset)
+                void execute(reset)
+              }}
+            />
+            <LiveHardwarePanel
+              tick={isControlled ? (selectedTick ?? null) : null}
+            />
+            {lens === 'building' &&
+              (isControlled ? (
+                <ControllerPanel
+                  value={request}
+                  loading={loading}
+                  onChange={setRequest}
+                  onRun={() => void execute(request)}
+                />
+              ) : (
+                <section className='console-card'>
+                  <p className='console-card-title'>Uncontrolled building</p>
+                  <p className='mt-2 text-xs leading-5 text-muted-foreground'>
+                    No external louvres or mechatronic brain. Weather and
+                    geometry settings apply to both buildings for a
+                    like-for-like comparison.
+                  </p>
+                  <button
+                    className='retry-button mt-3'
+                    type='button'
+                    disabled={loading || tierRunning}
+                    onClick={() => void execute(request)}
+                  >
+                    {loading ? 'Running…' : 'Run simulation'}
+                  </button>
+                </section>
+              ))}
+          </aside>
+        </div>
       </div>
-      <p className='mt-1 font-display text-base font-semibold tracking-tight'>
-        {display}
-      </p>
-      <p className='text-[9px] font-semibold uppercase tracking-wider text-muted-foreground'>
-        {label}
-      </p>
-      <p className='mt-0.5 text-[9px] text-muted-foreground'>{detail}</p>
-    </article>
-  )
-}
-
-/** "70%" but "1 moves" — only a bare symbol sits tight against its number. */
-const formatMetric = (value: number, unit: string) =>
-  unit.length <= 1 ? `${value}${unit}` : `${value} ${unit}`
-
-function ImpactStrip({ metrics }: { metrics: ComparisonMetric[] }) {
-  return (
-    <section
-      className='console-card'
-      aria-label='Impact versus baseline'
-      data-tour='comparison'
-    >
-      <div className='flex items-center justify-between'>
-        <p className='console-card-title'>Impact</p>
-        <p className='text-[9px] text-muted-foreground'>vs baseline</p>
-      </div>
-      <div className='mt-2 grid gap-1.5'>
-        {metrics.map((metric) => {
-          const improved = metric.higher_is_better
-            ? metric.ours > metric.naive
-            : metric.ours < metric.naive
-          return (
-            <div
-              className='border-t border-border/50 pt-1.5 first:border-0 first:pt-0'
-              key={metric.metric}
-            >
-              <div className='flex items-center justify-between gap-2'>
-                <p className='truncate text-[10px] font-semibold text-muted-foreground'>
-                  {metric.label}
-                </p>
-                {improved && <span className='winner-badge'>Better</span>}
-              </div>
-              <div className='mt-0.5 flex flex-wrap items-baseline gap-x-2'>
-                <span className='font-mono text-sm font-semibold'>
-                  {formatMetric(metric.ours, metric.unit)}
-                </span>
-                <span className='text-[9px] text-muted-foreground'>
-                  base {formatMetric(metric.naive, metric.unit)}
-                </span>
-              </div>
-            </div>
-          )
-        })}
-      </div>
-    </section>
-  )
-}
-
-function StatusBadge({ mode }: { mode: string }) {
-  return (
-    <span
-      className={
-        mode === 'SAFE'
-          ? 'safe-badge'
-          : mode === 'HOLD'
-            ? 'hold-badge'
-            : 'normal-badge'
-      }
-    >
-      {mode}
-    </span>
-  )
-}
-
-function LoadingState() {
-  return (
-    <div className='absolute inset-0 flex flex-col items-center justify-center text-center'>
-      <LoaderCircle className='h-7 w-7 animate-spin text-primary' />
-      <h2 className='mt-3 font-display text-lg font-semibold'>
-        Running simulation
-      </h2>
-      <p className='mt-1 text-xs text-muted-foreground'>144 decision ticks</p>
-    </div>
-  )
-}
-
-function ErrorState({
-  message,
-  onRetry,
-}: {
-  message: string
-  onRetry: () => void
-}) {
-  return (
-    <div className='absolute inset-0 flex flex-col items-center justify-center p-10 text-center'>
-      <div className='rounded-full bg-red-50 p-3 text-red-600'>
-        <AlertTriangle className='h-6 w-6' />
-      </div>
-      <h2 className='mt-4 font-display text-xl font-semibold'>
-        Simulation unavailable
-      </h2>
-      <p className='mt-2 max-w-lg text-sm text-muted-foreground'>{message}</p>
-      <button className='retry-button mt-5' onClick={onRetry} type='button'>
-        Try again
-      </button>
     </div>
   )
 }

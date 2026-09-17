@@ -45,6 +45,10 @@ def test_met_context_parses_forecast_warnings_and_anchor(met_payload: dict[str, 
     assert context.anchor.morning_rain is False
     assert context.anchor.afternoon_rain is True
     assert context.anchor.afternoon_cloud > context.anchor.morning_cloud
+    from app.feed_health import feed_health
+
+    assert feed_health()["met_malaysia"]["last_status"] == "applied"
+    assert feed_health()["met_malaysia"]["last_success_at"] == context.fetched_at.isoformat()
 
 
 def test_met_context_is_cached_and_falls_back_outside_window(
@@ -100,3 +104,6 @@ def test_met_context_degrades_when_upstream_fails() -> None:
     assert context.status == "fallback"
     assert context.forecast is None
     assert context.fallback_reason == "offline"
+    from app.feed_health import feed_health
+
+    assert feed_health()["met_malaysia"]["last_status"] == "fallback"
