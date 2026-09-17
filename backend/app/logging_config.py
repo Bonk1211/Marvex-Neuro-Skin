@@ -30,6 +30,8 @@ LOG_FIELDS = (
     "baseline_verdict",
     "claim_allowed",
     "saving_percent",
+    # Live hardware bridge.
+    "hardware_mode",
 )
 
 

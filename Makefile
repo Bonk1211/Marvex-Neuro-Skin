@@ -8,8 +8,11 @@ dev:
 	$(MAKE) frontend & \
 	wait
 
+# HOST=0.0.0.0 lets the ESP32 reach the API over WiFi; loopback by default.
+HOST ?= 127.0.0.1
+
 backend:
-	cd backend && uv run uvicorn app.main:app --reload --port 8000 $(if $(wildcard backend/.env),--env-file .env,)
+	cd backend && uv run uvicorn app.main:app --reload --host $(HOST) --port 8000 $(if $(wildcard backend/.env),--env-file .env,)
 
 frontend:
 	cd frontend && npm run dev

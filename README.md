@@ -126,7 +126,7 @@ as advisory context only and never bypass the controller's local safety inputs.
 - `backend/` — FastAPI, Pydantic, pvlib, NumPy, and pandas.
 - `docs/neuroskin_software_prd.md` — as-built implementation specification (v0.2).
 
-The backend intentionally uses a deterministic, physics-inspired `LoadPredictor`. No learned model, training pipeline, database, authentication, or hardware integration is included.
+The backend intentionally uses a deterministic, physics-inspired `LoadPredictor`. No learned model, training pipeline, database, or authentication is included. An optional ESP32 bridge (`hardware/README.md`) drives a physical 2×2 louvre rig from live lux or from the twin.
 
 ## Run locally
 

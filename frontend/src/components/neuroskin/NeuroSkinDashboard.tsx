@@ -24,6 +24,7 @@ import {
   Pause,
   Play,
   ShieldCheck,
+  Wrench,
 } from 'lucide-react'
 import {
   GaugeCard,
@@ -52,6 +53,7 @@ import { CloudVisionPanel, type SkyObservation } from './CloudVisionPanel'
 import { SimulationCharts } from './SimulationCharts'
 import { SimulationControls } from './SimulationControls'
 import { ZoneSensorPanel } from './ZoneSensorPanel'
+import { LiveHardwarePanel } from './LiveHardwarePanel'
 import { TIER_STEPS, TierCard, TierRunner } from './TierAnalysis'
 import type { TierStatus } from './TierAnalysis'
 
@@ -530,6 +532,14 @@ export function NeuroSkinDashboard() {
           title='Supporting simulation · predictive slab charging'
         >
           <BatteryCharging className='h-4 w-4' />
+        </Link>
+        <Link
+          aria-label='Actuator calibration'
+          className='console-nav-button'
+          href='/hardware'
+          title='Hardware · actuator calibration'
+        >
+          <Wrench className='h-4 w-4' />
         </Link>
         <div className='ml-auto xl:ml-0 xl:mt-auto'>
           <Link
@@ -1134,6 +1144,9 @@ export function NeuroSkinDashboard() {
                 setRequest(reset)
                 void execute(reset)
               }}
+            />
+            <LiveHardwarePanel
+              tick={isControlled ? (selectedTick ?? null) : null}
             />
             {lens === 'building' &&
               (isControlled ? (

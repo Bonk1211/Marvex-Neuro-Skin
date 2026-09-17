@@ -10,6 +10,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NeuroSkinDashboard } from './NeuroSkinDashboard'
 import type { SimulationRunResponse, ZoneHeat } from '@/lib/types'
 
+// Live hardware polls its own endpoint (tested in LiveHardwarePanel.test.tsx);
+// keep it out of these simulation fetch-call assertions.
+vi.mock('./LiveHardwarePanel', () => ({ LiveHardwarePanel: () => null }))
 vi.mock('next/navigation', () => ({
   useSearchParams: () =>
     new URLSearchParams(

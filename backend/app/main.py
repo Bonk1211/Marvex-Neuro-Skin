@@ -11,6 +11,7 @@ from app.domain.facade import ORIENTATIONS
 from app.domain.scenarios import SCENARIO_TITLES, run_scenario
 from app.domain.slab import plan_slab
 from app.feed_health import feed_health
+from app.hardware import router as hardware_router
 from app.logging_config import configure_logging
 from app.schemas import (
     SimulationRunRequest,
@@ -31,6 +32,7 @@ app = FastAPI(
         "Cooling load is a relative proxy, with optional weather and AI sky inputs."
     ),
 )
+app.include_router(hardware_router)
 app.include_router(vision_router)
 app.add_middleware(
     CORSMiddleware,

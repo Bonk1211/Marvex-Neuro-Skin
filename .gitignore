@@ -38,3 +38,6 @@ backend/data/daylight/**/manifest.json
 backend/.venv/
 backend/.ruff_cache/
 **/.ipynb_checkpoints/
+
+# ESP32 WiFi/token secrets
+hardware/esp32/neuroskin_bridge/secrets.h

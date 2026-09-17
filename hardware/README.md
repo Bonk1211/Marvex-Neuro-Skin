@@ -1,6 +1,7 @@
-# Raspberry Pi hardware validation plan
+# ESP32 hardware bridge
 
-Status: planning only; hardware code and live API endpoints are not implemented.
+Status: ESP32 bridge implemented: firmware `hardware/esp32/neuroskin_bridge`,
+backend `/api/v1/hardware/*`, dashboard *Live hardware* card. No anemometer is wired.
 
 ## Cloud vision and indoor presentation
 
@@ -9,8 +10,8 @@ real cloud segmentation on a configurable schedule (15 seconds by default).
 Fresh results update the simulation brain at the selected simulation time,
 using full-frame cloud mask area as a demo sky estimate. The overlay shows the
 current MYT date/time. See the root README for setup and fallback behavior.
-The demo does not control physical servos; the hardware integration below is
-still a plan.
+Physical louvres are driven by the ESP32 bridge below; cloud vision stays
+simulation-only.
 
 For hardware, add one shared sky-facing camera (Pi-compatible CSI or USB; model
 and mounting still to be selected). Send its JPEG frames to the existing
@@ -33,229 +34,232 @@ with the displayed snapshot/timestamp; pause, seek and replace footage; disconne
 internet and confirm an explicit error rather than a fresh result. Separately
 verify that camera/inference outages cannot block hardware control when built.
 
-## Objective
+## What the rig does
 
-Demonstrate a 2×2 grid of four independently controlled NeuroSkin louvre panels
-on one building side. Each panel has one SG90 and one BH1750: four servos and
-four light sensors total. Decisions run on the backend hosted on the same
-Raspberry Pi. Expose live status through Cloudflare Tunnel. One shared anemometer
-provides the wind safety input for all four panels.
+A 2×2 grid of louvre panels, each with one SG90 servo and one BH1750 light
+sensor, stands in for one 2×2 block of the digital twin's west wall. Every
+500 ms the ESP32 posts the four lux readings to the FastAPI backend over WiFi
+and receives four louvre angles. The dashboard picks where those angles come
+from:
 
-The benefit is local control without an internet round trip, not zero latency.
-Sensor acquisition, local communication, computation and mechanical travel still
-take time. Automatic operation must continue with the frontend closed or the
-internet disconnected.
+- **Auto (default):** each panel steps 5° toward shading above 700 lux, 5°
+  toward open below 300 lux, and holds inside the band. This runs with the
+  dashboard closed.
+- **Mirror twin:** the dashboard pushes the twin's angles for the four mapped
+  zones at the selected simulation time, so scrubbing the timeline moves the rig.
 
-## Hardware scope
+Louvre angles run 0–180°: **0° is perpendicular to the building** (the start
+position), **90° is parallel to it** (most shading), and **180° is perpendicular
+again with the blade flipped**. Auto lux control shades within 0–90°; calibration
+holds use the full range. The twin uses the same convention over 0–60°, so
+mirrored angles pass through unchanged. SG90s
+give no position feedback, so every angle shown is **commanded, not measured**.
 
-| Component | Purpose | Decision |
+## Wiring
+
+```text
+ESP32 3.3V ───────────── Breadboard + rail
+                         ├── BH1 VCC
+                         ├── BH2 VCC
+                         ├── BH3 VCC
+                         └── BH4 VCC
+
+ESP32 GND ────────────── Breadboard - rail
+                         ├── BH1 GND
+                         ├── BH2 GND
+                         ├── BH3 GND
+                         └── BH4 GND
+
+GPIO21 ───── breadboard row
+              ├── BH1 SDA
+              └── PCA9685 SDA
+
+GPIO22 ───── breadboard row
+              ├── BH1 SCL
+              └── PCA9685 SCL
+
+GPIO25 ───── BH2 SDA   (software I²C bus 3)
+
+GPIO26 ───── BH2 SCL   (software I²C bus 3)
+
+GPIO32 ───── breadboard row
+              ├── BH3 SDA
+              └── BH4 SDA
+
+GPIO33 ───── breadboard row
+              ├── BH3 SCL
+              └── BH4 SCL
+```
+
+| Panel id | Sensor | I²C bus | SDA / SCL | BH1750 address | ADDR pin | PCA9685 channel | Twin zone |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `bh1` | BH1750 #1 | `TwoWire(0)` | GPIO21 / GPIO22 | `0x23` | GND | 4 | `W13` (top-left) |
+| `bh2` | BH1750 #2 | software (bit-banged) | GPIO25 / GPIO26 | `0x23` | GND | 5 | `W14` (top-right) |
+| `bh3` | BH1750 #3 | `TwoWire(1)` | GPIO32 / GPIO33 | `0x23` | GND | 6 | `W9` (bottom-left) |
+| `bh4` | BH1750 #4 | `TwoWire(1)` | GPIO32 / GPIO33 | `0x5C` | 3.3 V | 7 | `W10` (bottom-right) |
+
+- BH1750 supports only `0x23` and `0x5C`. BUS1 carries BH1 (`0x23`) and the
+  PCA9685; BUS2 carries BH3 (`0x23`) and BH4 (`0x5C`, ADDR tied to 3.3 V). The
+  ESP32 has only two hardware I²C controllers, so BH2 (`0x23`) gets its own
+  bit-banged bus 3 on GPIO25/26. Hardware buses run at 50 kHz for breadboard wiring.
+- Bus 3 relies on the BH1750 module's own SDA/SCL pull-ups; the firmware adds the
+  ESP32's weak internal pull-ups so an unplugged BH2 reads as a fault, not a
+  floating line. It is master-only with no clock stretching, which BH1750 never uses.
+- PCA9685 sits at `0x40` on BUS1. Connect its VCC to 3.3 V (logic).
+- Power the servos through the PCA9685 V+ terminal from a **separate 5 V supply**
+  (at least 2 A for four SG90s) with its GND common to the ESP32. Never power
+  servos from ESP32 pins; simultaneous movement otherwise resets the ESP32 or
+  corrupts I²C.
+- Pulse values come from the verified circuit test: 205–410 PCA9685 ticks at
+  50 Hz for servo 0°–180° (≈1000–2000 µs). Only 45°–135° was exercised.
+- Keep the circuit test sketch for commissioning (I²C scan, servo sweep). The
+  bridge firmware deliberately does not sweep servos at boot.
+
+## Twin mapping
+
+Twin zone ids are the wall letter plus `row × 4 + column + 1`, rows counted from
+the bottom and columns from the left as seen from outside. The top row is 13–16
+and the second row 9–12, so BH1/BH2 (top row) map to `W13 W14` and BH3/BH4 to
+`W9 W10`. **The physical position of each sensor is an assumption:** cover each
+BH1750 in turn and confirm the matching dashboard card responds. Edit
+`PANEL_ZONES` in `backend/app/hardware.py` (and the `PANELS` channels in the
+firmware) if they differ.
+
+## Flash the firmware
+
+1. Install libraries in the Arduino IDE Library Manager: **BH1750** (Christopher
+   Laws), **Adafruit PWM Servo Driver Library** and **ArduinoJson** (v7).
+   Or with the IDE's bundled CLI:
+   ```bash
+   "/Applications/Arduino IDE.app/Contents/Resources/app/lib/backend/resources/arduino-cli" lib install ArduinoJson
+   ```
+2. Copy `secrets.h.example` to `secrets.h` (gitignored) next to the sketch and
+   fill in WiFi network, backend URL and token.
+   The ESP32 joins 2.4 GHz WPA2-Personal networks only; campus WPA2-Enterprise
+   networks will not work, so use a phone hotspot.
+3. Open `hardware/esp32/neuroskin_bridge/neuroskin_bridge.ino`, select your ESP32
+   board (verified to compile on esp32 core 3.3.11, generic *ESP32 Dev Module*)
+   and upload.
+4. Open Serial Monitor at 115200 baud. Expect `bh1 0x23: OK`, `bh2 0x23: OK`
+   (software bus), `bh3 0x23: OK`, `bh4 0x5C: OK` and no `PCA9685 FAILED`.
+
+## Run the bridge
+
+1. Generate a token and add it to `backend/.env` (the same value goes in
+   `secrets.h`):
+   ```bash
+   python3 -c "import secrets; print(secrets.token_urlsafe(24))"
+   # backend/.env
+   HARDWARE_TOKEN=<token>
+   ```
+2. Start the backend reachable from the LAN: `make backend HOST=0.0.0.0`
+   (or `make dev HOST=0.0.0.0`). Allow the macOS firewall prompt.
+3. Find the laptop IP with `ipconfig getifaddr en0` and use it in
+   `BACKEND_TICK_URL`.
+4. Open the dashboard on the same laptop. The right rail shows *Live hardware ·
+   ESP32*, reading "waiting for ESP32" until the first tick arrives.
+
+`HOST=0.0.0.0` exposes every API route to the local network, and the token
+travels over plain HTTP. Use a trusted network or hotspot. Run the bridge with
+`make`, not Docker compose: `/control` accepts only requests from this machine,
+and Docker's port mapping hides the browser's loopback address.
+
+## Contract
+
+| Route | Caller | Auth | Purpose |
+| --- | --- | --- | --- |
+| `POST /api/v1/hardware/tick` | ESP32, every 500 ms | `X-Hardware-Token` (401 wrong, 503 unset) | Report four readings, receive four angles plus each servo's calibration |
+| `GET /api/v1/hardware/status` | Dashboard and `/hardware`, every 1 s | none | Live 2×2 state, online flag, mode, calibration, held angles |
+| `POST /api/v1/hardware/control` | Dashboard and `/hardware` | loopback only (403 otherwise) | Switch `auto` / `twin` / `calibrate`; twin carries four zone angles, calibrate four panel angles |
+| `POST /api/v1/hardware/calibration` | `/hardware` | loopback only (403 otherwise) | Save `servo_at_0` / `servo_at_180` for all four panels |
+
+```bash
+curl -s -X POST localhost:8000/api/v1/hardware/tick \
+  -H 'Content-Type: application/json' -H 'X-Hardware-Token: <token>' \
+  -d '{"seq":1,"panels":{"bh1":{"lux":900,"commanded_angle":30},"bh2":{"lux":100,"commanded_angle":30},"bh3":{"lux":500,"commanded_angle":30},"bh4":{"lux":null,"commanded_angle":30}}}'
+# {"panels":{"bh1":{"angle":35.0,"mode":"auto","reason":"900 lux above 700; shading."},
+#            "bh2":{"angle":25.0,...},"bh3":{"angle":30.0,...},
+#            "bh4":{"angle":30.0,"mode":"fault","reason":"Sensor read failed; holding the commanded angle."}}}
+
+curl -s localhost:8000/api/v1/hardware/status
+
+curl -s -X POST localhost:8000/api/v1/hardware/control -H 'Content-Type: application/json' \
+  -d '{"mode":"twin","angles":{"W13":10,"W14":20,"W9":40,"W10":60}}'
+```
+
+A tick must carry all four panels; `lux: null` reports a failed read. The ESP32
+applies a reply only when all four angles are valid numbers in 0–180° and all four
+calibrations are in 0–180°.
+`commanded_angle` in each tick is the angle the ESP32 actually wrote, so it also
+acknowledges the previous reply.
+
+## Behaviour and faults
+
+| Situation | Behaviour |
+| --- | --- |
+| Lux above 700 / below 300 / inside | Step 5° toward shading / opening / hold, clamped to 0–90° (auto never drives past parallel) |
+| Sensor read fails | That panel reports `fault` and holds its angle; the other three continue. The firmware restarts the sensor on the next tick |
+| Dashboard closed while mirroring, or calibration page closed mid-session | Backend reverts to auto 30 s after the last push |
+| Backend silent for 3 s (stopped, WiFi lost, bad token) | Firmware moves every louvre to `SAFE_ANGLE_DEG` (0°, perpendicular start position) on its own |
+| Any new target | Firmware slews at most 10° per tick to spare linkages and the servo supply |
+| Backend restart | Bridge state resets to auto; the ESP32 continues from its own commanded angles |
+
+## Calibrate actuators
+
+Open http://localhost:3000/hardware (wrench icon in the dashboard nav, or
+*Calibrate →* on the Live hardware card) on the laptop running the backend.
+
+1. **Start calibration.** Every louvre holds its start position (0°) and auto lux
+   control pauses.
+2. For each panel, nudge **Servo at louvre 0° (perpendicular)** (±1 / ±10) until
+   the louvre is perpendicular to the building.
+3. Hold **180°** and nudge **Servo at louvre 180° (perpendicular, flipped)** until
+   the louvre is perpendicular again on the other side. Hold 90° to check it lies
+   parallel to the building.
+4. If the louvre turns the wrong way from 0° toward 90°, press **Swap direction**.
+5. **Finish** returns to auto. Closing the page also returns to auto after 30 s.
+
+Each change is saved to `backend/data/hardware_calibration.json` (reloaded on
+restart) and reaches the ESP32 in the next tick reply. The ESP32 keeps its
+compiled `servoAt0`/`servoAt180` (servo 0°/180°, the SG90's full travel) only
+until the first backend reply after boot. A calibration file saved under an older
+0–60° or 0–90° format is ignored and replaced by these defaults. The `SERVO_MIN`/`SERVO_MAX`
+pulse span is nominal: an SG90 often turns roughly 90–120° across 1000–2000 µs,
+which is why each endpoint is calibrated on the rig.
+
+## Calibration knobs
+
+Firmware (`neuroskin_bridge.ino`):
+
+| Knob | Default | Tune when |
 | --- | --- | --- |
-| Raspberry Pi computer running Raspberry Pi OS | Host FastAPI, hardware process and Cloudflare Tunnel | Required; confirm model and suitable Pi power supply |
-| 4 × BH1750 breakout modules | Measure illuminance in lux independently per panel | The only light sensor type; one behind each panel |
-| 1 × TCA9548A I²C multiplexer breakout | Separate four sensors with identical I²C addresses | Added; use channels 0–3 |
-| 1 × anemometer | Measure shared wind for a safety override | Retained; exact model, output and power requirements pending |
-| 1 × PCA9685 breakout module | Generate four servo PWM signals from I²C commands | Retained; use channels 0–3 |
-| 4 × SG90 positional servos | Move four lightweight panels independently | Verify positional versions and calibrate each linkage's usable travel |
-| Servo power supply | Supply four servos without browning out the Pi | Size for combined peak/stall demand, including simultaneous safety movement; verify wiring and board current capacity |
-| Wires, connectors and louvre mount/linkage | Electrical and mechanical assembly | Required |
-| GL5528 LDR and divider resistor | Previous analog light input | Removed |
-| ADS1115 | Previous LDR ADC | Removed from light sensing; reconsider only if the anemometer requires analog conversion |
+| `servoAt0` / `servoAt180` per panel | 0° / 180° (W13 `bh1` and W10 `bh4`: 180° / 0°) | Boot defaults only; calibrate on `/hardware` instead. W13 and W10 turn the other way from louvre 0°, set on the rig. The backend's `PANEL_CALIBRATION_DEFAULTS` holds the same reversals |
+| `SERVO_MIN` / `SERVO_MAX` | 205 / 410 ticks | Servo endpoints differ |
+| `PCA9685_OSC_HZ` | 25 000 000 | A measured pulse width is off (PCA9685 oscillators run a few percent fast) |
+| `SAFE_ANGLE_DEG` | 0° | A different position is mechanically safer |
+| `MAX_STEP_DEG` | 10° per tick | Supply dips or linkages bind |
+| `TICK_MS`, `HTTP_TIMEOUT_MS`, `BACKEND_TIMEOUT_MS` | 500 / 400 / 3000 ms | Network is slower; logs too noisy |
 
-BH1750 provides digital readings and needs no LDR voltage divider. An anemometer
-with a pulse output may connect through suitable GPIO conditioning; an analog
-model needs an ADC and any required input conditioning; RS485 needs a transceiver.
-Do not finalise wind wiring before obtaining its exact datasheet.
-
-Use 3.3 V-compatible I²C logic/pull-ups for the Pi. Confirm breakout-specific
-power requirements. Connect common grounds and connect the servo supply to the
-PCA9685 servo power input, separately from its logic supply. Do not power the
-servo from a GPIO or the Pi's 3.3 V rail. Verify wiring before applying power.
-
-## Panel mapping and I²C connections
-
-View the physical grid from outside the building:
-
-```text
-+-----------------+-----------------+
-| top_left        | top_right       |
-| BH1750 + SG90   | BH1750 + SG90   |
-+-----------------+-----------------+
-| bottom_left     | bottom_right    |
-| BH1750 + SG90   | BH1750 + SG90   |
-+-----------------+-----------------+
-```
-
-| Panel ID | TCA9548A sensor channel | PCA9685 servo channel |
-| --- | --- | --- |
-| `top_left` | 0 | 0 |
-| `top_right` | 1 | 1 |
-| `bottom_left` | 2 | 2 |
-| `bottom_right` | 3 | 3 |
-
-BH1750 supports only two addresses, `0x23` and `0x5C`, so four sensors cannot all
-share one unsegmented I²C bus. Use one TCA9548A with each BH1750 at `0x23` on a
-separate downstream channel; select only one sensor channel at a time. Connect
-the PCA9685 to the Pi's upstream I²C bus alongside the multiplexer. Verify actual
-board addresses before use. See the [BH1750 address documentation](https://learn.adafruit.com/adafruit-bh1750-ambient-light-sensor?view=all)
-and [multiplexer guide](https://learn.adafruit.com/adafruit-tca9548a-1-to-8-i2c-multiplexer-breakout?view=all).
-
-Label sensor and servo cables with the panel IDs. Mount each sensor behind its
-own panel with consistent orientation and use partitions if needed to reduce
-light spill between panels. Independent control does not guarantee different
-angles: equal readings may correctly produce equal commands.
-
-## Architecture and folder ownership
-
-```text
-4 × BH1750 --> TCA9548A     shared anemometer
-                    \       /
-                     Pi I/O
-        |
-        v
-hardware process on Pi -- localhost HTTP --> FastAPI on the same Pi
-        ^                                    |
-        +--------- returned decision --------+
-        |
-        v
-     PCA9685 channels 0–3 --> 4 × SG90 --> 4 panels --> local lux feedback
-
-Remote frontend <--> Cloudflare Tunnel <--> FastAPI live status API
-```
-
-Keep Pi-specific I/O in a top-level `hardware/` folder. Keep the live decision
-policy and API in `backend/`; display measured status in `frontend/`.
-
-Proposed files to create when implementing:
-
-```text
-hardware/
-  README.md             # This plan, later expanded with verified setup steps
-  main.py               # Read sensors, exchange localhost messages, drive servo
-  requirements.txt      # Pi driver dependencies only
-backend/app/
-  hardware.py           # Live routes, validated data models and small lux policy
-```
-
-Register the live routes in the existing `backend/app/main.py`. Use existing
-FastAPI/Pydantic and logging patterns. Start with one hardware process owning all
-I²C/PWM writes and one backend worker owning live state. No MQTT broker, database
-or separate microcontroller is needed for this demonstrator. Add a bounded
-timeout to every local API call; do not let a failed call block fallback handling.
-
-The existing `/api/v1/simulations/run` endpoint generates a simulated day. It is
-not a live control endpoint. `backend/app/domain/controller.py:run_tick` expects
-environment/irradiance inputs and uses simulation tick timing; do not feed it lux
-as W/m² or replay its outputs as physical servo commands.
-
-## Local control and API plan
-
-1. Start the hardware process in a calibrated safe state. Require valid readings
-   and a healthy backend before enabling automatic light control.
-2. Read each BH1750 through its mux channel and read shared wind. Record per-panel
-   validity and acquisition timestamps plus a batch sequence. Use a monotonic
-   clock for timeouts and elapsed durations; sensor reads are not simultaneous.
-3. Send one batch to proposed `POST /api/v1/hardware/tick` over localhost: a
-   `panels` mapping keyed by the four panel IDs, plus shared wind and its freshness.
-   Include explicit invalid status for failed reads rather than omitting a panel.
-4. The backend validates the batch and returns the matching sequence, command ID
-   and four panel decisions, each with bounded target angle, mode and reason.
-   Reject unknown/missing panel IDs; never map commands by array order alone.
-5. The hardware process validates the response, rejects expired/mismatched
-   commands, applies each panel's calibrated travel limits and writes its mapped
-   PCA9685 channel. A response must cover all four known IDs before applying it.
-6. Send a command acknowledgement to proposed
-   `POST /api/v1/hardware/ack`, reporting successful PWM write or an error per
-   panel. Sequential writes are not atomic; report partial success accurately.
-7. The frontend polls proposed `GET /api/v1/hardware/status`, initially once per
-   second. Label this view as live hardware and show stale/unavailable status.
-
-Start with a configurable 500 ms control interval, subject to the BH1750 mode and
-anemometer measurement window. This is a starting setting, not a verified latency
-claim. Budget for all four sensor reads and servo writes; use continuous sensor
-measurement where supported and measure the full cycle duration. Wind pulse
-counting may need to accumulate across several control cycles.
-
-Status should expose a 2×2 panel mapping with each panel's measured lux, sample age,
-target angle, last successfully commanded angle, acknowledgement, mode, reason
-and errors, plus shared wind speed/freshness. The SG90 provides no external position measurement: call the angle
-"commanded", not "measured". Missing/stale wind must never become zero wind.
-
-For the first demo, apply the same small lux policy separately to each panel,
-retaining independent angle, recovery and movement-timing state. Do not average
-the four lux readings into one facade-wide light command.
-Use a configurable lux band with hysteresis: incrementally
-open below the lower boundary, close above the upper boundary, and hold inside
-the band. Calibrate which servo direction opens the actual linkage. Allow sensor
-and mechanical settling between movements, bound the movement rate using actual
-elapsed time, and avoid repeatedly commanding negligible changes.
-
-Wind above the configured threshold overrides light control and selects the
-mechanically validated safe position for all four panels. Require a lower release threshold and a
-stable recovery period to avoid oscillating around the wind threshold. Treat
-stale/failed BH1750 readings as a fault for the affected panel; healthy panels
-continue independently when the bus remains usable. Shared wind failure, a bus
-failure or a local API timeout faults all four panels: the hardware process
-attempts their configured safe positions while power and I²C remain usable.
-Do not allow normal light control to overwrite an active fault.
-
-Keep calibration settings for lux thresholds, wind conversion/thresholds, sample
-freshness, API timeout, recovery delay, servo pulse endpoints, angle limits,
-direction, safe angle and movement rate. Store servo calibration and any lux-band
-overrides per panel; keep wind settings shared. Reject invalid configuration and
-duplicate sensor/servo channel assignments at startup.
-
-## Hosting and tunnel
-
-- Run the backend, hardware process and `cloudflared` as supervised services on
-  the Pi, with restart handling and logs. Start the backend before hardware, but
-  still handle backend outages during operation.
-- Bind the backend to loopback and point the tunnel to its local port. Configure
-  the frontend to use the public HTTPS API hostname.
-- Permit the actual frontend origin in backend CORS; the current application
-  allows only localhost origins. CORS is not authentication.
-- Authenticate remote access. Keep tick/ack routes accessible only to the local
-  hardware process, using a local credential and excluding them from public
-  tunnel routing. Do not embed that credential in frontend code.
-- Start with remote monitoring only. If manual remote movement is later added,
-  require authorization, bounded commands and expiry; local safety takes priority.
-- Keep full-day simulation jobs out of the active demo workload until load tests
-  show they do not compromise local response time.
-
-Tunnel loss should affect remote visibility only. Backend or hardware-process
-failure is a different fault. Linux and this prototype do not provide hard
-real-time guarantees; a crashed process or power loss cannot be assumed to park
-the servo. Automatic parking without power needs additional mechanical or backup
-power provisions and is outside this initial proof.
-
-## Implementation sequence
-
-1. **Confirm and assemble:** identify Pi/breakout/anemometer models; verify voltage
-   compatibility; build the lightweight linkage; document wiring and calibration.
-2. **Check devices locally:** read real lux, check wind conversion and move the
-   four unloaded servos within conservative limits before attaching linkages.
-   Verify each sensor/servo mapping individually, then test simultaneous movement
-   for supply dips, Pi resets and I²C errors.
-3. **Connect backend control:** implement the local tick/ack/status contract and
-   lux policy, then connect the hardware process and fault handling.
-4. **Connect the frontend:** add a live hardware view and authenticated tunnel
-   access, clearly separating live measurements from simulation results.
-5. **Capture validation:** run the checks below and retain logs plus a short video
-   in a dated validation record. Record failures as well as successes.
+Backend (`backend/app/hardware.py`): `LUX_LOW`/`LUX_HIGH` (300/700, the twin's
+comfort band), `STEP_DEG` (5°), `HOLD_TTL_S` (30 s), `OFFLINE_AFTER_S` (3 s) and
+`PANEL_ZONES`. Widen the band or reduce the step if a panel chatters at the band
+edges under a strong lamp.
 
 ## Validation and acceptance
 
 | Check | Required evidence |
 | --- | --- |
-| Light sensing | Shade/illuminate each BH1750 in turn; the matching panel's real lux and timestamp appear in backend and the 2×2 frontend view |
+| Light sensing | Shade/illuminate each BH1750 in turn; the matching panel's real lux appears in `/status` and the dashboard 2×2 card |
 | Independent control | Illuminate one panel while other readings stay stable; only its mapped servo responds to that light change; repeat for all four |
-| Physical response | Cross both lux boundaries; backend decisions and command IDs correspond to visible opening/closing |
-| Feedback | With lamp position fixed, louvre movement changes the lux behind it; control settles or reports an unreachable band at its travel limit |
-| Wind override | Apply airflow; shared wind triggers all four safe angles, without power brownouts, and recovery does not chatter |
-| Network independence | Close the frontend and disconnect internet; repeat local light/wind tests successfully |
-| Sensor/API failure | Disconnect one BH1750: its panel faults while healthy panels continue if the bus works; stop backend or fail shared wind: all panels attempt fallback within the configured timeout |
-| Restart | Restart services; reject stale commands and require healthy readings before automatic operation resumes |
-| Access control | Unauthenticated remote requests and public tick/ack submissions are rejected |
-| Latency | Record sample-ready → decision → PWM-write durations on the Pi, including median, p95 and maximum; measure physical travel separately by video |
+| Physical response | Cross both lux boundaries; backend reasons correspond to visible opening/closing |
+| Feedback | With lamp position fixed, louvre movement changes the lux behind it; control settles or holds at its travel limit |
+| Twin mirroring | Scrub the timeline in *Mirror twin*; servos follow the W13/W14/W9/W10 angles shown in the Floor lens zone matrix |
+| Wind override | Not applicable: no anemometer is wired |
+| Network independence | Close the dashboard: auto control continues; stop the backend: louvres reach the safe angle within 3 s plus travel time |
+| Sensor/API failure | Disconnect one BH1750: its panel faults while healthy panels continue; reconnect it: readings resume |
+| Restart | Reset the ESP32 or restart the backend: louvres start at the safe angle and resume without stale commands |
+| Access control | `/tick` without the token → 401; `/control` from another LAN host → 403 |
+| Latency | ESP32 tick round trip from Serial timestamps (median, p95, maximum); physical travel measured separately by video |
 
 Capture at least 30 light-triggered transitions per panel for the latency report,
 including mixed four-panel activity. Record per-panel latency and complete batch
@@ -265,32 +269,30 @@ sample and the sensor's acquisition time. Repeat timing under expected dashboard
 traffic. Select the acceptance target before measurement and report the actual
 result; do not claim zero latency.
 
-During implementation, add one focused backend test module covering lux-band
-behaviour, panel isolation/mapping, shared wind priority, invalid/stale data and
-per-panel command limits, using existing
-pytest support. Exercise physical fallback and timing on the Pi; software tests
+`backend/tests/test_hardware.py` covers lux-band behaviour, panel isolation and
+mapping, twin expiry, invalid data and access control;
+`frontend/src/components/neuroskin/LiveHardwarePanel.test.tsx` covers the card
+and twin push. Exercise physical fallback and timing on the rig; software tests
 alone cannot establish those results.
 
 ## What this demonstration establishes
 
-The scope is measured light/wind → local backend decision → physical movement,
-with remote monitoring and independence from internet availability.
+The scope is measured light → backend decision on the local network → physical
+movement, plus mirroring of the twin's zone angles, with automatic fallback when
+the backend is unreachable.
 
 Each BH1750 measures illuminance, not solar irradiance or heat flow. Four sensors
 in different zones are not redundant references for one another. This setup cannot
 independently validate the simulated irradiance lie detector, detect every
 plausible stuck reading, establish cooling-energy savings, or prove full-scale
-facade reliability. No rain or temperature measurement is included. Keep those
-claims and any modelled inputs explicitly separate from the hardware results.
+facade reliability. No wind, rain or temperature measurement is included. Keep
+those claims and any modelled inputs explicitly separate from the hardware results.
 
 ## Reference documentation
 
+- [ESP32 Arduino core documentation](https://docs.espressif.com/projects/arduino-esp32/en/latest/)
+- [ArduinoJson v7 documentation](https://arduinojson.org/v7/)
+- [BH1750 Arduino library](https://github.com/claws/BH1750)
 - [BH1750 guide](https://learn.adafruit.com/adafruit-bh1750-ambient-light-sensor?view=all)
-- [TCA9548A multiplexer guide](https://learn.adafruit.com/adafruit-tca9548a-1-to-8-i2c-multiplexer-breakout?view=all)
-- [PCA9685 with Raspberry Pi/Python](https://learn.adafruit.com/16-channel-pwm-servo-driver/python-circuitpython)
+- [Adafruit PWM Servo Driver library](https://github.com/adafruit/Adafruit-PWM-Servo-Driver-Library)
 - [PCA9685 wiring and servo power](https://learn.adafruit.com/16-channel-pwm-servo-driver/hooking-it-up)
-- [Raspberry Pi hardware documentation](https://www.raspberrypi.com/documentation/computers/raspberry-pi.html)
-- [Cloudflare Tunnel documentation](https://developers.cloudflare.com/tunnel/)
-
-Resolve the exact anemometer and purchased module specifications before turning
-this plan into a pin-by-pin wiring guide.

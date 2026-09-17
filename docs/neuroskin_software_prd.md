@@ -3,14 +3,22 @@
 | Field            | Value                                                                                     |
 | ---------------- | ----------------------------------------------------------------------------------------- |
 | Document         | Current-state product requirements and technical baseline                                 |
-| Version          | **0.4** — supersedes v0.3                                                                 |
-| Code snapshot    | `main` at `324670a` (10 September 2026)                                                   |
+| Version          | **0.5** — supersedes v0.4                                                                 |
+| Code snapshot    | `feat/roof-solar-irradiance-heatmap` at `ac942da` (13 September 2026)                       |
 | Audited          | 13 September 2026                                                                         |
 | Status           | Demo-ready simulation proof; **not** a production building-control system                 |
 | Target building  | ST Diamond Building, Energy Commission HQ, Putrajaya                                      |
 | Product surfaces | Product overview, adaptive-facade digital twin, predictive radiant-slab planner, JSON API |
 
 > This document describes the repository as it exists at the audited commit. "Built" means implemented and locally verified in software; it does not mean commissioned against a real building, connected to plant, or validated for energy savings.
+
+## Changes since v0.4
+
+- **Daylight surrogates implemented:** separate Extra Trees models estimate task-plane Et and eye-plane Ev from an independent radiosity oracle. The executed notebook, split design, baselines, transfer results and evaluation history are documented in §14.3.
+- **Observe-only display shipped:** the Floor lens colours registered seat/desk probes; the Brains lens presents the fixed oracle comparison. Et/Ev do not change controller decisions, and the feature defaults off (§6.7).
+- **Threshold weaknesses quantified:** transfer detects 96.36% of oracle eye-cap exceedances; 358 exceedances are missed. Predicted Et in-band precision is 79.60%. These results limit the model to demonstration use pending further validation (§14.3.2).
+- **Acceptance evidence refreshed:** 112 backend and 82 frontend tests pass; local browser checks and the serving benchmark are recorded with their scope and limitations (§10). The uncached inference overhead remains above the proposed target.
+- **Product context reconciled:** the snapshot now includes the dashboard lens split, provider observations and the daylight work. Pydantic's declared minimum is 2.12, matching the optional-field serialization used by serving.
 
 ## Changes since v0.3
 
@@ -36,6 +44,11 @@ NeuroSkin is an explainable building-control simulation with two linked proof ap
 2. **Predictive radiant-slab charging** — uses the facade twin's selected 16-zone forecast plus a 1R1C slab model to plan the next night's charge, compare it with a fixed 22:00–06:00 timer, and expose whether that comparison is eligible to be described as a saving.
 
 The browser experience is primarily a judge- and reviewer-facing proof. It makes the controller's inputs, decisions, trade-offs, safety overrides, provenance, and model limits inspectable. The slab page is shaped like an operator tool, but its output is currently a downloaded JSON plan, not a command sent to a plant controller.
+
+The facade proof now includes learned occupant-plane daylight estimates and an independent
+oracle assessment of the shipped controller. The models outperform the tested linear and
+scalar baselines, but threshold errors and uncalibrated room assumptions remain. The release
+keeps them observe-only; measured comfort and control improvements remain unproven (§14.3).
 
 ## 2. Product problem and value
 
@@ -81,6 +94,7 @@ The Building lens provides a manager-shaped evaluation view over simulated data.
 - **G5 — Honest comparison:** NeuroSkin and the naive facade baseline share the same environmental realization and wall geometry.
 - **G6 — Honest slab claims:** modelled schedule output is separated from proof that the incumbent baseline is fixed and from field-validated savings.
 - **G7 — Graceful weather fallback:** upstream weather failure completes with a labelled synthetic fallback instead of failing the run.
+- **G8 — Occupant-plane evidence:** expose optional Et/Ev observations, score existing controller decisions independently with the oracle, and disclose generalisation and threshold errors alongside the model's scope.
 
 > **G1 and G7 are surfaced in the browser.** The provenance strip renders the complete `data_notice`, `load_unit`, synthetic seed, provider/dataset, fetch time in the run timezone, and an amber fallback reason. The Brains lens renders `tick.cost_breakdown` and the target-to-final angle delta.
 
@@ -99,6 +113,9 @@ The Building lens provides a manager-shaped evaluation view over simulated data.
   never measured occupant comfort. The 1000 lux Ev cap is an illustrative screening
   threshold; exceeding it is not a diagnosis of discomfort. See the reproducible
   [daylight experiment](appendix/daylight-blindness-results.md).
+- Surrogate MAE and R² measure agreement with the local oracle. They do not establish
+  measured comfort, reliable threshold decisions or suitability for autonomous control.
+  The three identical seed-42 runs establish reproducibility, not independent validation.
 
 ### 4.3 Non-goals in the current release
 
@@ -106,10 +123,12 @@ The Building lens provides a manager-shaped evaluation view over simulated data.
 - Database, run history, user accounts, permissions, audit trail, sharing, or multi-tenancy.
 - Learned facade-load model or field-validated ML accuracy claims. The offline
   daylight surrogate pipeline and optional observe-only display are an explicit exception: they learn room Et/Ev
-  from an illustrative radiosity oracle and reports only oracle-prediction errors.
+  from an illustrative radiosity oracle and report only oracle-prediction errors.
 - Full building-energy simulation, CFD, hydronic plant modelling, or financial/carbon analysis.
 - Production deployment controls such as TLS, rate limits, job queues, autoscaling, secrets management, or disaster recovery.
 - Field validation of actuator timing, sensor calibration, condensation risk, mechanical safety, comfort, or energy savings.
+
+> The ESP32 hardware bridge (`hardware/README.md`) is an explicit, demo-scale exception to the first bullet: four BH1750 readings and four servo commands over local WiFi, with no field-validation, safety-certification or energy claims.
 
 > The planned AFC workstream (§14.2) requires a correction ledger and therefore **contradicts the no-database non-goal above.** That contradiction is deliberate and scoped: rollback cannot restore a state that was never stored. If §14.2 ships, this bullet must be amended to "no database beyond AFC correction episodes" rather than silently left standing.
 
@@ -226,7 +245,7 @@ C(θ) = wT·L(θ) + wL·P(lux(θ))²
 
 | Method and path                | Requirement                                                                             |
 | ------------------------------ | --------------------------------------------------------------------------------------- |
-| `GET /api/v1/health`           | Return liveness, service name, and deterministic model label. **Currently a static dict — it performs no dependency probe and returns `ok` while every upstream is unreachable.** |
+| `GET /api/v1/health`           | Return liveness, service/model labels, and each provider's configuration, last observed status and last success. Performs no outbound probe; `ok` is backend liveness, not proof of current upstream availability. |
 | `GET /api/v1/config`           | Return default site, geometry, simulation limits, weather sources, and scenario titles. |
 | `POST /api/v1/simulations/run` | Validate the request and return the complete facade scenario payload.                   |
 | `POST /api/v1/slab/plan`       | Validate the request and return the complete predictive slab plan.                      |
@@ -235,6 +254,14 @@ C(θ) = wT·L(θ) + wL·P(lux(θ))²
 Every normally handled response, including validation responses, includes a sanitized or generated `X-Request-ID`; unhandled failures are logged with the ID, but the outer 500 response may not carry it. Application logs are JSON lines and include request timing plus scenario- or slab-specific completion fields.
 
 **`LOG_FIELDS` in `backend/app/logging_config.py:7` is an allowlist.** Structured fields absent from that tuple never reach log output. Any new observability field must be added there or it is silently dropped.
+
+### 6.7 Occupant-plane daylight observations
+
+- **FR-D1:** `daylight_model_enabled` defaults to false. Enabling it adds modelled per-probe Et/Ev and zone summaries without changing the objective, exterior glare screen, safety rules or actuator decisions. Disabled responses preserve the pre-change bytes.
+- **FR-D2:** Serve only the evaluated Putrajaya location, 115° facade geometry and artifact-approved orientations. Missing, unreadable or incompatible artifacts, or a missing inference dependency, leave estimates unavailable. No unavailable value becomes zero.
+- **FR-D3:** The Floor lens shows numerical readings, chair Ev colours, desk Et colours and the selected-side/floor-group over-cap count. Colour saturation never clamps the reported number. Low-sun/night probes are grey; missing models hide the readings and show an unavailable message. Geometry remains labelled illustrative.
+- **FR-D4:** The Brains comparison uses the fixed 12-day oracle experiment, with its seed, sample scope and denominators. It does not substitute surrogate estimates or imply that an Ev-aware controller has been tested.
+- **FR-D5:** Preserve reproducible offline training, the executed notebook, append-only evaluation ledger and shared generation/serving feature contract. Record latency and interpolation sensitivity; the unmet uncached inference target remains a documented limitation (§14.3).
 
 ## 7. Inputs, outputs, and success metrics
 
@@ -282,10 +309,17 @@ Synthetic / MET / Open-Meteo          Roboflow sky segmentation
             │
             ├──► 4 wall + 64 zone controllers ──► scenario API ──► 3D dashboard
             │
+            ├──► optional cached Et/Ev predictions ──► observe-only probe payload
+            │
             └──► selected facade's 16 zones ──► 1R1C slab planner
                                                     │
                                                     └──► slab API ──► planner UI / JSON
 ```
+
+Offline daylight development follows louvre optics + room oracle → Parquet samples →
+grouped training/evaluation → local model artifacts, notebook and ledger. Training never
+runs in the request path. The controller-blindness experiment separately scores achieved
+angles with the oracle; it does not consume surrogate predictions (§14.3).
 
 ### 8.2 Installed stack
 
@@ -316,7 +350,7 @@ Versions are what is installed at this audit, not the declared semver range. "Av
 | python | `>=3.10` | **3.13.9** | — | Declaration understates the runtime by three minors |
 | fastapi | `>=0.115,<1` | **0.141.1** | 0.141.1 | Current |
 | starlette | transitive | **1.6.0** | — | Past 1.0 |
-| pydantic | `>=2.8,<3` | **2.13.4** | 2.13.5 | Current |
+| pydantic | `>=2.12,<3` | **2.13.4** | 2.13.5 | Minimum supports omission of unavailable daylight fields via `exclude_if` |
 | uvicorn[standard] | `>=0.30,<1` | **0.52.1** | 0.52.4 | Current |
 | numpy | `>=1.26,<3` | **2.5.2** | 2.5.3 | Current |
 | pandas | `>=2.2,<3` | **2.3.3** | 3.0.5 | One major behind; the `<3` pin is deliberate |
@@ -384,8 +418,8 @@ LangGraph reaching a stable 1.x materially reduces the API-drift risk previously
 | Health checking           | Observed status: fast `/api/v1/health` reports configuration, last status and last success for Roboflow, Open-Meteo and MET; unknown before use and reset on process restart.                                                                                                                                 |
 | Error recovery            | Basic: component-level loading/error/retry and WebGL fallback; no offline mode or route-level error boundaries.                                                                                                    |
 | Accessibility             | Partial: semantic regions, labels, focus rings, native controls, reduced motion, and surface table; zone selection, orbiting, rail resize, and chart interpretation are not fully keyboard/non-visual equivalents. |
-| Responsive UI             | Implemented through stacked layouts below desktop and fixed multi-column dashboard at `xl`; not browser-E2E verified.                                                                                              |
-| Performance               | No target or load test. Default scenario responses contain 9,216 zone-tick records plus wall/roof data and are processed synchronously.                                                                             |
+| Responsive UI             | Stacked layouts below desktop and fixed multi-column dashboard at `xl`; local daylight checks found no horizontal overflow at 1000 px, without establishing full responsive coverage.                                                                                              |
+| Performance               | Synchronous 9,216-zone-tick responses. Daylight benchmark: 1.93 s off, 7.23 s with uncached 5° curves, 2.30 s cached; first model load adds 3.03 s. The proposed ~1 s added latency is unmet; no concurrent load test (§14.3). |
 | Production security       | Not met: no auth, authorization, rate limiting, configurable production CORS, TLS termination, or security test suite. CORS is hard-coded to `localhost:3000`.                                                      |
 | Deployment readiness      | Local only: images and Compose build, but no health-gated startup, restart policy, locked backend image install, non-root runtime, or production manifest.                                                          |
 
@@ -404,19 +438,30 @@ LangGraph reaching a stable 1.x materially reduces the API-drift risk previously
 | AC9 — baseline honesty gate                     | Met: no/short/fixed/compensated logs are distinguished and only fixed schedules allow the comparison flag.                                                                                                                                                                                             |
 | AC10 — browser workflow                         | Partially met: component tests cover landing routing, dashboard loading/error/retry, tier order/storage/playback, chart reveal, geometry helpers, solar exposure, cloud canopy, building comparison, zone sensors, controller calibration, slab grid, draft controls, and claim logic. Full slab auto-fetch, response rendering, API failure, charts, and JSON export are not component-tested. |
 | AC11 — cloud vision                             | Met for mask decode, confidence union, overlap counting, freshness expiry, and controller hand-off. Coverage accuracy against calibrated sky measurement is untested and out of scope.                                                                                                                 |
+| AC12 — daylight model evidence                  | Met within the synthetic oracle scope: physical invariants, feature parity, linear/scalar baselines, structural holdout, untouched orientation transfer and three reproducible training runs. Threshold errors remain material (§14.3). |
+| AC13 — daylight display and fallback            | Met locally: optional Floor readings/colours and Brains oracle table; unchanged legacy response values, repeatability in both flag states, null night values and missing-model fallback. No control or field-validation claim. |
 
-**Verification run on 13 September 2026** (commit `324670a` plus the `GuidedTour` deletion):
+**Verification for the daylight/dashboard delivery on 13 September 2026** (implementation
+through `c3618d6`; documentation checkpoint `ac942da`). These are completed checks from
+that delivery and batch-commit verification, not a new full-suite run for this PRD edit.
 
 | Check                                         | Result                                                          |
 | --------------------------------------------- | --------------------------------------------------------------- |
-| Backend tests                                 | **100 passed** across 8 files, 49.25 s                          |
-| Backend Ruff                                  | Passed (`E,F,I,UP`, line length 100)                            |
-| Frontend tests                                | **67 passed** across 12 files, 13.14 s                          |
-| Frontend ESLint                               | Passed                                                          |
+| Backend tests                                 | **112 passed** across 9 files                                  |
+| Backend Ruff                                  | Passed across app, tests, scripts and notebook (`E,F,I,UP`)    |
+| Frontend tests                                | **82 passed** across 16 files; affected tests rechecked after final UI edits |
+| Frontend ESLint                               | Earlier v0.4 audit passed; no new whole-tree ESLint result claimed for this delivery |
 | Next.js production build and TypeScript check | Passed; `/`, `/dashboard`, `/slab` prerendered as static        |
-| `globals.css` brace balance                   | Depth 0 after the `.tour-*` deletion                            |
+| Local Chromium / WebGL checks                 | Seat count matches API (43/70 west seats); selected floor, night, Brains and real missing-model response checked; no page errors or overflow at 1000 px |
+| Training reproducibility                     | Three clean-kernel runs; 21 ledger evaluations with identical metrics, parameters and dataset fingerprint |
+| Serving parity and latency                   | Real artifacts; off/on legacy-field parity, identical repeats, missing-model fallback and 1°/5° timing/interpolation comparison |
 
-No coverage threshold is configured. There is no browser E2E, real-WebGL visual, live-provider contract, container-startup, load, accessibility-audit, security, hardware, or field-calibration suite. Frontend component tests emit expected jsdom WebGL and Recharts layout warnings because the test runtime has no WebGL canvas or real layout dimensions. Appendix A is a static evidence artifact; no executable regeneration or snapshot check ties its exact values to current code.
+No coverage threshold is configured. The local browser/WebGL checks above are not a
+checked-in continuous browser suite. Live-provider contract, container-startup, concurrent
+load, accessibility-audit, security, hardware and field-calibration suites remain absent.
+Frontend component tests emit expected jsdom WebGL and Recharts layout warnings. Appendix A
+defaults remain manually maintained; the daylight reports have executable generation paths
+and the bundled oracle comparison is checked against its source JSON.
 
 ## 11. Known gaps and risks
 
@@ -429,10 +474,12 @@ No coverage threshold is configured. There is no browser E2E, real-WebGL visual,
 - **Simplified slab scope:** the selected facade's 16 zones represent the configured 12,000 m² floor area. Other facades, roof/conduction, detailed ventilation and latent loads, pumps, hydronics, tariffs, and measured humidity are omitted.
 - **Safety is uncommissioned:** combined power loss and critical wind resolves to the 60° power-loss state because power loss has precedence. The physically safe state and passive mechanism require engineering validation.
 - **No production trust boundary:** there is no identity, role, audit, rate, tenancy, persistence, or deployment security layer.
-- **Health check cannot detect an outage:** `/api/v1/health` returns `ok` unconditionally, so no orchestrator or reviewer can distinguish a healthy backend from one whose every upstream is dead.
+- **Health is observational, not an active readiness probe:** `/api/v1/health` includes provider outcomes and last success, but top-level `ok` only reports backend liveness. Observations can be stale and reset on restart.
 
 ### 11.2 Priority 1 — affects correctness or evidence integrity
 
+- **Surrogate threshold errors:** the direct-model transfer check misses 358/9,848 oracle Ev exceedances; one missed value is 2,264.89 lux. Only 79.60% of predicted Et in-band rows are actually in band. These errors block treating the display as a comfort guarantee or using aggregate MAE as the sole control-readiness gate (§14.3.2).
+- **Limited surrogate validation:** one synthetic site/room configuration, seed 42 and three transfer days do not establish performance under measured conditions or changed geometry. Inference adds 5.29 s uncached after coarsening; model files total about 316 MiB compressed (§14.3).
 - **Provenance disclosure resolved by §14.1:** the shared strip and Brains objective panel now render all five formerly omitted fields; fallback is visually distinct and its notice is preserved verbatim.
 - **Mixed-run dashboard state:** rerunning the focused scenario after changing settings does not invalidate stored results for the other tiers, so visible comparisons can combine different inputs.
 - **Non-Malaysia chart time:** chart labels are hard-coded to `Asia/Kuala_Lumpur` even when another site/timezone is selected; the stage inspector uses the requested timezone correctly.
@@ -467,6 +514,8 @@ No coverage threshold is configured. There is no browser E2E, real-WebGL visual,
 | Readiness level                      | Status                                                                                                   |
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------- |
 | Local software demonstration         | **Ready** at this snapshot                                                                               |
+| Daylight observation demo            | **Ready with caveats** within the evaluated synthetic geometry; keep the flag opt-in and decisions unchanged |
+| Daylight-driven controller          | **Not validated**; threshold, independent-physics and controller-intervention checks remain open (§14.3.4) |
 | Controlled pilot preparation         | **Not ready** until measured inputs, calibration, safety design, and integration requirements are agreed |
 | Live building operation              | **Not ready**                                                                                            |
 | Measured energy/carbon/payback claim | **Not supported**                                                                                        |
@@ -497,10 +546,13 @@ The next product decisions, before more feature work, are:
 | Zone inspection            | `ZoneSensorPanel.tsx`, `louvreAssembly.ts`                                                    | `ZoneSensorPanel.test.tsx`, `louvreAssembly.test.ts`               |
 | Slab UI                    | `PredictiveSlab.tsx`                                                                          | `PredictiveSlab.zones.test.ts`                                     |
 | Current synthetic evidence | `docs/appendix/neuroskin-synthetic-results.md`                                                | Seeded requests and audit dataset in `docs/appendix/`              |
+| Daylight oracle and training | `backend/app/domain/daylight/`, `backend/scripts/generate_daylight_dataset.py`, `backend/notebooks/daylight_surrogate_training.ipynb` | `backend/tests/test_daylight.py`, `docs/appendix/daylight-training-results.md`, `daylight-runs.jsonl` |
+| Daylight observations and evidence | `DaylightPanel.tsx`, `bandPlan.ts`, `backend/scripts/ablation_glare_blindness.py`, `backend/scripts/benchmark_daylight.py` | `DaylightPanel.test.tsx`, API parity checks, `docs/appendix/daylight-threshold-results.json` and serving/oracle reports |
 
-## 14. Dashboard implementation and planned AFC workstream
+## 14. Implemented model development and planned AFC workstream
 
-The dashboard lens split (§14.1) is implemented in the current worktree. The AFC workstream (§14.2) remains planned and unbuilt.
+The dashboard lens split (§14.1) and daylight surrogate development (§14.3) are implemented
+at this snapshot. The AFC workstream (§14.2) remains planned and unbuilt.
 
 ### 14.1 Dashboard lens split and provenance disclosure
 
@@ -525,6 +577,139 @@ Consequences for this document if it ships:
 - G2 reproducibility must be re-verified after every AFC task — the AFC path must not perturb the deterministic simulation.
 
 `inject_sensor_fault()` (`environment.py:218`) plus G2 determinism provides reproducible labelled fault ground truth, which a real-building AFC study cannot offer. That is the strongest methodological asset available for this workstream.
+
+### 14.3 Daylight surrogate development and assessment — implemented
+
+Plan: [daylight surrogate and impact demo](../.claude/PRPs/plans/daylight-surrogate-and-impact-demo.plan.md).
+The current product decision is to retain Extra Trees for the optional observe-only demo.
+The training result is a promising approximation of the oracle; the threshold and physical
+validation results do not yet support using it to drive the controller.
+
+#### 14.3.1 Training design and generalisation
+
+The independent empty-room radiosity oracle uses existing louvre optics as its boundary
+condition. Its multi-bounce interior calculation produces Et and Ev targets; it does not
+learn labels from the incumbent lux scalar. Furniture positions identify probes but
+furniture occlusion is absent. Room/material assumptions remain those in Appendix A.
+
+The full dataset contains 192,829 probe/day/tick/angle rows: 12 training-pool days on west
+and south, plus three east/north transfer days. Features encode facade-relative direction,
+local probe geometry, incident flux and optical transmission, without absolute compass
+azimuth. The two target models use Extra Trees, selected against Random Forest and linear
+regression; the existing scalar is also scored for Et.
+
+Five-fold tuning groups by training day. The structural holdout contains both unseen days
+and unseen zones; cross-strata are excluded and counted. Model-family selection uses its
+MAE, so this holdout is a validation set. East/north transfer never enters fitting or model
+selection. Reported values below are mean absolute prediction errors against the oracle,
+in lux; they are not percentage accuracy or measured room errors.
+
+| Selected model | Shuffled MAE | Unseen-day/zone MAE | East/north transfer MAE |
+| --- | ---: | ---: | ---: |
+| Ev — Extra Trees | 18.13 | 106.98 | 141.35 |
+| Et — Extra Trees | 28.57 | 105.89 | 94.60 |
+
+The linear holdout errors are 563.62 lux Ev and 442.78 lux Et. Extra Trees improves those
+errors by 81.02% and 76.08%, respectively. The incumbent Et scalar has 1,131.56 lux holdout
+MAE, reduced by 90.64%. Extra Trees is the best of the tested candidates, not proof of a
+universally optimal model. Full comparisons, R², MSE and sample counts are in the
+[training report](appendix/daylight-training-results.md).
+
+The shuffled-to-structural error increase is 5.90× for Ev and 3.71× for Et; the harder
+results are the meaningful generalisation headline. Both targets pass the preregistered
+transfer tolerance of `1.5 × holdout MAE + 50 lux`, supporting the four-orientation scope
+within this synthetic configuration. Passing that tolerance is not a control-safety gate.
+
+The [executed notebook](../backend/notebooks/daylight_surrogate_training.ipynb) and
+[append-only ledger](appendix/daylight-runs.jsonl) contain three clean-kernel seed-42 runs,
+with seven target/model evaluations per run and matching metrics, parameters and dataset
+fingerprint. These repetitions demonstrate reproducibility; they do not add independent
+validation days, sites or split seeds. The diagnostic plots preserve heavy-tail errors.
+
+#### 14.3.2 Threshold assessment and remaining model weaknesses
+
+The [threshold evidence](appendix/daylight-threshold-results.json) records a post-training
+assessment of the saved models applied directly to the held-out feature rows, with no
+refitting or threshold adjustment. The transfer dates are 20 March, 21 June and 21 December
+2026. Each observation is a probe/time/angle sample; correlated angle samples are not
+independent occupants or occupied hours. Ev evaluates seats only. Et evaluates horizontal
+work-plane estimates at both seat and desk probe positions.
+
+| Diagnostic | Structural validation | East/north transfer |
+| --- | ---: | ---: |
+| Ev evaluated rows | 6,656 | 30,030 |
+| Ev exceedance recall — fraction of oracle Ev > 1000 detected | 98.10% | 96.36% |
+| Missed Ev exceedances / oracle exceedances | 37 / 1,952 | 358 / 9,848 |
+| Ev exceedance precision — fraction of predicted exceedances confirmed | 97.26% | 91.14% |
+| Highest oracle Ev among missed exceedances | 1,096.69 lux | 2,264.89 lux |
+| Et evaluated rows | 8,320 | 39,039 |
+| Et in-band precision — fraction of predicted [300, 500] confirmed | 86.03% | 79.60% |
+| Et in-band recall — fraction of oracle [300, 500] detected | 84.67% | 79.19% |
+
+For transfer, the model misses 3.64% of oracle eye-cap exceedances. The 2,264.89 lux missed
+sample shows that the misses are not confined to values just above the cap. Approximately
+one in five Et predictions labelled in-band is outside the oracle band. Aggregate R² or
+MAE alone therefore cannot establish the reliability of those comfort labels.
+
+Rare numerical errors also remain substantial: structural-validation 95th-percentile
+absolute errors are 398.53 lux Ev and 320.02 lux Et; maxima are 4,437.28 and 7,832.59 lux.
+These are empirical error summaries, not calibrated prediction intervals. The threshold
+assessment excludes runtime interpolation; the separate serving benchmark below measures
+sensitivity to the coarser grid. Neither assessment compares against measured daylight.
+
+#### 14.3.3 Serving, display and independent controller evidence
+
+The optional Floor lens colours each registered chair cushion by Ev and each desk by Et,
+with numeric readings and a per-side/per-floor-group count. Coordinates include nested
+furnishing rotations and match the oracle's facade-local frame. The geometry remains
+labelled illustrative. Night/low-sun ticks (elevation ≤ 8°) have null illuminance and grey
+seats; missing/unreadable/incompatible artifacts or missing scikit-learn hide the overlay
+and show “Daylight model not loaded for this run.”
+Serving is limited to the evaluated Putrajaya site and 115° facade geometry, across all
+four orientations because both transfer checks held. Other geometries remain unscored.
+
+`ComfortState` carries optional per-probe readings plus zone summaries (mean Et, maximum
+seat Ev). New fields are omitted when unavailable so the disabled model preserves the
+pre-change response bytes. The Brains comparison is the fixed 12-day oracle experiment,
+not a live surrogate experiment. Its bundled JSON is regenerated by `make daylight-ablate`.
+No Et/Ev value enters the controller objective, glare screen or movement logic.
+
+The [serving benchmark](appendix/daylight-inference-results.md) measures a 144-tick,
+64-zone run including serialization: about 1.93 s disabled, 7.23 s with uncached 5° curves,
+and 2.30 s with matching cached curves. Initial model load adds about 3.03 s. The requested
+~1 s uncached overhead was not reached after coarsening; the feature remains opt-in.
+Coarsening added Et/Ev MAE 1.91/0.82 lux against 1° predictions, with 6 changed cap
+classifications in 18,200 daylight seat-ticks. Rare errors are larger; this is a demo
+screening model, not a field-calibrated comfort guarantee. The oracle report is unaffected
+by surrogate or interpolation errors. Structured logs include `daylight_model`,
+`ev_exceedance_ticks` and `et_in_band_ticks` (any compliant probe at an occupied tick).
+
+The independent oracle experiment finds any-seat Ev exceedance during 95.04% of eligible
+occupied daylight building ticks for NeuroSkin, versus 94.15% for naive. The corresponding
+seat-hour exceedance is 38.35% versus 14.72%. These denominators differ from the training
+samples above. The [oracle report](appendix/daylight-blindness-results.md) states the
+geometry, seed and population. It identifies a signal missing from the shipped decisions;
+it does not show that adding Ev would prevent those exposures.
+
+#### 14.3.4 Conditions before using daylight predictions for control
+
+The following work is required before changing the current observe-only product decision;
+it is not implemented or validated by this release:
+
+1. Define acceptable missed-exceedance and false-comfort rates before another model or
+   controller comparison. Evaluate Ev near and well above 1,000 lux, Et around both band
+   boundaries, and the deployed continuous-angle prediction path.
+2. Evaluate additional independently held-out days, split seeds and intended operating
+   conditions. Changed room/material geometry or a new site requires new applicability
+   evidence; the current transfer result only tests orientation within the fixed setup.
+3. Validate the oracle against an independent higher-fidelity lighting reference, then
+   calibrate and assess predictions against measured illuminance before any field claim.
+4. Compare an Ev-aware controller with the shipped and naive controllers on identical
+   independent scenarios, including movement/load trade-offs and mechanical safety.
+   Demonstrate that the intervention improves the intended outcome before enabling it.
+5. Reassess memory and uncached latency before enabling the model by default or serving
+   concurrent users. The current compressed artifacts total about 316 MiB and the added
+   latency target remains unmet.
 
 ## Appendix A — Key defaults
 
@@ -574,7 +759,7 @@ These defaults are separate from the incumbent's 300–700 lux band:
 | Luminous efficacy | 110 lm/W, assumed |
 | Oracle | 4 diffuse passes, 4×4 patches per surface |
 
-Training metrics and orientation scope are in
+Training metrics, threshold assessment and control-readiness conditions are in §14.3 and
 [daylight-training-results.md](appendix/daylight-training-results.md). The executed
 notebook and append-only JSONL history record dataset/code fingerprints and seed.
 
@@ -608,31 +793,3 @@ notebook and append-only JSONL history record dataset/code fingerprints and seed
 | Client timeout     |                                                     30 s |
 | Concurrency        |                                  One inference in flight |
 | Credential         |    `ROBOFLOW_API_KEY`, backend only, never `NEXT_PUBLIC_` |
-
-
-### Daylight serving and evidence (13 September 2026)
-
-The optional Floor lens colours each registered chair cushion by Ev and each desk by Et,
-with numeric readings and a per-side/per-floor-group count. Coordinates include nested
-furnishing rotations and match the oracle's facade-local frame. The geometry remains
-labelled illustrative. Night/low-sun ticks (elevation ≤ 8°) have null illuminance and grey
-seats; missing/unreadable/incompatible artifacts or missing scikit-learn hide the overlay
-and show “Daylight model not loaded for this run.”
-Serving is limited to the evaluated Putrajaya site and 115° facade geometry, across all
-four orientations because both transfer checks held. Other geometries remain unscored.
-
-`ComfortState` carries optional per-probe readings plus zone summaries (mean Et, maximum
-seat Ev). New fields are omitted when unavailable so the disabled model preserves the
-pre-change response bytes. The Brains comparison is the fixed 12-day oracle experiment,
-not a live surrogate experiment. Its bundled JSON is regenerated by `make daylight-ablate`.
-No Et/Ev value enters the controller objective, glare screen or movement logic.
-
-The [serving benchmark](appendix/daylight-inference-results.md) measures a 144-tick,
-64-zone run including serialization: about 1.93 s disabled, 7.23 s with uncached 5° curves,
-and 2.30 s with matching cached curves. Initial model load adds about 3.03 s. The requested
-~1 s uncached overhead was not reached after coarsening; the feature remains opt-in.
-Coarsening added Et/Ev MAE 1.91/0.82 lux against 1° predictions, with 6 changed cap
-classifications in 18,200 daylight seat-ticks. Rare errors are larger; this is a demo
-screening model, not a field-calibrated comfort guarantee. The oracle report is unaffected
-by surrogate or interpolation errors. Structured logs include `daylight_model`,
-`ev_exceedance_ticks` and `et_in_band_ticks` (any compliant probe at an occupied tick).
