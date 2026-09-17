@@ -1,4 +1,8 @@
-# NeuroSkin Simulation Proof
+# NeuroSkin Technical Notes
+
+Detailed behaviour notes for the simulation, dashboard and cloud vision. Start with the
+[project README](../README.md); the [as-built PRD](neuroskin_software_prd.md) is the
+requirements record.
 
 ## Target building
 
@@ -126,7 +130,7 @@ as advisory context only and never bypass the controller's local safety inputs.
 - `backend/` — FastAPI, Pydantic, pvlib, NumPy, and pandas.
 - `docs/neuroskin_software_prd.md` — as-built implementation specification (v0.2).
 
-The backend intentionally uses a deterministic, physics-inspired `LoadPredictor`. No learned model, training pipeline, database, or authentication is included. An optional ESP32 bridge (`hardware/README.md`) drives a physical 2×2 louvre rig from live lux or from the twin.
+The backend intentionally uses a deterministic, physics-inspired `LoadPredictor`. The only learned models are the offline, observe-only daylight surrogates; no database or authentication is included. An optional ESP32 bridge (`hardware/README.md`) drives a physical 2×2 louvre rig from live lux or from the twin.
 
 ## Run locally
 
@@ -159,13 +163,6 @@ npm run dev
 ```
 
 Open `http://localhost:3000`.
-
-The first successful run opens an 18-step interactive dashboard tutorial. It
-teaches the scenario tabs, environmental controls, controller weights,
-run/reset workflow, KPIs, charts, lie-detector contradiction, genuine cloud
-gating, co-optimisation comparison, safety events, timeline scrubber, and
-per-tick explanation. Use **Guided tour** in the header to restart it or jump
-directly to any component; event cards move the inspector to their evidence.
 
 Lux compliance is evaluated during occupied ticks with at least 200 W/m² of
 available daylight. Relative cooling load is averaged across every occupied

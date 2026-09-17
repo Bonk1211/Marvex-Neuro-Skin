@@ -1,0 +1,354 @@
+# NeuroSkin
+
+**Explainable adaptive-facade control: a 3D digital twin, a three-tier controller and a
+physical louvre rig, modelled on the ST Diamond Building in Putrajaya, Malaysia.**
+
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![Next.js](https://img.shields.io/badge/Next.js-15-000000?logo=nextdotjs&logoColor=white)
+![three.js](https://img.shields.io/badge/three.js-3D-000000?logo=threedotjs&logoColor=white)
+![ESP32](https://img.shields.io/badge/ESP32-Arduino-E7352C?logo=espressif&logoColor=white)
+
+> **Status:** demo-ready simulation proof. NeuroSkin is **not** a production
+> building-control system. Its energy, comfort and daylight figures are model outputs, not
+> measured results. See [Scope and limitations](#scope-and-limitations).
+
+---
+
+## Contents
+
+- [Overview](#overview)
+- [Key features](#key-features)
+- [Architecture](#architecture)
+- [Getting started](#getting-started)
+- [Using the application](#using-the-application)
+- [API](#api)
+- [Hardware rig](#hardware-rig)
+- [Daylight surrogate pipeline](#daylight-surrogate-pipeline)
+- [Testing](#testing)
+- [Target building](#target-building)
+- [Scope and limitations](#scope-and-limitations)
+- [Documentation](#documentation)
+- [References](#references)
+
+## Overview
+
+Adaptive facades move louvres in response to sun, sky and occupancy. However, they rarely show
+*why* a blade moved, whether the sensor that triggered it could be trusted, or what the move
+cost in daylight and heat. NeuroSkin makes each of those decisions visible.
+
+The backend simulates a full day at 10-minute resolution (144 ticks) across four facades and
+64 independently controlled zones. The frontend replays that day on an interactive 3D model
+of the building. The simulation demonstrates the controller in three tiers:
+
+| Tier | Question it answers | What it demonstrates |
+| --- | --- | --- |
+| **1. Sensor trust** | Can this irradiance reading be believed? | A solar-almanac and cloud cross-check catches a failed sensor before it drives the facade. |
+| **2. Co-optimisation** | What is the best angle right now? | A multi-objective controller balances daylight (300–700 lux), solar heat gain, a glare screen and movement cost. It is compared against a naive threshold controller. |
+| **3. Movement budget and fail-safe** | Is the move safe and worth making? | Rate-limited continuous tracking, plus wind, rain and power safety overrides. |
+
+The same twin also drives a predictive radiant-slab charging planner, learned occupant-plane
+daylight estimates and a small ESP32 louvre rig.
+
+## Key features
+
+- **Interactive digital twin.** A three.js model shows 7 storeys with 25° outward-leaning
+  walls. It includes a per-zone irradiance heatmap, the sun's path, shadows and cloud cover
+  from a vision model. Four lenses cover the building: *Building*, *Floor*, *Brains* and
+  *Feeds*.
+- **64 independent zone controllers.** Each facade is split into a 4×4 grid of zones. Every
+  zone has its own simulated irradiance and illuminance sensors and its own actuator state,
+  and all zones follow one shared policy.
+- **Physics-based environment.** [pvlib](https://pvlib-python.readthedocs.io/) provides solar
+  position and Perez plane-of-array irradiance. Surface temperatures use the ASHRAE sol-air
+  model. Louvre optics model both direct-beam and diffuse transmission.
+- **Choice of weather sources.** Choose fully synthetic weather, MET Malaysia-anchored
+  forecasts or [Open-Meteo](https://open-meteo.com/) forecast and ERA5 reanalysis data. Any
+  latitude and longitude can be used.
+- **Cloud vision.** Sky-camera frames go through Roboflow cloud segmentation, and the result
+  feeds the Tier 1 sensor-trust check.
+- **Daylight surrogate models.** Extra Trees models estimate task illuminance (Et) and eye
+  illuminance (Ev). They were trained on a radiosity oracle and run in observe-only mode.
+- **Radiant-slab planner.** A 1R1C slab model plans overnight pre-cooling and compares the
+  plan with a fixed 22:00–06:00 timer.
+- **ESP32 hardware bridge.** The rig has four BH1750 light sensors and four servo-driven
+  louvres. It runs either in autonomous lux control or mirrors the twin, and has a dedicated
+  calibration page.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph inputs [Inputs]
+    W["Weather<br/>synthetic · MET · Open-Meteo"]
+    V["Sky camera<br/>Roboflow segmentation"]
+    E["ESP32 rig<br/>4 × BH1750 lux"]
+  end
+
+  subgraph backend [FastAPI backend]
+    S["pvlib solar + irradiance<br/>144 ticks"]
+    B["Three-tier brain<br/>64 zone controllers"]
+    D["Daylight surrogate<br/>Et / Ev, observe-only"]
+    P["1R1C slab planner"]
+    H["Hardware bridge"]
+  end
+
+  subgraph frontend [Next.js frontend]
+    T["Digital twin<br/>/dashboard"]
+    SL["Slab planner<br/>/slab"]
+    C["Calibration<br/>/hardware"]
+  end
+
+  W --> S --> B
+  V --> B
+  B --> D --> T
+  B --> T
+  B --> P --> SL
+  E <--> H
+  T -- mirror twin --> H
+  C --> H
+```
+
+| Layer | Stack |
+| --- | --- |
+| Frontend | Next.js 15, React 19, TypeScript, Tailwind CSS, three.js, Recharts, Vitest |
+| Backend | FastAPI, Pydantic 2, pvlib, NumPy, pandas, SciPy, scikit-learn |
+| Firmware | ESP32 (Arduino core 3.x), BH1750, Adafruit PWM Servo Driver (PCA9685), ArduinoJson 7 |
+| Tooling | uv, npm, Ruff, ESLint, pytest, Docker Compose, Jupyter |
+
+```text
+.
+├── backend/
+│   ├── app/              FastAPI app: API, hardware bridge, vision, weather
+│   │   └── domain/       Solar, optics, controller, safety, slab, daylight models
+│   ├── notebooks/        Daylight surrogate training notebook
+│   ├── scripts/          Dataset generation, ablation and benchmark scripts
+│   └── tests/            pytest suite
+├── frontend/src/
+│   ├── app/              Routes: /, /dashboard, /slab, /hardware
+│   ├── components/       Digital twin, charts, hardware panels
+│   └── lib/api-client.ts Typed backend client
+├── hardware/
+│   ├── README.md         Wiring, flashing and bridge operation
+│   └── esp32/            ESP32 firmware
+├── docs/                 PRDs, technical notes and experiment evidence
+├── compose.yml
+└── Makefile
+```
+
+## Getting started
+
+### Prerequisites
+
+- Python 3.10+ and [uv](https://docs.astral.sh/uv/)
+- Node.js 20+ and npm
+- *Optional:* Docker, for Compose
+- *Optional:* the Arduino IDE with ESP32 core 3.x, for the hardware rig
+
+### Install and run
+
+```bash
+make install   # uv sync --extra dev, then npm install
+make dev       # backend on :8000, frontend on :3000 (Ctrl-C stops both)
+```
+
+| Service | URL |
+| --- | --- |
+| Web application | http://localhost:3000 |
+| API docs (OpenAPI) | http://localhost:8000/docs |
+| Health check | http://localhost:8000/api/v1/health |
+
+You can also run `make backend` and `make frontend` in separate terminals, or use Docker:
+
+```bash
+docker compose up --build
+```
+
+### Configuration
+
+Copy `backend/.env.example` to `backend/.env`. `make backend` loads the file automatically
+when it exists. Every variable is optional, and the core simulation runs without any of them.
+
+| Variable | Used by | Behaviour when unset |
+| --- | --- | --- |
+| `ROBOFLOW_API_KEY` | Cloud vision (`POST /api/v1/vision/clouds`) | The endpoint returns `503`, and the twin falls back to weather-based cloud cover. |
+| `HARDWARE_TOKEN` | ESP32 bridge (`POST /api/v1/hardware/tick`) | The endpoint returns `503`, so the rig cannot connect. |
+| `LOG_LEVEL` | JSON-line application logs | `INFO` |
+
+The frontend reads `NEXT_PUBLIC_API_URL`, which defaults to `http://localhost:8000`. Keep
+secrets out of `NEXT_PUBLIC_*` variables, because those are shipped to the browser.
+
+## Using the application
+
+| Route | Purpose |
+| --- | --- |
+| `/` | Product overview and entry point to each application |
+| `/dashboard` | Facade digital twin. **Run simulation** runs the three tiers in order while the sun crosses the model. Select any zone to inspect its inputs, decision and objective. |
+| `/slab` | Predictive radiant-slab planner. Generate, inspect and export a modelled night-charge plan as JSON. |
+| `/hardware` | Actuator calibration for the ESP32 rig: map each servo's 0–180° range and test poses. |
+
+The dashboard can also switch between the controlled facade and a **no-external-facade
+baseline** of the same building. This comparison shows how much irradiance the louvres
+remove.
+
+## API
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/v1/health` | Liveness, plus the last observed status of each upstream provider |
+| `GET` | `/api/v1/config` | Default site, geometry, limits, weather sources and scenarios |
+| `POST` | `/api/v1/simulations/run` | Run a full-day facade scenario |
+| `POST` | `/api/v1/slab/plan` | Build a predictive radiant-slab charging plan |
+| `POST` | `/api/v1/vision/clouds` | Segment clouds in a base64 JPEG sky frame |
+| `POST` | `/api/v1/hardware/tick` | ESP32 posts lux readings and receives louvre angles (requires `X-Hardware-Token`) |
+| `GET` | `/api/v1/hardware/status` | Latest rig readings, mode and commanded angles |
+| `POST` | `/api/v1/hardware/control` | Set the rig mode: `auto`, `twin` or `calibrate` (loopback only) |
+| `POST` | `/api/v1/hardware/calibration` | Save per-servo calibration (loopback only) |
+
+Run a seeded scenario:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/simulations/run \
+  -H 'Content-Type: application/json' \
+  -d '{"scenario": "lie_detector", "seed": 42}'
+```
+
+Run a scenario on measured weather at the target building:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/simulations/run \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "scenario": "overview",
+        "date": "2026-03-21",
+        "environment_source": "open_meteo",
+        "latitude": 2.9220,
+        "longitude": 101.6885,
+        "timezone": "Asia/Kuala_Lumpur",
+        "facade_orientation": "west",
+        "facade_tilt": 115
+      }'
+```
+
+| Parameter | Values |
+| --- | --- |
+| `scenario` | `overview`, `lie_detector`, `co_optimization`, `budget_failsafe` |
+| `environment_source` | `synthetic` (default), `met_anchored` (7-day MET Malaysia forecast window), `open_meteo` |
+| `facade_tilt` | pvlib surface tilt in degrees: `90` is an upright wall, `115` is the Diamond Building's 25° overhang |
+| `daylight_model_enabled` | `true` adds observe-only Et/Ev estimates (requires trained model artifacts) |
+
+Upstream weather responses are cached. If a provider is unavailable, the run falls back to
+synthetic weather and reports the reason in `metadata.weather_context`. Every response carries
+an `X-Request-ID` header.
+
+## Hardware rig
+
+A 2×2 grid of louvre panels stands in for one 2×2 block of the twin's west wall. Each panel
+has one SG90 servo, driven through a PCA9685 board, and one BH1750 light sensor. Every 500 ms
+the ESP32 posts four lux readings to the backend and receives four angles in return.
+
+- **Auto (default):** each panel steps toward shading above 700 lux and toward open below
+  300 lux. This mode keeps working when the dashboard is closed.
+- **Mirror twin:** the rig follows the twin's angles at the selected simulation time, so
+  scrubbing the timeline moves the physical louvres.
+
+Quick setup:
+
+```bash
+cp hardware/esp32/neuroskin_bridge/secrets.h.example hardware/esp32/neuroskin_bridge/secrets.h
+python3 -c "import secrets; print(secrets.token_urlsafe(24))"   # use as HARDWARE_TOKEN
+make backend HOST=0.0.0.0                                        # expose the API on the LAN
+```
+
+1. Fill in `secrets.h` with your WiFi details, the laptop's LAN URL and the token.
+   `secrets.h` is gitignored.
+2. Set the same token as `HARDWARE_TOKEN` in `backend/.env`.
+3. Flash `hardware/esp32/neuroskin_bridge` from the Arduino IDE.
+
+See [`hardware/README.md`](hardware/README.md) for wiring, the angle convention, calibration
+and troubleshooting. SG90 servos give no position feedback, so every angle shown is the
+*commanded* angle, not a measured one.
+
+## Daylight surrogate pipeline
+
+The daylight models are trained offline and never in the request path.
+
+```bash
+make daylight-data                # generate oracle samples (append ARGS=--smoke for a quick run)
+make daylight-train               # execute the training notebook in place
+make daylight-ablate              # run the controller glare-blindness experiment
+```
+
+Model artifacts are written to `backend/data/daylight/models/`, which is gitignored because
+the files are large. A fresh clone must regenerate them before it can use
+`daylight_model_enabled`. Without the artifacts, the estimates are reported as unavailable,
+never as zero.
+
+On structural holdout data (unseen days and zones), the Extra Trees models reach an MAE of
+about 106 lux for Et and 107 lux for Ev. These errors measure agreement with the modelled
+oracle, not measured occupant comfort. Full results, dataset hashes and the method are in
+[`docs/appendix/daylight-training-results.md`](docs/appendix/daylight-training-results.md).
+
+## Testing
+
+```bash
+make test                          # pytest + Vitest
+
+cd backend && uv run ruff check app tests
+cd frontend && npm run lint && npm run build
+```
+
+## Target building
+
+The defaults model the **ST Diamond Building**, the Energy Commission (Suruhanjaya Tenaga)
+headquarters in Precinct 2, Putrajaya (2.9220 N, 101.6885 E).
+
+| Parameter | Value |
+| --- | --- |
+| Facade tilt | 25° outward overhang (`facade_tilt = 115`) |
+| Floors | 7 |
+| Gross floor area | 14,230 m² |
+| Design intent | North and south facades self-shaded year-round; east and west solar impact cut by 41% |
+
+Against an upright wall, the modelled overhang cuts annual direct beam on the north facade by
+90% and on the south facade by 87%. The 3D massing is reconstructed from published figures,
+not measured drawings: a square of about 34.6 m at ground level flares to about 54.7 m at the
+roof. Treat the geometry as representative; the tilt physics carries the analysis.
+
+## Scope and limitations
+
+NeuroSkin is built to make controller behaviour inspectable, not to claim savings.
+
+- **Cooling load is a relative index.** It is never converted into kWh, carbon, cost or
+  payback.
+- **Sensor and occupancy data are simulated.** This includes indoor readings, injected faults
+  and zone sensors. MET and Open-Meteo data are forecasts or reanalysis, not building
+  telemetry.
+- **Cloud-vision coverage is a demo sky estimate.** It is not calibrated hemispheric cloud
+  cover, and the projected cloud shadows are illustrative.
+- **Et and Ev values are modelled, observe-only estimates.** They do not change controller
+  decisions and are not measured comfort. The glare screen is a tunable threshold, not a glare
+  standard.
+- **Slab energy figures are model outputs.** A fixed-timer comparison is structurally
+  eligible, but that does not prove field savings.
+- **The hardware rig is demo-scale.** Its control endpoints accept loopback requests only,
+  the API has no TLS or user authentication, and it must not be exposed to the public
+  internet.
+
+## Documentation
+
+| Document | Contents |
+| --- | --- |
+| [`docs/neuroskin_product_prd.md`](docs/neuroskin_product_prd.md) | Product positioning, selling points and target requirements |
+| [`docs/neuroskin_software_prd.md`](docs/neuroskin_software_prd.md) | As-built requirements, architecture, acceptance evidence and known gaps |
+| [`docs/technical-notes.md`](docs/technical-notes.md) | Detailed notes on the heat map, zone controllers, cloud vision and dashboard behaviour |
+| [`hardware/README.md`](hardware/README.md) | ESP32 wiring, firmware, calibration and bridge operation |
+| [`docs/appendix/`](docs/appendix/) | Reproducible experiment results and evaluation ledgers |
+
+## References
+
+- [Diamond Building, Suruhanjaya Tenaga](https://www.st.gov.my/about-us/diamond-building)
+- [ST Diamond Building, IEN Consultants](https://www.ien.com.my/projects/st-diamond-building)
+- [Malaysia Energy Commission Headquarters, HPB Magazine](https://www.hpbmagazine.org/malaysia-energy-commission-headquarters-putrajaya-malaysia/)
+- Tabatabaei Manesh et al. (2025), daylight surrogate method precedent, [doi:10.1016/j.autcon.2025.106474](https://doi.org/10.1016/j.autcon.2025.106474)
+- [pvlib python](https://pvlib-python.readthedocs.io/), [Open-Meteo](https://open-meteo.com/), [MET Malaysia open data](https://data.gov.my/), [Roboflow Workflows](https://inference.roboflow.com/workflows/modes_of_running/)
