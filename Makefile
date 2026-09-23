@@ -28,7 +28,7 @@ test:
 clean:
 	rm -rf backend/.pytest_cache backend/.ruff_cache frontend/.next
 
-.PHONY: daylight-data daylight-train daylight-ablate
+.PHONY: daylight-data daylight-train daylight-ablate assurance-matrix
 # CLI overrides: make daylight-data ARGS=--smoke (make itself has no --smoke option).
 daylight-data:
 	cd backend && uv run python -m scripts.generate_daylight_dataset $(ARGS)
@@ -38,3 +38,7 @@ daylight-train:
 
 daylight-ablate:
 	cd backend && uv run python -m scripts.ablation_glare_blindness $(ARGS)
+
+# Seeded sensor fault matrix; ARGS=--smoke (temp output) or ARGS="--split calibration".
+assurance-matrix:
+	cd backend && uv run python -m scripts.assurance_matrix $(ARGS)

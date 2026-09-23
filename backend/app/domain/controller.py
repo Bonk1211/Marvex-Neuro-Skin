@@ -14,6 +14,7 @@ from app.domain.types import (
     ControllerWeights,
     Decision,
     Environment,
+    SensorIsolation,
     Site,
     SolarState,
     WallGain,
@@ -68,6 +69,7 @@ def run_tick(
     actuator_speed_deg_per_min: float = DEFAULTS.actuator_speed_deg_per_min,
     vision_cloud: float | None = None,
     daylight_curves: tuple | None = None,
+    isolation: SensorIsolation | None = None,
 ) -> TickResult:
     if vision_cloud is not None:
         env = replace(env, cloud=vision_cloud)
@@ -89,30 +91,40 @@ def run_tick(
             open_lux *= effective_irradiance / env.ghi
     else:
         # These sensors face this zone, not the horizontal pyranometer. Zero is
-        # valid shade; range checks cannot diagnose an in-range stuck sensor.
-        trusted = (
+        # valid shade; range checks cannot diagnose an in-range stuck sensor, so a
+        # recovery episode may isolate one that its peers contradict.
+        in_range = (
             isfinite(local_sensors.irradiance)
             and 0 <= local_sensors.irradiance <= 1600
             and isfinite(local_sensors.illuminance)
             and 0 <= local_sensors.illuminance <= 10000
         )
+        trusted = in_range and isolation is None
         source = "Simulated" if local_sensors.source == "simulated" else "Injected"
         trust_reason = f"{source} local sensor pair {local_sensors.sensor_id}: "
-        if trusted:
-            incident = local_sensors.irradiance
-            irradiance_source = "sensor"
-            trust_reason += "range checks passed; this zone uses its own irradiance and lux."
-            transmission = (
-                optics.daylight_transmittance(current_angle)
-                if optics
-                else daylight_transmittance(current_angle)
-            )
+        transmission = (
+            optics.daylight_transmittance(current_angle)
+            if optics
+            else daylight_transmittance(current_angle)
+        )
+        if in_range and (trusted or isolation.open_lux is None):
+            if trusted:
+                incident = local_sensors.irradiance
+                irradiance_source = "sensor"
+                trust_reason += "range checks passed; this zone uses its own irradiance and lux."
+            else:
+                incident = isolation.irradiance
+                trust_reason += isolation.reason
             if transmission > 1e-6:
                 available_lux = local_sensors.illuminance / transmission
                 daylight_source = "sensor"
             else:
                 available_lux = env.indoor_lux if gain is None else wall_open_lux(gain)
                 trust_reason += " Closed beam path cannot reveal open lux; use modelled daylight."
+        elif in_range:
+            incident = isolation.irradiance
+            available_lux = isolation.open_lux
+            trust_reason += isolation.reason
         else:
             available_lux = env.indoor_lux if gain is None else wall_open_lux(gain)
             trust_reason += "out-of-range reading; use this zone's modelled incident and daylight."

@@ -1070,6 +1070,121 @@ describe('NeuroSkinDashboard', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
+  it('runs local checks from Brains and replays approvals and fault windows', async () => {
+    window.history.replaceState(null, '', '/dashboard?view=brains')
+    const zones: ZoneHeat[] = Array.from({ length: 16 }, (_, index) => ({
+      zone: `W${index + 1}`,
+      row: Math.floor(index / 4),
+      column: index % 4,
+      incident: 300,
+      transmitted: 220,
+      sunlit_fraction: 1,
+      sol_air_temp: 35,
+      angle: 20,
+      angle_target: 20,
+      mode: 'HOLD',
+      moved: false,
+      lux: 400,
+      load_relative: 0.4,
+      reason: 'Local W sensor reading.',
+      sensor_trusted: true,
+      sensors: {
+        sensor_id: `W${index + 1}`,
+        irradiance: index === 1 ? 0 : 300,
+        illuminance: 400,
+        source: 'simulated',
+      },
+      assurance:
+        index === 1
+          ? {
+              verdict: 'fault',
+              hypothesis: 'dead',
+              score: 1,
+              peer_deviation: -1,
+              lux_deviation: 0,
+              reason: 'W2 reads 0.00x its model.',
+              episode_id: 'W2:1:dead',
+            }
+          : {
+              verdict: 'consistent',
+              hypothesis: null,
+              score: 0,
+              peer_deviation: 0,
+              lux_deviation: 0,
+              reason: 'Consistent.',
+            },
+    }))
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ...response,
+        ticks: [0, 1].map(() => ({
+          ...response.ticks[0],
+          facade: response.ticks[0].facade.map((wall) =>
+            wall.orientation === 'west' ? { ...wall, zones } : wall
+          ),
+        })),
+        episodes: [
+          {
+            episode_id: 'W2:1:dead',
+            zone: 'W2',
+            hypothesis: 'dead',
+            score: 1,
+            status: 'awaiting_approval',
+            opened_tick: 1,
+            mitigated_tick: null,
+            closed_tick: null,
+            snapshot_angle: null,
+            valid_ticks: 0,
+            e_corrected: 0,
+            e_uncorrected: 0,
+            maintenance_flag: false,
+            events: [
+              { tick_index: 1, stage: 'detect', detail: 'W2 reads 0.00x.' },
+              {
+                tick_index: 1,
+                stage: 'authorise',
+                detail: 'Needs operator approval before anything changes.',
+              },
+            ],
+          },
+        ],
+      }),
+    })
+    render(<NeuroSkinDashboard />)
+    const controller = await screen.findByRole('combobox', {
+      name: 'Brain controller',
+    })
+    const body = (call: number) =>
+      JSON.parse(String(fetchMock.mock.calls[call][1].body))
+    expect(body(0).fault_correction).toBe('review')
+    const timeline = screen.getByRole('slider', { name: 'Simulation timeline' })
+    fireEvent.change(timeline, { target: { value: '1' } })
+    fireEvent.change(controller, { target: { value: 'W2' } })
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Approve and replay' })
+    )
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(body(1).approved_episodes).toEqual(['W2:1:dead'])
+    expect(body(1).fault_correction).toBe('review')
+    await waitFor(() => expect(timeline).toHaveValue('1'))
+
+    fireEvent.click(screen.getByRole('link', { name: 'Floor' }))
+    fireEvent.click(await screen.findByText('Inject fault window'))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Fault window' }), {
+      target: { value: 'stuck' },
+    })
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Inject 2 h from this time' })
+    )
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+    expect(body(2).zone_perturbations).toEqual({
+      W2: { kind: 'stuck', start_tick: 1, end_tick: 1 },
+    })
+    expect(body(2).approved_episodes).toEqual([])
+    expect(body(2).fault_correction).toBe('review')
+  })
+
   it('links to the project overview and excludes tutorial chrome', async () => {
     render(<NeuroSkinDashboard />)
     await screen.findByText('Mean load')

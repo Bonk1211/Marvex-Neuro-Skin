@@ -101,6 +101,20 @@ class ZoneSensors:
 
 
 @dataclass(frozen=True)
+class SensorIsolation:
+    """A recovery episode's substitute for a zone reading its peers contradict.
+
+    ``irradiance`` is the modelled aperture incident scaled by the peers' agreement.
+    ``open_lux`` replaces the lux channel too; None keeps the zone's own lux reading,
+    which is right when only the irradiance channel is implicated.
+    """
+
+    reason: str
+    irradiance: float
+    open_lux: float | None = None
+
+
+@dataclass(frozen=True)
 class ControlInput:
     """Effective inputs admitted to the incumbent controller, before movement."""
 
@@ -108,6 +122,20 @@ class ControlInput:
     open_lux: float
     irradiance_source: Literal["sensor", "model"]
     daylight_source: Literal["sensor", "model"]
+
+
+@dataclass(frozen=True)
+class ZoneAssessment:
+    """Evidence about one zone's reading before its controller acts. Not a repair."""
+
+    verdict: Literal["consistent", "legitimate_condition", "suspect", "fault", "insufficient"]
+    hypothesis: Literal["dead", "stuck", "drift_or_fouling", "local_shadow", "ambiguous"] | None
+    # A 0-1 routing number for authorisation, not an accuracy claim.
+    score: float
+    peer_deviation: float | None
+    lux_deviation: float | None
+    reason: str
+    episode_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -151,6 +179,7 @@ class ZoneHeat:
     diffuse_transmitted: float = 0.0
     control_input: ControlInput | None = None
     cost_breakdown: dict[str, float] = field(default_factory=dict)
+    assurance: ZoneAssessment | None = None
 
 
 @dataclass(frozen=True)

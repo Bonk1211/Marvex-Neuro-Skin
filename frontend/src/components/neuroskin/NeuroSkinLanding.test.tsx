@@ -27,9 +27,12 @@ describe('NeuroSkinLanding', () => {
     expect(
       screen.getByText('One orchestrator · one shared policy')
     ).toBeInTheDocument()
-    expect(screen.getByText('CURRENT · PARTIAL')).toBeInTheDocument()
+    expect(screen.getByText('SIMULATED · PEER-CHECKED')).toBeInTheDocument()
     expect(screen.getByText('OBSERVE-ONLY')).toBeInTheDocument()
-    expect(screen.getByText('PLANNED')).toBeInTheDocument()
+    expect(screen.getByText('SIMULATED · DETERMINISTIC')).toBeInTheDocument()
+    expect(
+      screen.getByText(/An LLM diagnosis agent remains planned/)
+    ).toBeInTheDocument()
     expect(
       screen.getByText(/they do not yet drive control/)
     ).toBeInTheDocument()

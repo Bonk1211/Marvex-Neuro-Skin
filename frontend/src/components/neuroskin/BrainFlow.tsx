@@ -1,29 +1,107 @@
 'use client'
 
 import { ArrowRight, Eye, ShieldCheck, SlidersHorizontal } from 'lucide-react'
-import type { TickPayload, ZoneHeat } from '@/lib/types'
+import type {
+  EpisodeStage,
+  RecoveryEpisode,
+  TickPayload,
+  ZoneAssurance,
+  ZoneHeat,
+} from '@/lib/types'
 import { daylightSummary } from './DaylightPanel'
 
-const RECOVERY = [
-  'Detect',
-  'Diagnose',
-  'Score evidence',
-  'Authorise',
-  'Snapshot',
-  'Mitigate',
-  'Verify',
+// Each workflow chip lights once its episode event has happened by the selected tick.
+const RECOVERY: [string, EpisodeStage][] = [
+  ['Detect', 'detect'],
+  ['Diagnose', 'detect'],
+  ['Score evidence', 'detect'],
+  ['Authorise', 'authorise'],
+  ['Snapshot', 'snapshot'],
+  ['Mitigate', 'mitigate'],
+  ['Verify', 'verify'],
 ]
+const OUTCOMES: [string, EpisodeStage][] = [
+  ['Retain', 'retain'],
+  ['Roll back', 'roll_back'],
+  ['Escalate', 'escalate'],
+]
+// Mirrors backend DEFAULTS.recovery_auto_score; shown so the score reads as routing.
+const AUTO_SCORE = 0.8
+
+const VERDICTS: Record<ZoneAssurance['verdict'], string> = {
+  consistent: 'Consistent with peers',
+  legitimate_condition: 'Legitimate condition',
+  suspect: 'Suspect',
+  fault: 'Sensor fault',
+  insufficient: 'Insufficient evidence',
+}
+const HYPOTHESES: Record<NonNullable<ZoneAssurance['hypothesis']>, string> = {
+  dead: 'dead sensor',
+  stuck: 'stuck sensor',
+  drift_or_fouling: 'drift or fouling',
+  local_shadow: 'local shadow',
+  ambiguous: 'ambiguous',
+}
+const STATUS: Record<RecoveryEpisode['status'], string> = {
+  monitoring: 'Monitoring only',
+  awaiting_approval: 'Awaiting approval',
+  mitigating: 'Verifying correction',
+  retained: 'Correction retained',
+  rolled_back: 'Rolled back',
+  escalated: 'Escalated · maintenance',
+  closed: 'Closed',
+}
+
+const STATUS_AT: Record<EpisodeStage, string> = {
+  detect: 'detected',
+  authorise: 'authorisation decided',
+  snapshot: 'snapshot recorded',
+  mitigate: 'correction applied',
+  verify: 'verified',
+  retain: 'correction retained',
+  roll_back: 'rolled back',
+  escalate: 'escalated',
+  restore: 'sensor restored',
+  close: 'closed',
+}
+
+const deviation = (value: number | null) =>
+  value == null ? '—' : `${value > 0 ? '+' : ''}${(value * 100).toFixed(0)}%`
 
 export function BrainFlow({
   tick,
   selectedZone,
   onSelectZone,
+  episodes,
+  tickIndex,
+  loading = false,
+  onApproveEpisode,
+  onEnableAssurance,
 }: {
   tick: TickPayload
   selectedZone?: ZoneHeat
   onSelectZone: (id: string | null) => void
+  episodes?: RecoveryEpisode[]
+  /** The selected tick; episode events after it are not shown as happened. */
+  tickIndex?: number
+  loading?: boolean
+  onApproveEpisode?: (episodeId: string) => void
+  onEnableAssurance?: () => void
 }) {
   const zone = selectedZone
+  const assurance = zone?.assurance
+  const at = tickIndex ?? Number.POSITIVE_INFINITY
+  const episode = zone
+    ? episodes
+        ?.filter((entry) => entry.zone === zone.zone && entry.opened_tick <= at)
+        .at(-1)
+    : undefined
+  const happened =
+    episode?.events.filter((event) => event.tick_index <= at) ?? []
+  const stages = new Set(happened.map((event) => event.stage))
+  const latest = happened.at(-1)
+  const awaiting =
+    episode?.status === 'awaiting_approval' && !stages.has('snapshot')
   const trusted = zone ? zone.sensor_trusted : tick.sensor_trusted
   const mode = zone?.mode ?? tick.mode
   const target = zone ? zone.angle_target : tick.angle_target
@@ -98,9 +176,43 @@ export function BrainFlow({
           </p>
           <p className='mt-1 text-xs text-muted-foreground'>
             {zone
-              ? 'Local finite/range check'
+              ? assurance
+                ? 'Range, peer and lux plausibility checks'
+                : 'Local finite/range check'
               : 'Solar/cloud plausibility check'}
           </p>
+          {assurance && (
+            <div
+              className='mt-3 rounded-lg border bg-background px-2 py-2 text-xs'
+              aria-label='Local sensor assurance'
+            >
+              <p
+                className={`font-semibold ${assurance.verdict === 'fault' ? 'text-amber-800' : ''}`}
+              >
+                {VERDICTS[assurance.verdict]}
+                {assurance.hypothesis &&
+                  ` · ${HYPOTHESES[assurance.hypothesis]}`}
+              </p>
+              <p className='mt-1 font-mono text-[10px]'>
+                Score {assurance.score.toFixed(2)} · automatic isolation needs ≥{' '}
+                {AUTO_SCORE.toFixed(2)}
+              </p>
+              <p className='mt-1 text-[10px] text-muted-foreground'>
+                Against wall peers {deviation(assurance.peer_deviation)} · own
+                lux channel {deviation(assurance.lux_deviation)}
+              </p>
+            </div>
+          )}
+          {zone && !assurance && onEnableAssurance && (
+            <button
+              type='button'
+              disabled={loading}
+              onClick={onEnableAssurance}
+              className='run-button-light mt-3 w-full text-[10px]'
+            >
+              Run local sensor checks
+            </button>
+          )}
           <dl className='mt-4 space-y-3 text-xs'>
             <div className='flex justify-between gap-2'>
               <dt>
@@ -144,8 +256,9 @@ export function BrainFlow({
               {zone?.reason ?? tick.reason}
             </p>
             <p className='mt-2 text-muted-foreground'>
-              Local range checks can accept an in-range fouled sensor. Full
-              local fault diagnosis is planned.
+              {assurance
+                ? `${assurance.reason} Peer checks are simulated; every healthy simulated sensor is its model plus noise, so detection here is an upper bound.`
+                : 'Local range checks can accept an in-range fouled sensor. Enable local sensor checks to compare each zone with its peers.'}
             </p>
             <p className='mt-2 text-muted-foreground'>
               Cloud input:{' '}
@@ -226,49 +339,112 @@ export function BrainFlow({
           </p>
         </section>
         <section
-          className='console-card border-dashed'
-          aria-label='Planned fault recovery'
+          className={`console-card ${assurance ? '' : 'border-dashed'}`}
+          aria-label={assurance ? 'Fault recovery' : 'Planned fault recovery'}
         >
           <div className='flex items-center justify-between gap-2'>
             <h2 className='text-sm font-semibold'>3 · Verify recovery</h2>
             <span className='rounded-full bg-secondary px-2 py-1 text-[9px] font-bold uppercase'>
-              Planned
+              {assurance ? 'Simulated' : 'Off in this run'}
             </span>
           </div>
           <p className='mt-2 text-xs text-muted-foreground'>
-            Target workflow · design only
+            {episode
+              ? `Episode ${episode.episode_id} · ${latest ? STATUS_AT[latest.stage] : 'opened'}`
+              : assurance
+                ? 'No episode for this zone at this tick.'
+                : 'Workflow design only · local checks are off for this run.'}
           </p>
           <ol className='mt-4 flex flex-wrap items-center gap-2'>
-            {RECOVERY.map((stage, index) => (
-              <li className='flex items-center gap-2' key={stage}>
-                <span className='rounded-lg border bg-background px-2 py-2 text-[10px]'>
-                  {stage}
-                </span>
-                {index < RECOVERY.length - 1 && (
-                  <ArrowRight
-                    className='h-3 w-3 text-muted-foreground'
-                    aria-hidden
-                  />
-                )}
-              </li>
-            ))}
+            {RECOVERY.map(([label, stage], index) => {
+              const done =
+                stages.has(stage) && !(stage === 'authorise' && awaiting)
+              return (
+                <li className='flex items-center gap-2' key={label}>
+                  <span
+                    className={`rounded-lg border px-2 py-2 text-[10px] ${done ? 'border-primary bg-primary/10 font-semibold text-primary' : 'bg-background'}`}
+                    aria-current={
+                      stage === latest?.stage && done ? 'step' : undefined
+                    }
+                  >
+                    {label}
+                    {done && <span className='sr-only'> · done</span>}
+                    {stage === 'authorise' && awaiting && (
+                      <span className='text-amber-800'> · waiting</span>
+                    )}
+                  </span>
+                  {index < RECOVERY.length - 1 && (
+                    <ArrowRight
+                      className='h-3 w-3 text-muted-foreground'
+                      aria-hidden
+                    />
+                  )}
+                </li>
+              )
+            })}
           </ol>
           <div className='mt-3 grid grid-cols-3 gap-1 text-center text-[10px]'>
-            {['Retain', 'Roll back', 'Escalate'].map((outcome) => (
-              <span key={outcome} className='rounded border border-dashed p-2'>
-                {outcome}
+            {OUTCOMES.map(([label, stage]) => (
+              <span
+                key={label}
+                className={`rounded border p-2 ${stages.has(stage) ? 'border-primary bg-primary/10 font-semibold text-primary' : 'border-dashed'}`}
+              >
+                {label}
+                {stages.has(stage) && (
+                  <span className='sr-only'> · reached</span>
+                )}
               </span>
             ))}
           </div>
+          {episode && (
+            <div className='mt-3 space-y-1 text-xs'>
+              <p>
+                Run outcome: <strong>{STATUS[episode.status]}</strong>
+              </p>
+              {episode.valid_ticks > 0 && stages.has('verify') && (
+                <p className='font-mono text-[10px]'>
+                  Corrected {episode.e_corrected.toFixed(3)} · uncorrected{' '}
+                  {episode.e_uncorrected.toFixed(3)} · relative objective over{' '}
+                  {episode.valid_ticks} informative ticks
+                </p>
+              )}
+              {episode.maintenance_flag && stages.has('escalate') && (
+                <p className='font-semibold text-amber-800'>
+                  Maintenance requested · substitution is not a repair
+                </p>
+              )}
+              {awaiting && onApproveEpisode && mode !== 'SAFE' && (
+                <button
+                  type='button'
+                  disabled={loading}
+                  onClick={() => onApproveEpisode(episode.episode_id)}
+                  className='run-button-light mt-2 w-full text-[10px]'
+                >
+                  Approve and replay
+                </button>
+              )}
+              {latest && (
+                <p className='text-[10px] text-muted-foreground'>
+                  {latest.detail}
+                </p>
+              )}
+            </div>
+          )}
           <details className='mt-4 border-t pt-3 text-xs'>
             <summary className='cursor-pointer font-medium'>
               Authority & verification
             </summary>
             <p className='mt-2 leading-relaxed text-muted-foreground'>
-              One orchestrator owns zone episodes. A future diagnosis agent
-              gathers read-only evidence. Policy authorises changes; snapshots
-              enable rollback. Independent verification decides whether to
-              retain, roll back or escalate. Safety never waits for the agent.
+              Detection never acts alone. Policy authorises isolation: dead and
+              stuck sensors automatically, anything else only with operator
+              approval, which replays the same day deterministically. A snapshot
+              precedes every change; only the implicated channel is replaced
+              with peer-scaled inputs. Verification compares the corrected zone
+              with an uncorrected counterfactual under identical conditions,
+              counting only ticks where their angles differ, then retains, rolls
+              back or escalates. Nothing starts or stops under a safety
+              override. Simulated and uncommissioned; an LLM diagnosis agent
+              remains planned and would never hold write authority.
             </p>
           </details>
         </section>

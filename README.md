@@ -236,6 +236,9 @@ curl -X POST http://localhost:8000/api/v1/simulations/run \
 | `environment_source` | `synthetic` (default), `met_anchored` (7-day MET Malaysia forecast window), `open_meteo` |
 | `facade_tilt` | pvlib surface tilt in degrees: `90` is an upright wall, `115` is the Diamond Building's 25° overhang |
 | `daylight_model_enabled` | `true` adds observe-only Et/Ev estimates (requires trained model artifacts) |
+| `zone_perturbations` | Declared test windows per zone, e.g. `{"W6": {"kind": "dead", "start_tick": 78, "end_tick": 96}}`; kinds `dead`, `stuck`, `drift`, `fouled` corrupt the reading, `shadow` is a real unmodelled drop |
+| `fault_correction` | `off` (default, unchanged response), `monitor` (peer/lux assurance evidence and episodes, no action), `review` (isolation only for approved episodes), `auto` (dead/stuck isolated automatically) |
+| `approved_episodes` | Episode ids such as `W6:80:dead`; the run replays deterministically with those isolations authorised |
 
 Upstream weather responses are cached. If a provider is unavailable, the run falls back to
 synthetic weather and reports the reason in `metadata.weather_context`. Every response carries
@@ -277,6 +280,7 @@ The daylight models are trained offline and never in the request path.
 make daylight-data                # generate oracle samples (append ARGS=--smoke for a quick run)
 make daylight-train               # execute the training notebook in place
 make daylight-ablate              # run the controller glare-blindness experiment
+make assurance-matrix             # seeded sensor-fault and recovery matrix (ARGS=--smoke)
 ```
 
 Model artifacts are written to `backend/data/daylight/models/`, which is gitignored because
@@ -324,6 +328,9 @@ NeuroSkin is built to make controller behaviour inspectable, not to claim saving
 - **Sensor and occupancy data are simulated.** This includes indoor readings, injected faults
   and zone sensors. MET and Open-Meteo data are forecasts or reanalysis, not building
   telemetry.
+- **Fault detection and recovery are simulated and uncommissioned.** A healthy simulated
+  sensor is its model plus noise, so the [fault matrix](docs/appendix/assurance-matrix-results.md)
+  is an upper bound. Isolation substitutes peer-scaled inputs; it is not a repair.
 - **Cloud-vision coverage is a demo sky estimate.** It is not calibrated hemispheric cloud
   cover, and the projected cloud shadows are illustrative.
 - **Et and Ev values are modelled, observe-only estimates.** They do not change controller

@@ -1,13 +1,23 @@
+from collections import Counter
 from dataclasses import asdict, replace
 from datetime import datetime, time, timezone
+from statistics import median
 
 import numpy as np
 
 from app.config import DEFAULTS
-from app.domain.controller import WALL_LUX_PER_IRRADIANCE, run_tick
+from app.domain import recovery
+from app.domain.assurance import AssuranceSample, assess_zone, peer_median_change, peer_ratios
+from app.domain.brain import angle_cost_breakdown
+from app.domain.controller import WALL_LUX_PER_IRRADIANCE, run_tick, wall_open_lux
 from app.domain.daylight.room import RoomGeometry, probes_for, zone_for
 from app.domain.daylight.surrogate import curves_for, models
-from app.domain.environment import generate_day, inject_sensor_fault, solar_frame
+from app.domain.environment import (
+    generate_day,
+    inject_sensor_fault,
+    perturb_zone_sensors,
+    solar_frame,
+)
 from app.domain.facade import (
     ORIENTATIONS,
     facade_heat,
@@ -18,13 +28,17 @@ from app.domain.facade import (
     zone_heat,
 )
 from app.domain.optics import FacadeOptics
+from app.domain.safety import safety_gate
 from app.domain.solar import sun_position
+from app.domain.thermal import predict_load
 from app.domain.types import (
     ControllerWeights,
     Environment,
+    SensorIsolation,
     Site,
     WallGain,
     WallState,
+    ZoneAssessment,
     ZoneHeat,
     ZoneSensors,
 )
@@ -32,8 +46,10 @@ from app.schemas import (
     ComparisonMetric,
     CostBreakdown,
     DaylightStatusPayload,
+    EpisodeEventPayload,
     EventAnnotation,
     FacadeHeatPayload,
+    RecoveryEpisodePayload,
     RoofSegmentPayload,
     SimulationMetadata,
     SimulationRunRequest,
@@ -58,6 +74,18 @@ SCENARIO_TITLES = {
     "co_optimization": "Tier 2 — Naive versus co-optimisation",
     "budget_failsafe": "Tier 3 — Movement budget and fail-shaded safety",
 }
+
+
+def _rounded(assessment: ZoneAssessment) -> ZoneAssessment:
+    def rounded(value: float | None) -> float | None:
+        return None if value is None else round(value, 3)
+
+    return replace(
+        assessment,
+        score=round(assessment.score, 3),
+        peer_deviation=rounded(assessment.peer_deviation),
+        lux_deviation=rounded(assessment.lux_deviation),
+    )
 
 
 def _site(request: SimulationRunRequest) -> Site:
@@ -367,6 +395,21 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
     # A window rather than one tick: the moment the primary facade actually wants
     # to move depends on which wall it is and where the sun is, so let the run
     # find it instead of hard-coding a clock time that only suits one facade.
+    stuck_values: dict[str, ZoneSensors] = {}
+    assuring = request.fault_correction != "off"
+    # Per-zone evidence history: recent verdicts/readings, and the lux ratio from
+    # ticks the zone read consistently (a shadow must not become its own baseline).
+    assurance_recent: dict[str, list[AssuranceSample]] = {}
+    lux_baselines: dict[str, list[float]] = {}
+    assurance_counts: Counter[str] = Counter()
+    # Recovery episodes live in the run: the request replays them, the response audits them.
+    approved = frozenset(request.approved_episodes)
+    episodes: dict[str, recovery.Episode] = {}
+    zone_episode: dict[str, str] = {}
+    cooldown_until: dict[str, int] = {}
+    rolled_back: set[str] = set()
+    # The uncorrected branch of each zone under verification keeps its own actuator.
+    counterfactual_angles: dict[str, float] = {}
     budget_window = (time(15, 0), time(16, 0))
     budget_annotated = False
     power_loss_start = time(14, 0)
@@ -389,6 +432,7 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
         # Resolve the sun once; each controller projects it onto its own aperture.
         gains = wall_gains(poa, index)
         solar = suns[index]
+        safe_now = safety_gate(env, power_ok) is not None
         wall_optics = {
             gain.orientation: FacadeOptics(
                 beam_fraction=gain.direct / gain.incident if gain.incident > 0 else 0,
@@ -435,7 +479,9 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
         grid = grids[index]
         zones: dict[str, list[ZoneHeat]] = {}
         for orientation, cells in grid.items():
-            heats: list[ZoneHeat] = []
+            # Pass 1 reads every sensor on the wall, so each zone can be judged
+            # against its peers before any controller acts.
+            sampled = []
             for cell in cells:
                 key = (orientation, cell.zone)
                 current_angle = zone_angles.get(key, 0.0)
@@ -471,8 +517,23 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
                         1,
                     ),
                 )
-                # Always sample first: an override cannot advance another zone's
-                # random stream or alter its subsequent observations.
+                # Always sample first: a perturbation or override cannot advance
+                # another zone's random stream or alter its later observations.
+                perturbation = request.zone_perturbations.get(cell.zone)
+                if (
+                    perturbation is not None
+                    and perturbation.start_tick <= index <= perturbation.end_tick
+                ):
+                    if index == perturbation.start_tick:
+                        stuck_values[cell.zone] = sensors
+                    sensors = perturb_zone_sensors(
+                        sensors,
+                        perturbation.kind,
+                        perturbation.severity,
+                        (index - perturbation.start_tick)
+                        / max(1, perturbation.end_tick - perturbation.start_tick),
+                        stuck_values.get(cell.zone),
+                    )
                 override = request.zone_sensor_overrides.get(cell.zone)
                 if override is not None and override.tick_index == index:
                     sensors = replace(
@@ -481,6 +542,111 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
                         illuminance=override.illuminance,
                         source="override",
                     )
+                gain = WallGain(
+                    orientation=orientation,
+                    azimuth=cell.azimuth,
+                    incident=cell.incident,
+                    sky_diffuse=cell.sky_diffuse,
+                    ground_diffuse=cell.ground_diffuse,
+                    aoi=cell.aoi,
+                )
+                sampled.append((cell, key, current_angle, optics, sensors, gain))
+
+            assessments = {}
+            if assuring:
+                readings = {item[0].zone: item[4].irradiance for item in sampled}
+                ratios = peer_ratios(readings, {item[0].zone: item[0].incident for item in sampled})
+                previous = {
+                    zone: history[-1][1]
+                    for zone in readings
+                    if (history := assurance_recent.get(zone))
+                }
+                # A sensor already set aside may not vouch for its neighbours.
+                isolated = frozenset(
+                    zone for zone, episode_id in zone_episode.items()
+                    if episodes[episode_id].isolating
+                )
+                for cell, _key, current_angle, optics, sensors, gain in sampled:
+                    transmission = optics.daylight_transmittance(current_angle)
+                    lux_ratio = (
+                        sensors.illuminance / (wall_open_lux(gain) * transmission)
+                        if ratios[cell.zone] is not None and transmission > 1e-6
+                        else None
+                    )
+                    recent = assurance_recent.setdefault(cell.zone, [])
+                    baseline = lux_baselines.setdefault(cell.zone, [])
+                    peer_change = peer_median_change(
+                        cell.zone, ratios, readings, previous, isolated
+                    )
+                    assessment = assess_zone(
+                        cell.zone,
+                        ratios,
+                        readings,
+                        lux_ratio,
+                        baseline,
+                        recent,
+                        peer_change,
+                        isolated,
+                    )
+                    recent.append((assessment.verdict, sensors.irradiance, peer_change))
+                    del recent[: -DEFAULTS.assurance_window_ticks]
+                    if assessment.verdict == "consistent" and lux_ratio is not None:
+                        baseline.append(lux_ratio)
+                        del baseline[: -DEFAULTS.assurance_window_ticks]
+                    assurance_counts[assessment.verdict] += 1
+                    assessments[cell.zone] = assessment
+
+            # Pass 2: every zone's own controller acts on its own reading.
+            heats: list[ZoneHeat] = []
+            for cell, key, current_angle, optics, sensors, gain in sampled:
+                episode = isolation = None
+                if assuring:
+                    assessment = assessments[cell.zone]
+                    episode = episodes.get(zone_episode.get(cell.zone, ""))
+                    if (
+                        episode is None
+                        and assessment.verdict == "fault"
+                        and index >= cooldown_until.get(cell.zone, 0)
+                    ):
+                        episode = recovery.open_episode(
+                            cell.zone,
+                            index,
+                            assessment,
+                            request.fault_correction,
+                            approved,
+                            persistent=cell.zone in rolled_back,
+                        )
+                        zone_episode[cell.zone] = episode.episode_id
+                    if episode is not None:
+                        episode = recovery.step(episode, assessment, index, safe_now, current_angle)
+                    if episode is not None and episode.isolating:
+                        # The substitute is built only from evidence the controller can
+                        # see: its peers' agreement and its own pre-fault lux ratio.
+                        peers = [
+                            k
+                            for other, k in ratios.items()
+                            if other != cell.zone and other not in isolated and k is not None
+                        ]
+                        incident_ref = cell.incident * (median(peers) if peers else 1.0)
+                        transmission = optics.daylight_transmittance(current_angle)
+                        # A stuck pair froze both channels; otherwise lux is still live.
+                        keep_lux = episode.hypothesis != "stuck" and transmission > 1e-6
+                        baseline = lux_baselines.get(cell.zone)
+                        open_lux_ref = (
+                            sensors.illuminance / transmission
+                            if keep_lux
+                            else wall_open_lux(replace(gain, incident=incident_ref))
+                            * (median(baseline) if baseline else 1.0)
+                        )
+                        isolation = SensorIsolation(
+                            reason=(
+                                f"isolated by recovery episode {episode.episode_id}; irradiance "
+                                f"is the model scaled by its peers ({incident_ref:.0f} W/m²)"
+                                + ("." if keep_lux else " and lux is the zone's pre-fault ratio.")
+                            ),
+                            irradiance=incident_ref,
+                            open_lux=None if keep_lux else open_lux_ref,
+                        )
                 zone_result = run_tick(
                     env,
                     current_angle,
@@ -500,38 +666,108 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
                     glazing_shgc=request.glazing_shgc,
                     glare_limit_w_m2=request.glare_limit_w_m2,
                     actuator_speed_deg_per_min=request.actuator_speed_deg_per_min,
-                    gain=WallGain(
-                        orientation=orientation,
-                        azimuth=cell.azimuth,
-                        incident=cell.incident,
-                        sky_diffuse=cell.sky_diffuse,
-                        ground_diffuse=cell.ground_diffuse,
-                        aoi=cell.aoi,
-                    ),
+                    gain=gain,
+                    isolation=isolation,
                 )
                 zone_angles[key] = zone_result.decision.angle_final
-                heats.append(
-                    zone_heat(
-                        cell,
-                        WallState(
-                            angle=zone_result.decision.angle_final,
-                            mode=zone_result.decision.mode,
-                            moved=zone_result.decision.moved,
-                            lux=zone_result.lux,
-                            load_relative=zone_result.load_relative,
-                            reason=zone_result.decision.reason,
-                        ),
-                        outdoor_temp=env.outdoor_temp,
-                        wind=env.wind,
-                        sensors=sensors,
-                        angle_target=zone_result.decision.angle_target,
-                        sensor_trusted=zone_result.decision.sensor_trusted,
-                        optics=optics,
-                        conditions=zone_result.conditions,
-                        control_input=zone_result.control_input,
-                        cost_breakdown=zone_result.decision.cost_breakdown,
+                if episode is not None:
+                    corrected = uncorrected = 0.0
+                    valid = False
+                    if episode.isolating and episode.status == "mitigating":
+                        # Same env, same reading, no isolation: what would have happened.
+                        start = counterfactual_angles.get(cell.zone, current_angle)
+                        counterfactual = run_tick(
+                            env,
+                            start,
+                            weights,
+                            vision_cloud=vision_cloud,
+                            power_ok=power_ok,
+                            movement_threshold=movement_threshold,
+                            site=site,
+                            solar=solar,
+                            local_sensors=sensors,
+                            optics=optics,
+                            glazing_shgc=request.glazing_shgc,
+                            glare_limit_w_m2=request.glare_limit_w_m2,
+                            actuator_speed_deg_per_min=request.actuator_speed_deg_per_min,
+                            gain=gain,
+                        )
+                        counterfactual_angles[cell.zone] = counterfactual.decision.angle_final
+                        # Both branches are judged on the same independent reference.
+                        # Only a tick where they disagree can show a benefit.
+                        valid = (
+                            not safe_now
+                            and bool(peers)
+                            and cell.incident >= DEFAULTS.assurance_min_model_irradiance
+                            and abs(
+                                zone_result.decision.angle_final
+                                - counterfactual.decision.angle_final
+                            )
+                            > DEFAULTS.recovery_informative_angle
+                        )
+                        if valid:
+                            load_ref = predict_load(replace(env, ghi=incident_ref), solar)
+
+                            def objective(angle: float, before: float) -> float:
+                                cost = sum(
+                                    angle_cost_breakdown(
+                                        angle,
+                                        load_ref,
+                                        open_lux_ref,
+                                        before,
+                                        env.wind,
+                                        weights,
+                                        optics=optics,
+                                        glazing_shgc=request.glazing_shgc,
+                                    ).values()
+                                )
+                                # The optimiser treats the direct-sun screen as a hard
+                                # bound, outside its cost; a branch that breaches it
+                                # pays more than any weighted comfort or thermal term.
+                                direct = (
+                                    incident_ref
+                                    * optics.beam_fraction
+                                    * optics.beam_transmittance(angle)
+                                )
+                                return cost + (direct > request.glare_limit_w_m2 + 1e-6)
+
+                            corrected = objective(zone_result.decision.angle_final, current_angle)
+                            uncorrected = objective(counterfactual.decision.angle_final, start)
+                    episode = recovery.verify(episode, index, valid, corrected, uncorrected)
+                    episodes[episode.episode_id] = episode
+                    if episode.status != "mitigating":
+                        counterfactual_angles.pop(cell.zone, None)
+                    if episode.status not in recovery.OPEN:
+                        del zone_episode[cell.zone]
+                        if episode.status == "rolled_back":
+                            rolled_back.add(cell.zone)
+                            cooldown_until[cell.zone] = index + 1 + DEFAULTS.recovery_cooldown_ticks
+                    assessments[cell.zone] = replace(
+                        assessments[cell.zone], episode_id=episode.episode_id
                     )
+                heat = zone_heat(
+                    cell,
+                    WallState(
+                        angle=zone_result.decision.angle_final,
+                        mode=zone_result.decision.mode,
+                        moved=zone_result.decision.moved,
+                        lux=zone_result.lux,
+                        load_relative=zone_result.load_relative,
+                        reason=zone_result.decision.reason,
+                    ),
+                    outdoor_temp=env.outdoor_temp,
+                    wind=env.wind,
+                    sensors=sensors,
+                    angle_target=zone_result.decision.angle_target,
+                    sensor_trusted=zone_result.decision.sensor_trusted,
+                    optics=optics,
+                    conditions=zone_result.conditions,
+                    control_input=zone_result.control_input,
+                    cost_breakdown=zone_result.decision.cost_breakdown,
                 )
+                if cell.zone in assessments:
+                    heat = replace(heat, assurance=_rounded(assessments[cell.zone]))
+                heats.append(heat)
             zones[orientation] = heats
 
         walls = facade_heat(
@@ -670,6 +906,22 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
         ),
         "power_ok": request.power_ok,
     }
+    if assuring:
+        statuses = Counter(episode.status for episode in episodes.values())
+        summary.update(
+            assurance_fault_zone_ticks=assurance_counts["fault"],
+            assurance_shadow_zone_ticks=assurance_counts["legitimate_condition"],
+            episodes_opened=len(episodes),
+            # Retained at some point, including episodes later restored to the sensor.
+            episodes_retained=sum(
+                any(stage == "retain" for _, stage, _ in episode.events)
+                for episode in episodes.values()
+            ),
+            episodes_rolled_back=statuses["rolled_back"],
+            episodes_escalated=statuses["escalated"],
+            episodes_awaiting_approval=statuses["awaiting_approval"],
+            unmatched_approvals=len(approved - episodes.keys()),
+        )
     metadata = SimulationMetadata(
         location=site.name,
         latitude=site.latitude,
@@ -704,4 +956,30 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
         ticks=ticks,
         comparison=comparison,
         annotations=annotations,
+        episodes=[
+            RecoveryEpisodePayload(
+                **{
+                    name: value
+                    for name, value in asdict(episode).items()
+                    if name
+                    not in (
+                        "events",
+                        "cleared_ticks",
+                        "evidence_ticks",
+                        "fault_ticks",
+                        "score",
+                        "e_corrected",
+                        "e_uncorrected",
+                    )
+                },
+                score=round(episode.score, 3),
+                e_corrected=round(episode.e_corrected, 4),
+                e_uncorrected=round(episode.e_uncorrected, 4),
+                events=[
+                    EpisodeEventPayload(tick_index=tick, stage=stage, detail=detail)
+                    for tick, stage, detail in episode.events
+                ],
+            )
+            for episode in episodes.values()
+        ],
     )

@@ -1,6 +1,6 @@
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import type { TickPayload, ZoneHeat } from '@/lib/types'
+import type { RecoveryEpisode, TickPayload, ZoneHeat } from '@/lib/types'
 import { CostBreakdownPanel } from './CostBreakdownPanel'
 import { BrainFlow } from './BrainFlow'
 
@@ -286,5 +286,171 @@ describe('controller objective', () => {
     for (const bar of screen.getByRole('img').children)
       expect((bar as HTMLElement).style.width).toBe('0%')
     expect(screen.getAllByText('· weight 45%')).toHaveLength(2)
+  })
+})
+
+describe('fault recovery card', () => {
+  const zone: ZoneHeat = {
+    ...tick.facade[3],
+    zone: 'W6',
+    row: 1,
+    column: 1,
+    sunlit_fraction: 1,
+    angle: 18,
+    angle_target: 18,
+    sensor_trusted: true,
+    sensors: {
+      sensor_id: 'W6',
+      irradiance: 240,
+      illuminance: 800,
+      source: 'simulated',
+    },
+    assurance: {
+      verdict: 'fault',
+      hypothesis: 'drift_or_fouling',
+      score: 0.58,
+      peer_deviation: -0.4,
+      lux_deviation: 0.01,
+      reason:
+        'W6 reads 0.60x its model while the wall median is 1.00x for 3 tick(s).',
+      episode_id: 'W6:80:drift_or_fouling',
+    },
+  }
+  const waiting: RecoveryEpisode = {
+    episode_id: 'W6:80:drift_or_fouling',
+    zone: 'W6',
+    hypothesis: 'drift_or_fouling',
+    score: 0.58,
+    status: 'awaiting_approval',
+    opened_tick: 80,
+    mitigated_tick: null,
+    closed_tick: null,
+    snapshot_angle: null,
+    valid_ticks: 0,
+    e_corrected: 0,
+    e_uncorrected: 0,
+    maintenance_flag: false,
+    events: [
+      { tick_index: 80, stage: 'detect', detail: 'W6 reads 0.60x.' },
+      {
+        tick_index: 80,
+        stage: 'authorise',
+        detail: 'Needs operator approval before anything changes.',
+      },
+    ],
+  }
+
+  it('shows peer evidence and offers approval only while an episode waits outside safety', () => {
+    const onApprove = vi.fn()
+    const props = {
+      tick,
+      selectedZone: zone,
+      onSelectZone: vi.fn(),
+      episodes: [waiting],
+      onApproveEpisode: onApprove,
+    }
+    const { rerender } = render(<BrainFlow {...props} tickIndex={82} />)
+    const trust = screen.getByRole('region', { name: 'Sensor trust decision' })
+    const evidence = within(trust).getByLabelText('Local sensor assurance')
+    expect(evidence).toHaveTextContent('Sensor fault · drift or fouling')
+    expect(evidence).toHaveTextContent(
+      'Score 0.58 · automatic isolation needs ≥ 0.80'
+    )
+    expect(evidence).toHaveTextContent('Against wall peers -40%')
+    const recovery = screen.getByRole('region', { name: 'Fault recovery' })
+    expect(recovery).toHaveTextContent('Awaiting approval')
+    expect(recovery).toHaveTextContent('Authorise · waiting')
+    fireEvent.click(
+      within(recovery).getByRole('button', { name: 'Approve and replay' })
+    )
+    expect(onApprove).toHaveBeenCalledWith('W6:80:drift_or_fouling')
+
+    rerender(<BrainFlow {...props} tickIndex={79} />)
+    expect(
+      screen.getByText('No episode for this zone at this tick.')
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Approve and replay' })).toBe(
+      null
+    )
+    rerender(
+      <BrainFlow
+        {...props}
+        selectedZone={{ ...zone, mode: 'SAFE' }}
+        tickIndex={82}
+      />
+    )
+    expect(screen.queryByRole('button', { name: 'Approve and replay' })).toBe(
+      null
+    )
+  })
+
+  it('lights verification outcomes as they happen and never offers approval afterwards', () => {
+    const escalated: RecoveryEpisode = {
+      ...waiting,
+      episode_id: 'W6:80:dead',
+      hypothesis: 'dead',
+      status: 'escalated',
+      mitigated_tick: 80,
+      snapshot_angle: 0,
+      valid_ticks: 6,
+      e_corrected: 2.3704,
+      e_uncorrected: 6.0316,
+      maintenance_flag: true,
+      events: [
+        ...waiting.events,
+        { tick_index: 80, stage: 'snapshot', detail: 'Recorded.' },
+        { tick_index: 80, stage: 'mitigate', detail: 'Isolated.' },
+        { tick_index: 99, stage: 'verify', detail: '6 informative ticks.' },
+        { tick_index: 99, stage: 'retain', detail: 'Corrected beats.' },
+        {
+          tick_index: 116,
+          stage: 'escalate',
+          detail: 'The fault has outlasted the episode limit.',
+        },
+      ],
+    }
+    const props = {
+      tick,
+      selectedZone: zone,
+      onSelectZone: vi.fn(),
+      episodes: [escalated],
+      onApproveEpisode: vi.fn(),
+    }
+    const { rerender } = render(<BrainFlow {...props} tickIndex={100} />)
+    const recovery = screen.getByRole('region', { name: 'Fault recovery' })
+    expect(recovery).toHaveTextContent(
+      'Corrected 2.370 · uncorrected 6.032 · relative objective over 6 informative ticks'
+    )
+    expect(recovery).toHaveTextContent('Retain · reached')
+    expect(recovery).not.toHaveTextContent('Escalate · reached')
+    expect(recovery).not.toHaveTextContent('Maintenance requested')
+    rerender(<BrainFlow {...props} tickIndex={120} />)
+    expect(recovery).toHaveTextContent('Escalate · reached')
+    expect(recovery).toHaveTextContent(
+      'Maintenance requested · substitution is not a repair'
+    )
+    expect(recovery).toHaveTextContent('Escalated · maintenance')
+    expect(screen.queryByRole('button', { name: 'Approve and replay' })).toBe(
+      null
+    )
+  })
+
+  it('keeps the workflow as design only until local checks run', () => {
+    const onEnable = vi.fn()
+    render(
+      <BrainFlow
+        tick={tick}
+        selectedZone={{ ...zone, assurance: undefined }}
+        onSelectZone={vi.fn()}
+        onEnableAssurance={onEnable}
+      />
+    )
+    expect(
+      screen.getByRole('region', { name: 'Planned fault recovery' })
+    ).toHaveTextContent('design only')
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Run local sensor checks' })
+    )
+    expect(onEnable).toHaveBeenCalledOnce()
   })
 })

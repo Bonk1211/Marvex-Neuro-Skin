@@ -44,6 +44,51 @@ const wall: FacadeHeat = {
 }
 
 describe('zone sensor panel', () => {
+  it('injects a declared fault window only for the selected controlled zone', () => {
+    const onPerturb = vi.fn()
+    const onClearPerturbation = vi.fn()
+    const props = {
+      wall,
+      selectedZone: 'W7',
+      onSelectZone: vi.fn(),
+      onOverride: vi.fn(),
+      onClearOverride: vi.fn(),
+      overriddenZoneIds: [],
+      loading: false,
+    }
+    const { rerender } = render(<ZoneSensorPanel {...props} />)
+    expect(screen.queryByText('Inject fault window')).not.toBeInTheDocument()
+
+    rerender(
+      <ZoneSensorPanel
+        {...props}
+        onPerturb={onPerturb}
+        onClearPerturbation={onClearPerturbation}
+        perturbedZoneIds={['W7']}
+      />
+    )
+    fireEvent.click(screen.getByText('Inject fault window'))
+    expect(screen.getByText('· fault active')).toBeVisible()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Fault window' }), {
+      target: { value: 'stuck' },
+    })
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Inject 2 h from this time' })
+    )
+    expect(onPerturb).toHaveBeenCalledWith('W7', 'stuck')
+    fireEvent.click(screen.getByRole('button', { name: 'Clear fault window' }))
+    expect(onClearPerturbation).toHaveBeenCalledWith('W7')
+
+    rerender(
+      <ZoneSensorPanel
+        {...props}
+        onPerturb={onPerturb}
+        buildingVariant='baseline'
+      />
+    )
+    expect(screen.queryByText('Inject fault window')).not.toBeInTheDocument()
+  })
+
   it('shows incident surface irradiance without controlled readings or editing in the baseline view', () => {
     const onSelectZone = vi.fn()
     const onOverride = vi.fn()

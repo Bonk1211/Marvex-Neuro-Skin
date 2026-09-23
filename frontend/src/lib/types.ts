@@ -8,6 +8,18 @@ export type CloudProfile = 'clear' | 'scattered' | 'overcast'
 export type EnvironmentSource = 'synthetic' | 'met_anchored' | 'open_meteo'
 export type FacadeOrientation = 'north' | 'east' | 'south' | 'west'
 
+/** off reproduces the pre-assurance run; monitor only adds evidence. */
+export type FaultCorrectionMode = 'off' | 'monitor' | 'review' | 'auto'
+export type PerturbationKind = 'dead' | 'stuck' | 'drift' | 'fouled' | 'shadow'
+
+/** Declared test input: faults corrupt a reading, shadow is a real unmodelled drop. */
+export interface ZonePerturbation {
+  kind: PerturbationKind
+  start_tick: number
+  end_tick: number
+  severity?: number
+}
+
 export interface ControllerWeights {
   thermal: number
   lux: number
@@ -45,6 +57,69 @@ export interface SimulationRunRequest {
     string,
     { tick_index: number; irradiance: number; illuminance: number }
   >
+  zone_perturbations?: Record<string, ZonePerturbation>
+  fault_correction?: FaultCorrectionMode
+  /** Episode ids an operator approved; the run replays them deterministically. */
+  approved_episodes?: string[]
+}
+
+/** Peer and lux plausibility evidence for one zone. The score routes; it is not accuracy. */
+export interface ZoneAssurance {
+  verdict:
+    | 'consistent'
+    | 'legitimate_condition'
+    | 'suspect'
+    | 'fault'
+    | 'insufficient'
+  hypothesis:
+    | 'dead'
+    | 'stuck'
+    | 'drift_or_fouling'
+    | 'local_shadow'
+    | 'ambiguous'
+    | null
+  score: number
+  peer_deviation: number | null
+  lux_deviation: number | null
+  reason: string
+  episode_id?: string
+}
+
+export type EpisodeStage =
+  | 'detect'
+  | 'authorise'
+  | 'snapshot'
+  | 'mitigate'
+  | 'verify'
+  | 'retain'
+  | 'roll_back'
+  | 'escalate'
+  | 'restore'
+  | 'close'
+
+/** One zone's simulated fault episode. Objectives are relative indices, never energy. */
+export interface RecoveryEpisode {
+  episode_id: string
+  zone: string
+  hypothesis: string
+  score: number
+  status:
+    | 'monitoring'
+    | 'awaiting_approval'
+    | 'mitigating'
+    | 'retained'
+    | 'rolled_back'
+    | 'escalated'
+    | 'closed'
+  opened_tick: number
+  mitigated_tick: number | null
+  closed_tick: number | null
+  snapshot_angle: number | null
+  valid_ticks: number
+  e_corrected: number
+  e_uncorrected: number
+  maintenance_flag: boolean
+  events: { tick_index: number; stage: EpisodeStage; detail: string }[]
 }
 
 export type CostBreakdown = ControllerWeights
@@ -96,6 +171,7 @@ export interface ZoneHeat {
     daylight_source: 'sensor' | 'model'
   }
   cost_breakdown?: CostBreakdown
+  assurance?: ZoneAssurance
 }
 
 export interface DaylightProbePayload {
@@ -411,4 +487,6 @@ export interface SimulationRunResponse {
   ticks: TickPayload[]
   comparison: ComparisonMetric[]
   annotations: EventAnnotation[]
+  /** Present only when fault correction opened at least one episode. */
+  episodes?: RecoveryEpisode[]
 }

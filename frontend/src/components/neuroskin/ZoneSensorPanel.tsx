@@ -1,7 +1,15 @@
 'use client'
 
-import type { FacadeHeat } from '@/lib/types'
+import type { FacadeHeat, PerturbationKind } from '@/lib/types'
 import type { BuildingVariant } from './buildingComparison'
+
+const PERTURBATIONS: [PerturbationKind, string][] = [
+  ['dead', 'Dead irradiance sensor'],
+  ['stuck', 'Stuck sensor pair'],
+  ['drift', 'Drifting irradiance sensor'],
+  ['fouled', 'Fouled irradiance sensor'],
+  ['shadow', 'Real local shadow'],
+]
 
 interface ZoneSensorPanelProps {
   wall: FacadeHeat
@@ -13,6 +21,9 @@ interface ZoneSensorPanelProps {
   ) => void
   onClearOverride: (zoneId: string) => void
   overriddenZoneIds: string[]
+  onPerturb?: (zoneId: string, kind: PerturbationKind) => void
+  onClearPerturbation?: (zoneId: string) => void
+  perturbedZoneIds?: string[]
   loading: boolean
   buildingVariant?: BuildingVariant
 }
@@ -24,6 +35,9 @@ export function ZoneSensorPanel({
   onOverride,
   onClearOverride,
   overriddenZoneIds,
+  onPerturb,
+  onClearPerturbation,
+  perturbedZoneIds = [],
   loading,
   buildingVariant = 'controlled',
 }: ZoneSensorPanelProps) {
@@ -352,6 +366,64 @@ export function ZoneSensorPanel({
             <p className='mt-2 text-[10px] text-muted-foreground'>
               Sensor readings unavailable at this tick.
             </p>
+          )}
+          {sensors && onPerturb && (
+            <details className='mt-2 rounded-lg border border-border p-2'>
+              <summary className='cursor-pointer text-[10px] font-semibold'>
+                Inject fault window
+                {perturbedZoneIds.includes(selected.zone) && (
+                  <span className='text-amber-800'> · fault active</span>
+                )}
+              </summary>
+              <form
+                className='mt-2'
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  if (loading) return
+                  const kind = new FormData(event.currentTarget).get('kind')
+                  onPerturb(selected.zone, kind as PerturbationKind)
+                }}
+              >
+                <fieldset disabled={loading} className='space-y-2'>
+                  <label className='block text-[10px]'>
+                    Fault window
+                    <select
+                      aria-label='Fault window'
+                      name='kind'
+                      defaultValue='dead'
+                      className='setting-input mt-1 w-full'
+                    >
+                      {PERTURBATIONS.map(([value, label]) => (
+                        <option key={value} value={value}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type='submit'
+                    className='run-button-light w-full text-[10px]'
+                  >
+                    Inject 2 h from this time
+                  </button>
+                  {perturbedZoneIds.includes(selected.zone) &&
+                    onClearPerturbation && (
+                      <button
+                        type='button'
+                        onClick={() => onClearPerturbation(selected.zone)}
+                        className='w-full rounded border border-border px-2 py-1 text-[10px] hover:bg-secondary/60'
+                      >
+                        Clear fault window
+                      </button>
+                    )}
+                </fieldset>
+              </form>
+              <p className='mt-1.5 text-[9px] text-muted-foreground'>
+                Declared synthetic test input for {selected.zone}. Faults
+                corrupt its reading; shadow is a real drop the geometry model
+                cannot see. Local sensor checks run on the replay.
+              </p>
+            </details>
           )}
         </div>
       )}

@@ -37,6 +37,7 @@ import {
 import { runSimulation } from '@/lib/api-client'
 import type {
   FacadeOrientation,
+  PerturbationKind,
   ScenarioName,
   SimulationRunRequest,
   SimulationRunResponse,
@@ -162,6 +163,8 @@ export function NeuroSkinDashboard() {
   const [request, setRequest] = useState<SimulationRunRequest>(() => ({
     ...DEFAULT_REQUEST,
     daylight_model_enabled: lens === 'floor',
+    // Opening Brains directly runs local sensor checks; approvals stay manual.
+    fault_correction: lens === 'brains' ? 'review' : 'off',
   }))
   const initialRequest = useRef(request)
   const [data, setData] = useState<SimulationRunResponse | null>(null)
@@ -484,6 +487,47 @@ export function NeuroSkinDashboard() {
     await execute(nextRequest, sensorTick)
   }
 
+  /** Replay the applied run with a fault-correction change, keeping the clock. */
+  const replayFaultCorrection = async (
+    changes: Partial<
+      Pick<
+        SimulationRunRequest,
+        'zone_perturbations' | 'fault_correction' | 'approved_episodes'
+      >
+    >
+  ) => {
+    const sensorTick = Math.min(timelineIndex, Math.max(0, tickCount - 1))
+    setPlaying(false)
+    // Like a sensor override, this must not apply unrelated unsaved settings.
+    setRequest((draft) => ({ ...draft, ...changes }))
+    setTierResults({})
+    setTierStatus({})
+    setActiveTier(null)
+    await execute({ ...appliedRequest.current, ...changes }, sensorTick)
+  }
+  const updateZonePerturbation = (
+    zoneId: string,
+    kind: PerturbationKind | null
+  ) => {
+    const sensorTick = Math.min(timelineIndex, Math.max(0, tickCount - 1))
+    const perturbations = { ...appliedRequest.current.zone_perturbations }
+    if (kind)
+      perturbations[zoneId] = {
+        kind,
+        start_tick: sensorTick,
+        end_tick: Math.min(tickCount - 1, sensorTick + 12),
+      }
+    else delete perturbations[zoneId]
+    const mode = appliedRequest.current.fault_correction ?? 'off'
+    void replayFaultCorrection({
+      zone_perturbations: perturbations,
+      // An injected fault is only worth watching with local checks running.
+      fault_correction: kind && mode === 'off' ? 'review' : mode,
+      // Earlier approvals named episodes of a different fault.
+      approved_episodes: [],
+    })
+  }
+
   const updateSkyObservation = async (observation: SkyObservation | null) => {
     if (loading || tierRunning || !tickCount) return null
     const sensorTick = Math.min(timelineIndex, tickCount - 1)
@@ -754,6 +798,13 @@ export function NeuroSkinDashboard() {
                           overriddenZoneIds={Object.keys(
                             request.zone_sensor_overrides ?? {}
                           )}
+                          onPerturb={updateZonePerturbation}
+                          onClearPerturbation={(zoneId) =>
+                            updateZonePerturbation(zoneId, null)
+                          }
+                          perturbedZoneIds={Object.keys(
+                            request.zone_perturbations ?? {}
+                          )}
                           loading={loading || tierRunning}
                         />
                       )}
@@ -916,6 +967,25 @@ export function NeuroSkinDashboard() {
                       tick={selectedTick}
                       selectedZone={selectedZoneState}
                       onSelectZone={selectZone}
+                      episodes={data.episodes}
+                      tickIndex={timelineIndex}
+                      loading={loading || tierRunning}
+                      onApproveEpisode={(episodeId) =>
+                        void replayFaultCorrection({
+                          approved_episodes: [
+                            ...new Set([
+                              ...(appliedRequest.current.approved_episodes ??
+                                []),
+                              episodeId,
+                            ]),
+                          ],
+                        })
+                      }
+                      onEnableAssurance={() =>
+                        void replayFaultCorrection({
+                          fault_correction: 'review',
+                        })
+                      }
                     />
                   </div>
                 )}

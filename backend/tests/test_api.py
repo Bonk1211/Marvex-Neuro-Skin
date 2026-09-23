@@ -200,6 +200,94 @@ def test_zone_sensor_override_rejects_invalid_ids_indices_and_readings(zone, rea
     assert response.status_code == 422
 
 
+def _zone_states(payload: dict) -> dict[tuple[int, str], dict]:
+    return {
+        (index, zone["zone"]): zone
+        for index, tick in enumerate(payload["ticks"])
+        for wall in tick["facade"]
+        for zone in wall["zones"]
+    }
+
+
+def _without_assurance(payload: dict) -> dict:
+    for tick in payload["ticks"]:
+        for wall in tick["facade"]:
+            for zone in wall["zones"]:
+                zone.pop("assurance")
+    payload.pop("episodes", None)
+    for key in list(payload["summary"]):
+        if key.startswith(("assurance_", "episodes_")) or key == "unmatched_approvals":
+            payload["summary"].pop(key)
+    return payload
+
+
+def test_fault_window_corrupts_one_zone_and_monitor_only_adds_evidence() -> None:
+    request = {"scenario": "overview", "seed": 42}
+    dead = {"W6": {"kind": "dead", "start_tick": 78, "end_tick": 96}}
+    baseline = client.post("/api/v1/simulations/run", json=request).json()
+    faulted = client.post(
+        "/api/v1/simulations/run", json={**request, "zone_perturbations": dead}
+    ).json()
+    before, after = _zone_states(baseline), _zone_states(faulted)
+    changed = {key for key in before if before[key] != after[key]}
+    assert changed and {zone for _, zone in changed} == {"W6"}
+    assert all(index >= 78 for index, _ in changed)
+    assert after[(80, "W6")]["sensors"] == {**before[(80, "W6")]["sensors"], "irradiance": 0}
+    # Zero is valid shade: without assurance the range check still admits it.
+    assert after[(80, "W6")]["sensor_trusted"] is True
+    assert "assurance" not in after[(80, "W6")]
+
+    monitored = client.post(
+        "/api/v1/simulations/run", json={**request, "fault_correction": "monitor"}
+    ).json()
+    verdicts = {zone["assurance"]["verdict"] for zone in _zone_states(monitored).values()}
+    assert "fault" not in verdicts and "consistent" in verdicts
+    assert monitored["summary"]["assurance_fault_zone_ticks"] == 0
+    assert _without_assurance(monitored) == baseline
+
+    watched = client.post(
+        "/api/v1/simulations/run",
+        json={**request, "zone_perturbations": dead, "fault_correction": "monitor"},
+    ).json()
+    states = _zone_states(watched)
+    assert [states[(index, "W6")]["assurance"]["verdict"] for index in (78, 79, 80)] == [
+        "suspect",
+        "suspect",
+        "fault",
+    ]
+    assert states[(80, "W6")]["assurance"]["hypothesis"] == "dead"
+    assert states[(80, "W6")]["assurance"]["episode_id"] == "W6:80:dead"
+    # Monitoring records the episode and closes it once the window ends; nothing acts.
+    (episode,) = watched["episodes"]
+    assert episode["status"] == "closed" and episode["mitigated_tick"] is None
+    assert [event["stage"] for event in episode["events"]] == ["detect", "authorise", "close"]
+    assert not any(
+        state["assurance"]["verdict"] == "fault"
+        for (_, zone), state in states.items()
+        if zone != "W6"
+    )
+    assert _without_assurance(watched) == faulted
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"zone_perturbations": {"W6": {"kind": "dead", "start_tick": 90, "end_tick": 80}}},
+        {"zone_perturbations": {"W6": {"kind": "melted", "start_tick": 80, "end_tick": 90}}},
+        {"zone_perturbations": {"W17": {"kind": "dead", "start_tick": 80, "end_tick": 90}}},
+        {"zone_perturbations": {"W6": {"kind": "drift", "start_tick": 80, "end_tick": 144}}},
+        {
+            "zone_perturbations": {
+                "W6": {"kind": "fouled", "start_tick": 8, "end_tick": 9, "severity": 0}
+            }
+        },
+        {"fault_correction": "fix_everything"},
+    ],
+)
+def test_fault_injection_and_correction_mode_reject_invalid_requests(body) -> None:
+    assert client.post("/api/v1/simulations/run", json=body).status_code == 422
+
+
 @pytest.mark.parametrize(
     "field,value",
     [

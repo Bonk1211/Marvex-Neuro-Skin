@@ -6,7 +6,7 @@ import pandas as pd
 import pvlib
 
 from app.config import DEFAULTS
-from app.domain.types import Environment, EnvironmentAnchor, ObservedWeather, Site
+from app.domain.types import Environment, EnvironmentAnchor, ObservedWeather, Site, ZoneSensors
 
 
 def default_site() -> Site:
@@ -223,3 +223,33 @@ def inject_sensor_fault(env: Environment, kind: str) -> Environment:
     if kind == "drift":
         return replace(env, measured_irradiance=env.measured_irradiance * 0.42)
     raise ValueError(f"Unsupported sensor fault: {kind}")
+
+
+def perturb_zone_sensors(
+    sensors: ZoneSensors,
+    kind: str,
+    severity: float,
+    progress: float,
+    stuck: ZoneSensors | None,
+) -> ZoneSensors:
+    """Declared test perturbation of one zone's pair. Faults corrupt the irradiance
+    reading while the aperture is unchanged; shadow is a real drop on both channels
+    that the geometry model cannot see."""
+
+    if kind == "dead":
+        return replace(sensors, irradiance=0.0)
+    if kind == "stuck":
+        stuck = stuck or sensors
+        return replace(sensors, irradiance=stuck.irradiance, illuminance=stuck.illuminance)
+    if kind == "drift":
+        factor = 1 - severity * min(1.0, max(0.0, progress))
+        return replace(sensors, irradiance=round(sensors.irradiance * factor, 2))
+    if kind == "fouled":
+        return replace(sensors, irradiance=round(sensors.irradiance * (1 - severity), 2))
+    if kind == "shadow":
+        return replace(
+            sensors,
+            irradiance=round(sensors.irradiance * (1 - severity), 2),
+            illuminance=round(sensors.illuminance * (1 - severity), 1),
+        )
+    raise ValueError(f"Unsupported zone perturbation: {kind}")

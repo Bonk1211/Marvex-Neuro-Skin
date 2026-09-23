@@ -81,7 +81,7 @@ keeps them observe-only; measured comfort and control improvements remain unprov
 
 The product has no authentication, persisted runs, approvals, live sensors, BMS/MQTT link, actuator acknowledgement, alarm handling, or rollback. It must not be represented as a live operations console.
 
-The Building lens provides a manager-shaped evaluation view over simulated data. Its provenance strip stays visible across all four lenses and makes provider fallback explicit. The AFC workstream (§14.2) remains planned; neither surface establishes live operation.
+The Building lens provides a manager-shaped evaluation view over simulated data. Its provenance strip stays visible across all four lenses and makes provider fallback explicit. Simulated fault recovery (§14.2) runs inside a replayed day; neither surface establishes live operation.
 
 ## 4. Goals, guardrails, and non-goals
 
@@ -116,6 +116,11 @@ The Building lens provides a manager-shaped evaluation view over simulated data.
 - Surrogate MAE and R² measure agreement with the local oracle. They do not establish
   measured comfort, reliable threshold decisions or suitability for autonomous control.
   The three identical seed-42 runs establish reproducibility, not independent validation.
+- Local sensor assurance and fault recovery (§6.8) are simulated and uncommissioned. A
+  healthy simulated zone sensor is its geometry model plus 1% noise, so fault-matrix
+  detection rates are synthetic upper bounds. Isolation substitutes peer-scaled inputs and
+  is never a repair. Verification objectives (`e_corrected`/`e_uncorrected`) are relative
+  indices, never kWh.
 
 ### 4.3 Non-goals in the current release
 
@@ -130,7 +135,7 @@ The Building lens provides a manager-shaped evaluation view over simulated data.
 
 > The ESP32 hardware bridge (`hardware/README.md`) is an explicit, demo-scale exception to the first bullet: four BH1750 readings and four servo commands over local WiFi, with no field-validation, safety-certification or energy claims.
 
-> The planned AFC workstream (§14.2) requires a correction ledger and therefore **contradicts the no-database non-goal above.** That contradiction is deliberate and scoped: rollback cannot restore a state that was never stored. If §14.2 ships, this bullet must be amended to "no database beyond AFC correction episodes" rather than silently left standing.
+> Simulated fault recovery (§6.8, §14.2) keeps the no-database non-goal: each run is a deterministic replay of its request, so the rollback snapshot lives in the run and the response is the episode audit trail. Operator approval is a replay input (`approved_episodes`), not a stored pause. Persistence becomes necessary only when episodes outlive a request, which is the deferred live-rig phase; that phase must amend this bullet.
 
 ## 5. Product surfaces and user journeys
 
@@ -263,6 +268,15 @@ Every normally handled response, including validation responses, includes a sani
 - **FR-D4:** The Brains comparison uses the fixed 12-day oracle experiment, with its seed, sample scope and denominators. It does not substitute surrogate estimates or imply that an Ev-aware controller has been tested.
 - **FR-D5:** Preserve reproducible offline training, the executed notebook, append-only evaluation ledger and shared generation/serving feature contract. Record latency and interpolation sensitivity; the unmet uncached inference target remains a documented limitation (§14.3).
 
+### 6.8 Local sensor assurance and fault recovery (simulation)
+
+- **FR-A1:** `zone_perturbations` declares per-zone test windows: `dead`, `stuck`, `drift` and `fouled` corrupt the irradiance reading (stuck freezes both channels); `shadow` is a real drop on both channels that the geometry model cannot see. Perturbations apply after each zone's random draws and before a one-tick override, so unrelated zones stay byte-identical.
+- **FR-A2:** `fault_correction` defaults to `off`, which reproduces the pre-assurance response bytes. Other modes add per-zone `assurance` evidence: the reading's ratio to its model against the median of its sunlit wall peers, its own lux channel against its pre-fault lux ratio, and a flatness test against peers' reading-to-reading flicker. Verdicts are `consistent`, `legitimate_condition` (a shared, lux-corroborated drop), `suspect`, `fault` (after three consecutive ticks) or `insufficient`. A whole-wall drop is consistent; a one-zone drop that its lux confirms is insufficient, not a fault.
+- **FR-A3:** A `fault` opens an episode `<zone>:<tick>:<hypothesis>`. `monitor` records only. `review` isolates only ids listed in `approved_episodes`, replayed deterministically. `auto` isolates dead/stuck hypotheses at score ≥ 0.8 and waits for approval otherwise.
+- **FR-A4:** Isolation never starts or stops on a SAFE tick. It records a snapshot, replaces only the implicated channel (irradiance with the model scaled by peers; lux too for a stuck pair) and runs an uncorrected counterfactual under identical conditions. Only sunlit, non-SAFE ticks where the branches' angles differ by more than 0.5° count as verification evidence; a branch breaching the direct-sun screen at the reference pays 1.0.
+- **FR-A5:** After six informative ticks the episode is retained when the corrected objective beats the uncorrected by 0.01, otherwise rolled back. A sensor that agrees with its peers for three ticks is restored (`closed`). Episodes escalate with a maintenance flag after 36 isolated ticks, or 18 without four informative ticks; a zone that re-flags after a rollback escalates at once. Escalated sensors stay isolated for the run.
+- **FR-A6:** Detection and recovery functions accept no fault label. Verification judges both branches on peer evidence that also built the substitute, so it shows that following peers beat trusting the suspect sensor, not that the peers were right; the fault matrix scores the substitute against declared truth separately.
+
 ## 7. Inputs, outputs, and success metrics
 
 ### 7.1 Principal inputs
@@ -394,7 +408,9 @@ The stack is deliberately behind on four fronts. Each is a decision to record, n
 
 ### 8.4 Planned stack additions
 
-Not installed. Required only by §14.2.
+Not installed. Simulated recovery (§6.8) needed none of these; they belong to the deferred
+live-rig and diagnosis phase of §14.2, which must re-evaluate them (a Supabase-hosted
+episode table is the preferred store over SQLite if persistence is needed).
 
 | Package | Available | Purpose |
 | ------- | --------- | ------- |
@@ -527,7 +543,7 @@ The next product decisions, before more feature work, are:
 3. Define measured acceptance thresholds for daylight, relative/absolute load, actuator movement, sensor-fault latency, condensation margin, and plant comfort.
 4. Decide which incumbent slab behavior is the real baseline and collect at least the slab/zone/charge and next-day cooling logs required to identify it.
 5. Decide whether the next deliverable is still a judge-facing proof or a secured operator workflow; the latter requires persistence, approvals, auditability, and integration before UI expansion.
-6. Decide whether the AFC workstream (§14.2) is in scope, since it is the first item that deliberately breaks a §4.3 non-goal.
+6. Decide whether the deferred live-rig fault phase (§14.2) is in scope, since a cross-request episode store would be the first item that deliberately breaks a §4.3 non-goal.
 
 ## 13. Traceability map
 
@@ -549,10 +565,13 @@ The next product decisions, before more feature work, are:
 | Daylight oracle and training | `backend/app/domain/daylight/`, `backend/scripts/generate_daylight_dataset.py`, `backend/notebooks/daylight_surrogate_training.ipynb` | `backend/tests/test_daylight.py`, `docs/appendix/daylight-training-results.md`, `daylight-runs.jsonl` |
 | Daylight observations and evidence | `DaylightPanel.tsx`, `bandPlan.ts`, `backend/scripts/ablation_glare_blindness.py`, `backend/scripts/benchmark_daylight.py` | `DaylightPanel.test.tsx`, API parity checks, `docs/appendix/daylight-threshold-results.json` and serving/oracle reports |
 
-## 14. Implemented model development and planned AFC workstream
+## 14. Implemented model development and fault-recovery workstream
 
-The dashboard lens split (§14.1) and daylight surrogate development (§14.3) are implemented
-at this snapshot. The AFC workstream (§14.2) remains planned and unbuilt.
+The dashboard lens split (§14.1), deterministic sensor assurance and fault recovery in
+simulation (§14.2) and daylight surrogate development (§14.3) are implemented. The §14.2
+live-rig and diagnosis-agent phase remains planned. §14.2 landed after this document's audit
+snapshot; its tests and appendix were verified on the implementation branch, but the audit
+numbers in §10 predate it.
 
 ### 14.1 Dashboard lens split and provenance disclosure
 
@@ -560,23 +579,25 @@ Plan: [`.claude/PRPs/plans/dashboard-lens-split-and-provenance.plan.md`](../.cla
 
 Implemented: four lenses (`building`, `floor`, `brains`, `feeds`) selected by `?view=` over one shared run, full provenance disclosure, primary-tick objective contributions, and a furnished cutaway/top-down floor camera in the existing scene. Health reports cached adapter observations without outbound probes. The corresponding journeys, browser explainability/provenance status, and operator limitations are reflected above.
 
-### 14.2 LangGraph agentic automatic fault correction
+### 14.2 Local sensor assurance and verified fault recovery
 
-Plan: [`.claude/PRPs/plans/langgraph-agentic-afc.plan.md`](../.claude/PRPs/plans/langgraph-agentic-afc.plan.md) — XL, 14 files, 8 tasks, with a deliberate no-new-dependency boundary after task 4.
+Plan: [`.claude/PRPs/plans/completed/langgraph-agentic-afc.plan.md`](../.claude/PRPs/plans/completed/langgraph-agentic-afc.plan.md) (revision 2). Detection was built before correction; LangGraph, persistence and the LLM were deferred.
 
-Adds the back half of an AFC loop to the existing front half. `validation.py` already detects, `brain.py` already decides, `safety.py` already gates; missing are a calibrated confidence score, a persisted prior state, a verification objective, and a rollback.
+**Phase A — Layer 1, implemented in simulation (§6.8 FR-A1/A2).** Declared `zone_perturbations` provide labelled ground truth on the sensors the zone controllers actually read (rev 1 targeted the roof pyranometer, which zone controllers no longer use). `backend/app/domain/assurance.py` judges each zone against its sunlit wall peers, its own lux channel and peer flicker, without any label. Thresholds were tuned on calibration seeds 1–3 only (the stuck test was redefined from a sky-trend to a peer-flicker comparison) and reported once on evaluation seeds 7, 11 and 13.
 
-**Architecture constraint:** the LLM is not in the correction path. It ranks diagnosis hypotheses over read-only tools and speaks to the operator. The confidence number, the safety veto, the write authorisation, the verification test, and the rollback are deterministic arithmetic. Only read-only tools are bound to the model.
+**Phase B — Layer 3, implemented in simulation (§6.8 FR-A3–A6).** `backend/app/domain/recovery.py` holds pure episode transitions; `run_scenario` owns episodes in the run, so no database is needed and approvals replay deterministically. Findings during implementation changed the design:
 
-Consequences for this document if it ships:
+- Isolating the whole pair discarded a healthy lux channel, so only the implicated channel is replaced, with peer-scaled rather than bare-model inputs.
+- The cost objective omits the direct-sun screen the optimiser enforces as a hard bound; verification adds a 1.0 penalty for a breach, otherwise a dead sensor that opens the louvres into the sun "wins".
+- Ticks where both branches choose the same angle carry no evidence and are not counted.
+- A sensor that recovers is restored (`closed`), not rolled back; rollback means the correction failed verification.
+- Episode limits count ticks with evidence, so dark hours never escalate an episode.
 
-- §4.3 "no database" must become "no database beyond AFC correction episodes".
-- §3.2 gains an AFC job to be done.
-- §4.2 gains a guardrail that corrections are simulated and uncommissioned; `E_before`/`E_after` are relative-index objectives and never kWh.
-- §8.4 dependencies move into §8.2.
-- G2 reproducibility must be re-verified after every AFC task — the AFC path must not perturb the deterministic simulation.
+**Evidence:** [fault matrix](appendix/assurance-matrix-results.md) with detection, delay, false positives and recovery outcomes with denominators, for declared 3 h and (recovery-only, added after the first full run) 7 h fault windows. Results are synthetic upper bounds. Verification judges both branches on the same peer evidence that builds the substitute, so the matrix scores substitutes against declared truth separately.
 
-`inject_sensor_fault()` (`environment.py:218`) plus G2 determinism provides reproducible labelled fault ground truth, which a real-building AFC study cannot offer. That is the strongest methodological asset available for this workstream.
+**Architecture constraint (unchanged):** no LLM in the correction path. Score, authorisation, transition guards, verification and rollback are deterministic, and the recovery functions accept no fault label (tests).
+
+**Deferred (own plan required):** fault checks on the ESP32 rig's four lux-only panels; a cross-request episode ledger (Supabase preferred over SQLite, with rig commands never waiting on it); and the read-only diagnosis agent (L3-07).
 
 ### 14.3 Daylight surrogate development and assessment — implemented
 

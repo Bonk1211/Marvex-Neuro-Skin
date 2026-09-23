@@ -35,7 +35,7 @@ def lux_penalty(lux: float) -> float:
     return float(min(1.0, (lux - 700) / 700))
 
 
-def _breakdown(
+def angle_cost_breakdown(
     angle: float,
     load: LoadEstimate,
     open_lux: float,
@@ -77,7 +77,7 @@ def optimise_angle(
     glazing_shgc: float = DEFAULTS.glazing_shgc,
 ) -> OptimisationResult:
     def breakdown_at(angle: float) -> dict[str, float]:
-        return _breakdown(
+        return angle_cost_breakdown(
             angle,
             load,
             open_lux,

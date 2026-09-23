@@ -190,6 +190,21 @@ def run_simulation(request: SimulationRunRequest, http_request: Request) -> Simu
             "movement_count": result.summary["movement_count"],
             "sensor_fault_ticks": result.summary["sensor_fault_ticks"],
             "safe_mode_ticks": result.summary["safe_mode_ticks"],
+            "fault_correction": request.fault_correction,
+            # Absent (so omitted) unless fault_correction is enabled.
+            **{
+                key: result.summary.get(key)
+                for key in (
+                    "assurance_fault_zone_ticks",
+                    "assurance_shadow_zone_ticks",
+                    "episodes_opened",
+                    "episodes_retained",
+                    "episodes_rolled_back",
+                    "episodes_escalated",
+                    "episodes_awaiting_approval",
+                    "unmatched_approvals",
+                )
+            },
             "daylight_model": "extra trees" if any(t.daylight for t in result.ticks) else "off",
             "ev_exceedance_ticks": sum(
                 any(

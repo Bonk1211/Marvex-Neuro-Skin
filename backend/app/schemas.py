@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.config import DEFAULTS
 
@@ -18,6 +18,30 @@ class ZoneSensorOverride(BaseModel):
     tick_index: int = Field(ge=0, le=143, strict=True)
     irradiance: float = Field(ge=0, le=1600, allow_inf_nan=False)
     illuminance: float = Field(ge=0, le=10000, allow_inf_nan=False)
+
+
+PerturbationKind = Literal["dead", "stuck", "drift", "fouled", "shadow"]
+FaultCorrectionMode = Literal["off", "monitor", "review", "auto"]
+# "<zone>:<opened tick>:<hypothesis>", stable when the same request is replayed.
+EpisodeId = Annotated[
+    str,
+    Field(pattern=r"^[NESW](?:[1-9]|1[0-6]):(?:1[0-3]\d|14[0-3]|[1-9]?\d):[a-z_]+$", max_length=48),
+]
+
+
+class ZonePerturbation(BaseModel):
+    """Declared test input. Faults corrupt the reading; shadow is a real, unmodelled drop."""
+
+    kind: PerturbationKind
+    start_tick: int = Field(ge=0, le=143, strict=True)
+    end_tick: int = Field(ge=0, le=143, strict=True)
+    severity: float = Field(0.5, gt=0, le=1, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def ordered_window(self) -> "ZonePerturbation":
+        if self.end_tick < self.start_tick:
+            raise ValueError("end_tick must not be before start_tick")
+        return self
 
 
 class WeightInput(BaseModel):
@@ -57,6 +81,11 @@ class SimulationRunRequest(BaseModel):
     zone_sensor_overrides: dict[ZoneId, ZoneSensorOverride] = Field(
         default_factory=dict, max_length=64
     )
+    zone_perturbations: dict[ZoneId, ZonePerturbation] = Field(default_factory=dict, max_length=64)
+    # "off" reproduces the pre-assurance response; "monitor" only adds evidence.
+    fault_correction: FaultCorrectionMode = "off"
+    # Operator approvals, replayed: an approved episode is isolated when it reopens.
+    approved_episodes: list[EpisodeId] = Field(default_factory=list, max_length=64)
     # Calibrate against the installed glazing, actuator and occupant assessment.
     glazing_shgc: float = Field(DEFAULTS.glazing_shgc, ge=0, le=1, allow_inf_nan=False)
     glare_limit_w_m2: float = Field(DEFAULTS.glare_limit_w_m2, ge=0, le=2000, allow_inf_nan=False)
@@ -105,6 +134,18 @@ class ControlInputPayload(BaseModel):
     daylight_source: Literal["sensor", "model"]
 
 
+class ZoneAssurancePayload(BaseModel):
+    """Local plausibility evidence for this zone's sensor; the score routes, it is not accuracy."""
+
+    verdict: Literal["consistent", "legitimate_condition", "suspect", "fault", "insufficient"]
+    hypothesis: Literal["dead", "stuck", "drift_or_fouling", "local_shadow", "ambiguous"] | None
+    score: float
+    peer_deviation: float | None
+    lux_deviation: float | None
+    reason: str
+    episode_id: str | None = Field(None, exclude_if=lambda v: v is None)
+
+
 class ZoneHeatPayload(BaseModel):
     """One cell of one wall's 4 x 4 zone grid, with its own controller's state."""
 
@@ -129,6 +170,7 @@ class ZoneHeatPayload(BaseModel):
     diffuse_transmitted: float
     control_input: ControlInputPayload
     cost_breakdown: CostBreakdown
+    assurance: ZoneAssurancePayload | None = Field(None, exclude_if=lambda v: v is None)
 
 
 class DaylightProbePayload(BaseModel):
@@ -293,6 +335,50 @@ class SimulationMetadata(BaseModel):
     weather_context: WeatherContextPayload | None = None
 
 
+class EpisodeEventPayload(BaseModel):
+    tick_index: int
+    stage: Literal[
+        "detect",
+        "authorise",
+        "snapshot",
+        "mitigate",
+        "verify",
+        "retain",
+        "roll_back",
+        "escalate",
+        "restore",
+        "close",
+    ]
+    detail: str
+
+
+class RecoveryEpisodePayload(BaseModel):
+    """One zone's simulated fault episode. Objectives are relative indices, never energy."""
+
+    episode_id: str
+    zone: str
+    hypothesis: str
+    score: float
+    status: Literal[
+        "monitoring",
+        "awaiting_approval",
+        "mitigating",
+        "retained",
+        "rolled_back",
+        "escalated",
+        "closed",
+    ]
+    opened_tick: int
+    mitigated_tick: int | None
+    closed_tick: int | None
+    snapshot_angle: float | None
+    valid_ticks: int
+    e_corrected: float
+    e_uncorrected: float
+    maintenance_flag: bool
+    events: list[EpisodeEventPayload]
+
+
 class SimulationRunResponse(BaseModel):
     scenario: ScenarioName
     title: str
@@ -301,6 +387,9 @@ class SimulationRunResponse(BaseModel):
     ticks: list[TickPayload]
     comparison: list[ComparisonMetric]
     annotations: list[EventAnnotation]
+    episodes: list[RecoveryEpisodePayload] = Field(
+        default_factory=list, exclude_if=lambda v: not v
+    )
 
 
 # --------------------------------------------------------------------------

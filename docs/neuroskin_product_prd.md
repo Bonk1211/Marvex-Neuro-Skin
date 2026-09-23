@@ -232,14 +232,21 @@ rollback or escalate.**
 - **L3-07:** LLM unavailability cannot block safety, hold/fallback or rollback. The diagnosis
   agent receives read-only tools; writes and transition guards remain deterministic.
 
-This follows the existing [AFC implementation plan](../.claude/PRPs/plans/langgraph-agentic-afc.plan.md).
+This follows the [AFC implementation plan](../.claude/PRPs/plans/completed/langgraph-agentic-afc.plan.md).
 LangGraph distinguishes predetermined workflows from dynamic agent behaviour; using the
 library alone does not make the controller agentic. Here the agentic scope is diagnosis
 and evidence gathering inside a governed correction workflow.
 [Workflow/agent reference](https://docs.langchain.com/oss/python/langgraph/workflows-agents)
 
-**Current state:** this persistent correction loop is planned. Sensor substitution and
-existing safety gates do not, by themselves, establish verified automatic fault correction.
+**Current state:** L3-01 to L3-06 are implemented deterministically **in simulation**
+(software PRD §6.8): in-run episodes with stable ids and replayed approvals, monitor /
+review / bounded automatic authority, SAFE-tick transition guards, channel-level isolation,
+counterfactual verification, retention, rollback, restoration and escalation. The seeded
+[fault matrix](appendix/assurance-matrix-results.md) reports detection and recovery quality
+with denominators. Verification uses peer evidence that also builds the substitute, so it is
+not independent of that evidence; the matrix scores the substitute against declared truth
+separately, per L3-05. L3-07 (the diagnosis agent) and any persistent, cross-request
+episode store for the physical rig remain planned. Nothing here is commissioned.
 
 ## 6. Target architecture and authority
 
@@ -373,7 +380,8 @@ visible, testable control behaviour.
 - [Input validation](../backend/app/domain/validation.py), [solar calculation](../backend/app/domain/solar.py) and [vision](../backend/app/vision.py): current input-assurance scope.
 - [Optimiser](../backend/app/domain/brain.py), [thermal proxy](../backend/app/domain/thermal.py) and [safety gate](../backend/app/domain/safety.py): present decision and authority boundaries.
 - [Daylight development plan](../.claude/PRPs/plans/daylight-surrogate-and-impact-demo.plan.md): reproducible model and independent evidence pipeline.
-- [AFC plan](../.claude/PRPs/plans/langgraph-agentic-afc.plan.md): proposed episode persistence, verification and rollback.
+- [AFC plan](../.claude/PRPs/plans/completed/langgraph-agentic-afc.plan.md): in-run episodes, verification and rollback (implemented in simulation); persistence and diagnosis deferred.
+- [Assurance](../backend/app/domain/assurance.py) and [recovery](../backend/app/domain/recovery.py): peer/lux detection and episode transitions; [fault matrix](appendix/assurance-matrix-results.md).
 
 This document adopts the user's three selling points as the product direction. Implementation
 plans and numerical acceptance thresholds must be reconciled with it before the next control

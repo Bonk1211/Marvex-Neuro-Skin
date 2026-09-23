@@ -37,8 +37,9 @@ const differentiators = [
     icon: BrainCircuit,
     label: 'Understand the decision',
     title: 'Three-layer mechatronic brain',
-    body: 'Check inputs, observe predicted daylight, and inspect the planned path to supervised fault recovery.',
-    result: 'Partial checks · observe-only Et/Ev · planned supervision',
+    body: 'Check each sensor against its peers, observe predicted daylight, and replay supervised fault recovery.',
+    result:
+      'Simulated peer checks · observe-only Et/Ev · deterministic recovery',
     href: '/dashboard?view=brains',
     action: 'Follow the reasoning',
   },
@@ -49,10 +50,10 @@ const brainLayers = [
     number: '01',
     icon: SunMedium,
     title: 'Physics + vision input assurance',
-    status: 'CURRENT · PARTIAL',
+    status: 'SIMULATED · PEER-CHECKED',
     color: 'text-mint bg-mint/10',
     description:
-      'Solar/cloud checks on the wall path; freshness checks for vision. Local zone sensors currently receive finite/range checks.',
+      'Solar/cloud checks on the wall path; freshness checks for vision. Each zone sensor is compared with its wall peers and its own lux channel, in simulation only.',
   },
   {
     number: '02',
@@ -66,11 +67,11 @@ const brainLayers = [
   {
     number: '03',
     icon: ShieldCheck,
-    title: 'Agentic supervision + fault recovery',
-    status: 'PLANNED',
+    title: 'Supervised fault recovery',
+    status: 'SIMULATED · DETERMINISTIC',
     color: 'text-amber-200 bg-amber-200/10',
     description:
-      'Bounded diagnosis, authorised mitigation, and independent verification—with rollback or escalation when recovery fails.',
+      'Authorised isolation, a snapshot, and verification against an uncorrected replay—then retain, roll back or escalate. An LLM diagnosis agent remains planned.',
   },
 ]
 
@@ -291,8 +292,9 @@ export function NeuroSkinLanding() {
               Clear responsibility.
             </h2>
             <p className='mt-5 max-w-md text-sm leading-6 text-white/65'>
-              Physics checks evidence. Learned models predict daylight. Planned
-              supervision will verify recovery within the same orchestrator.
+              Physics and peers check evidence. Learned models predict daylight.
+              Deterministic supervision verifies simulated recovery within the
+              same orchestrator.
             </p>
             <div className='mt-7 flex items-start gap-3 rounded-xl border border-white/10 bg-white/[0.04] p-4'>
               <ShieldCheck className='mt-0.5 h-5 w-5 shrink-0 text-mint' />

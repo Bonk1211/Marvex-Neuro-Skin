@@ -32,6 +32,17 @@ LOG_FIELDS = (
     "saving_percent",
     # Live hardware bridge.
     "hardware_mode",
+    # Local sensor assurance.
+    "fault_correction",
+    "assurance_fault_zone_ticks",
+    "assurance_shadow_zone_ticks",
+    # Verified fault recovery.
+    "episodes_opened",
+    "episodes_retained",
+    "episodes_rolled_back",
+    "episodes_escalated",
+    "episodes_awaiting_approval",
+    "unmatched_approvals",
 )
 
 

@@ -87,6 +87,41 @@ class SimulationDefaults:
     daylight_negligible_exceedance_percent: float = 1.0
     daylight_transfer_mae_ratio: float = 1.5
     daylight_transfer_mae_margin_lux: float = 50.0
+    # Local sensor assurance. Preregistered starting values: retune from the
+    # calibration seeds of scripts/assurance_matrix.py only, never evaluation seeds.
+    assurance_min_model_irradiance: float = 100.0
+    assurance_min_peers: int = 3
+    # |k_zone / median(k_peers) - 1|, k = reading / modelled aperture incident.
+    assurance_peer_deviation: float = 0.35
+    # |q_now / median(q_history) - 1|, q = lux / modelled open lux through the blades.
+    assurance_lux_deviation: float = 0.35
+    # An adjacent zone within this ratio distance shares the suspect's drop.
+    assurance_shadow_similarity: float = 0.25
+    assurance_persist_ticks: int = 3
+    assurance_window_ticks: int = 6
+    # Stuck: the zone's last persist_ticks + 1 readings span less than this (W/m2)...
+    # Calibration seeds: live sensors flicker ~6 W/m2 over three readings even under a
+    # flat afternoon sky, so 20 (the preregistered value) waited 13 ticks for the sky.
+    assurance_stuck_change: float = 0.05
+    # ...while its peers' median reading-to-reading change sums to more than this.
+    assurance_stuck_peer_change: float = 3.0
+    # Verified fault recovery. Only these hypotheses may be isolated without an operator.
+    recovery_auto_hypotheses: tuple[str, ...] = ("dead", "stuck")
+    recovery_auto_score: float = 0.8
+    # Verification counts only informative ticks: sunlit, no safety override, and the
+    # corrected and uncorrected branches actually chose different louvre angles. A
+    # tick where both agree says nothing about whether isolating the sensor helped.
+    recovery_verify_ticks: int = 6
+    recovery_informative_angle: float = 0.5
+    recovery_min_valid_ticks: int = 4
+    # Isolated for this many ticks with usable evidence, yet fewer than
+    # min_valid_ticks informative ones: escalate as unverifiable.
+    recovery_unverifiable_ticks: int = 18
+    # Relative-objective units summed over the verification window; never energy.
+    recovery_cost_margin: float = 0.01
+    # A fault still seen after six hours of isolation needs maintenance, not substitution.
+    recovery_max_episode_ticks: int = 36
+    recovery_cooldown_ticks: int = 6
 
 
 DEFAULTS = SimulationDefaults()
