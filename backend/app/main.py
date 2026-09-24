@@ -9,16 +9,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import DEFAULTS
 from app.domain.facade import ORIENTATIONS
 from app.domain.scenarios import SCENARIO_TITLES, run_scenario
-from app.domain.slab import plan_slab
 from app.feed_health import feed_health
 from app.hardware import router as hardware_router
 from app.logging_config import configure_logging
-from app.schemas import (
-    SimulationRunRequest,
-    SimulationRunResponse,
-    SlabPlanRequest,
-    SlabPlanResponse,
-)
+from app.schemas import SimulationRunRequest, SimulationRunResponse
 from app.vision import router as vision_router
 
 configure_logging()
@@ -130,31 +124,6 @@ def config() -> dict[str, object]:
         "scenarios": SCENARIO_TITLES,
         "synthetic": True,
     }
-
-
-@app.post("/api/v1/slab/plan", response_model=SlabPlanResponse)
-def plan_slab_charging(request: SlabPlanRequest, http_request: Request) -> SlabPlanResponse:
-    """Predictive radiant-slab charging for one day. Application 7.1."""
-
-    request_id = http_request.state.request_id
-    started = perf_counter()
-    result = plan_slab(request)
-    logger.info(
-        "Slab plan completed",
-        extra={
-            "event": "slab_plan_completed",
-            "request_id": request_id,
-            "planned_date": result.date.isoformat(),
-            "environment_source": result.metadata.environment_source,
-            "forecast_status": result.metadata.forecast_status,
-            "applicable": result.applicable,
-            "baseline_verdict": result.baseline_audit.verdict,
-            "claim_allowed": result.baseline_audit.claim_allowed,
-            "saving_percent": result.summary.saving_percent,
-            "duration_ms": round((perf_counter() - started) * 1000, 2),
-        },
-    )
-    return result
 
 
 @app.post("/api/v1/simulations/run", response_model=SimulationRunResponse)

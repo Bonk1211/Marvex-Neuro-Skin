@@ -23,13 +23,6 @@ LOG_FIELDS = (
     "ev_exceedance_ticks",
     "et_in_band_ticks",
     "daylight_model",
-    # Predictive slab charging.
-    "planned_date",
-    "forecast_status",
-    "applicable",
-    "baseline_verdict",
-    "claim_allowed",
-    "saving_percent",
     # Live hardware bridge.
     "hardware_mode",
     # Local sensor assurance.
