@@ -47,8 +47,8 @@ of the building. The simulation demonstrates the controller in three tiers:
 | **2. Co-optimisation** | What is the best angle right now? | A multi-objective controller balances daylight (300–700 lux), solar heat gain, a glare screen and movement cost. It is compared against a naive threshold controller. |
 | **3. Movement budget and fail-safe** | Is the move safe and worth making? | Rate-limited continuous tracking, plus wind, rain and power safety overrides. |
 
-The same twin also drives a predictive radiant-slab charging planner, learned occupant-plane
-daylight estimates and a small ESP32 louvre rig.
+The same twin also drives learned occupant-plane daylight estimates and a small ESP32
+louvre rig.
 
 ## Key features
 
@@ -69,8 +69,6 @@ daylight estimates and a small ESP32 louvre rig.
   feeds the Tier 1 sensor-trust check.
 - **Daylight surrogate models.** Extra Trees models estimate task illuminance (Et) and eye
   illuminance (Ev). They were trained on a radiosity oracle and run in observe-only mode.
-- **Radiant-slab planner.** A 1R1C slab model plans overnight pre-cooling and compares the
-  plan with a fixed 22:00–06:00 timer.
 - **ESP32 hardware bridge.** The rig has four BH1750 light sensors and four servo-driven
   louvres. It runs either in autonomous lux control or mirrors the twin, and has a dedicated
   calibration page.
@@ -89,13 +87,11 @@ flowchart LR
     S["pvlib solar + irradiance<br/>144 ticks"]
     B["Three-tier brain<br/>64 zone controllers"]
     D["Daylight surrogate<br/>Et / Ev, observe-only"]
-    P["1R1C slab planner"]
     H["Hardware bridge"]
   end
 
   subgraph frontend [Next.js frontend]
     T["Digital twin<br/>/dashboard"]
-    SL["Slab planner<br/>/slab"]
     C["Calibration<br/>/hardware"]
   end
 
@@ -103,7 +99,6 @@ flowchart LR
   V --> B
   B --> D --> T
   B --> T
-  B --> P --> SL
   E <--> H
   T -- mirror twin --> H
   C --> H
@@ -120,12 +115,12 @@ flowchart LR
 .
 ├── backend/
 │   ├── app/              FastAPI app: API, hardware bridge, vision, weather
-│   │   └── domain/       Solar, optics, controller, safety, slab, daylight models
+│   │   └── domain/       Solar, optics, controller, safety, daylight models
 │   ├── notebooks/        Daylight surrogate training notebook
 │   ├── scripts/          Dataset generation, ablation and benchmark scripts
 │   └── tests/            pytest suite
 ├── frontend/src/
-│   ├── app/              Routes: /, /dashboard, /slab, /hardware
+│   ├── app/              Routes: /, /dashboard, /hardware
 │   ├── components/       Digital twin, charts, hardware panels
 │   └── lib/api-client.ts Typed backend client
 ├── hardware/
@@ -184,7 +179,7 @@ secrets out of `NEXT_PUBLIC_*` variables, because those are shipped to the brows
 | --- | --- |
 | `/` | Product overview and entry point to each application |
 | `/dashboard` | Facade digital twin. **Run simulation** runs the three tiers in order while the sun crosses the model. Select any zone to inspect its inputs, decision and objective. |
-| `/slab` | Predictive radiant-slab planner. Generate, inspect and export a modelled night-charge plan as JSON. |
+| `/demo` | Sensor-only hardware demo. Opening it disconnects twin control; four BH1750 sensors independently drive the physical 2×2 louvres through the laptop bridge. |
 | `/hardware` | Actuator calibration for the ESP32 rig: map each servo's 0–180° range and test poses. |
 
 The dashboard can also switch between the controlled facade and a **no-external-facade
@@ -198,7 +193,6 @@ remove.
 | `GET` | `/api/v1/health` | Liveness, plus the last observed status of each upstream provider |
 | `GET` | `/api/v1/config` | Default site, geometry, limits, weather sources and scenarios |
 | `POST` | `/api/v1/simulations/run` | Run a full-day facade scenario |
-| `POST` | `/api/v1/slab/plan` | Build a predictive radiant-slab charging plan |
 | `POST` | `/api/v1/vision/clouds` | Segment clouds in a base64 JPEG sky frame |
 | `POST` | `/api/v1/hardware/tick` | ESP32 posts lux readings and receives louvre angles (requires `X-Hardware-Token`) |
 | `GET` | `/api/v1/hardware/status` | Latest rig readings, mode and commanded angles |
@@ -250,10 +244,13 @@ A 2×2 grid of louvre panels stands in for one 2×2 block of the twin's west wal
 has one SG90 servo, driven through a PCA9685 board, and one BH1750 light sensor. Every 500 ms
 the ESP32 posts four lux readings to the backend and receives four angles in return.
 
-- **Auto (default):** each panel steps toward shading above 700 lux and toward open below
-  300 lux. This mode keeps working when the dashboard is closed.
-- **Mirror twin:** the rig follows the twin's angles at the selected simulation time, so
-  scrubbing the timeline moves the physical louvres.
+- **Demo 1 · Follow simulation:** select this in the dashboard's Hardware demo card,
+  then play or run the simulation. The rig follows W13/W14/W9/W10 at the displayed
+  time. Mirroring slows playback to one second per tick; scrubbing also updates the rig.
+- **Demo 2 · Sensor only (default):** select this in the card or open `/demo` for a
+  dedicated corner-light demonstration without loading a simulation. Each BH1750
+  independently steps its panel toward shading above 700 lux and open below 300 lux.
+  The laptop backend and ESP32 stay connected; control continues with the page closed.
 
 Quick setup:
 
@@ -336,8 +333,6 @@ NeuroSkin is built to make controller behaviour inspectable, not to claim saving
 - **Et and Ev values are modelled, observe-only estimates.** They do not change controller
   decisions and are not measured comfort. The glare screen is a tunable threshold, not a glare
   standard.
-- **Slab energy figures are model outputs.** A fixed-timer comparison is structurally
-  eligible, but that does not prove field savings.
 - **The hardware rig is demo-scale.** Its control endpoints accept loopback requests only,
   the API has no TLS or user authentication, and it must not be exposed to the public
   internet.

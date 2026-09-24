@@ -8,7 +8,7 @@
 | Audited          | 13 September 2026                                                                         |
 | Status           | Demo-ready simulation proof; **not** a production building-control system                 |
 | Target building  | ST Diamond Building, Energy Commission HQ, Putrajaya                                      |
-| Product surfaces | Product overview, adaptive-facade digital twin, predictive radiant-slab planner, JSON API |
+| Product surfaces | Product overview, adaptive-facade digital twin, JSON API |
 
 > This document describes the repository as it exists at the audited commit. "Built" means implemented and locally verified in software; it does not mean commissioned against a real building, connected to plant, or validated for energy savings.
 
@@ -38,12 +38,11 @@ v0.3 was audited on 29 August 2026 against commit `1f1f4ca`. Two feature commits
 
 ## 1. Executive summary
 
-NeuroSkin is an explainable building-control simulation with two linked proof applications:
+NeuroSkin is an explainable building-control simulation built around one proof application:
 
 1. **Adaptive facade** — simulates a 24-hour day, checks whether irradiance readings are plausible, chooses louvre angles across four facades and 64 simulated facade zones, enforces hard safety states, and compares the result with a naive threshold controller.
-2. **Predictive radiant-slab charging** — uses the facade twin's selected 16-zone forecast plus a 1R1C slab model to plan the next night's charge, compare it with a fixed 22:00–06:00 timer, and expose whether that comparison is eligible to be described as a saving.
 
-The browser experience is primarily a judge- and reviewer-facing proof. It makes the controller's inputs, decisions, trade-offs, safety overrides, provenance, and model limits inspectable. The slab page is shaped like an operator tool, but its output is currently a downloaded JSON plan, not a command sent to a plant controller.
+The browser experience is primarily a judge- and reviewer-facing proof. It makes the controller's inputs, decisions, trade-offs, safety overrides, provenance, and model limits inspectable.
 
 The facade proof now includes learned occupant-plane daylight estimates and an independent
 oracle assessment of the shipped controller. The models outperform the tested linear and
@@ -57,8 +56,7 @@ keeps them observe-only; measured comfort and control improvements remain unprov
 | A threshold controller can act on a failed or dirty irradiance sensor.                                 | Cross-check the reading against solar position, clear-sky expectation, and cloud state before using it.                                        |
 | A single-purpose shade rule can reduce heat while destroying useful daylight or overworking actuators. | Score every allowable angle against thermal load, daylight comfort, movement, and wind exposure.                                               |
 | Optimisation must not outrank mechanical safety.                                                       | Bypass the optimiser for power loss, critical wind, or rain and return an explicit SAFE decision.                                              |
-| A fixed slab timer charges the same amount regardless of tomorrow's demand.                            | Forecast zone demand, choose the lowest-cost tested charge that preserves modelled comfort, and place it in the coolest available night hours. |
-| Simulation claims are easy to overstate.                                                               | Carry provenance, keep facade load relative, gate slab baseline claims, and publish a field-measurement protocol.                              |
+| Simulation claims are easy to overstate.                                                               | Carry provenance, keep facade load relative, and publish a field-measurement protocol.                                                         |
 
 ## 3. Users and jobs to be done
 
@@ -68,14 +66,12 @@ keeps them observe-only; measured comfort and control improvements remain unprov
 - Run the same day through sensor-trust, co-optimisation, and fail-safe demonstrations.
 - Change one input and see its effect on decisions and comparison metrics.
 - Inspect exact tick, surface, and zone readings, events, and the wall/tick reason behind a result.
-- Distinguish modelled evidence from provider weather; measured slab evidence remains API-only.
+- Distinguish modelled evidence from provider weather.
 
 ### 3.2 Secondary: controls or energy engineer
 
 - Test another site, facade orientation, geometry, weather source, seed, or control weighting.
 - Review the full API payload and model assumptions.
-- Check whether the configured or fitted slab model clears the useful-capacity threshold and whether the incumbent schedule is genuinely fixed.
-- Inspect and export a 16-zone modelled night-charge schedule for offline review.
 
 ### 3.3 Facility evaluation; live operation not yet served
 
@@ -92,20 +88,18 @@ The Building lens provides a manager-shaped evaluation view over simulated data.
 - **G3 — Safety precedence:** power, wind, and rain states bypass ordinary cost optimisation.
 - **G4 — Spatial fidelity:** solar gain differs by cardinal facade, roof face, facade row, and corner zone; control state differs by wall and facade zone, while roof faces remain unactuated.
 - **G5 — Honest comparison:** NeuroSkin and the naive facade baseline share the same environmental realization and wall geometry.
-- **G6 — Honest slab claims:** modelled schedule output is separated from proof that the incumbent baseline is fixed and from field-validated savings.
-- **G7 — Graceful weather fallback:** upstream weather failure completes with a labelled synthetic fallback instead of failing the run.
-- **G8 — Occupant-plane evidence:** expose optional Et/Ev observations, score existing controller decisions independently with the oracle, and disclose generalisation and threshold errors alongside the model's scope.
+- **G6 — Graceful weather fallback:** upstream weather failure completes with a labelled synthetic fallback instead of failing the run.
+- **G7 — Occupant-plane evidence:** expose optional Et/Ev observations, score existing controller decisions independently with the oracle, and disclose generalisation and threshold errors alongside the model's scope.
 
-> **G1 and G7 are surfaced in the browser.** The provenance strip renders the complete `data_notice`, `load_unit`, synthetic seed, provider/dataset, fetch time in the run timezone, and an amber fallback reason. The Brains lens renders `tick.cost_breakdown` and the target-to-final angle delta.
+> **G1 and G6 are surfaced in the browser.** The provenance strip renders the complete `data_notice`, `load_unit`, synthetic seed, provider/dataset, fetch time in the run timezone, and an amber fallback reason. The Brains lens renders `tick.cost_breakdown` and the target-to-final angle delta.
 
 ### 4.2 Hard claim guardrails
 
 - Facade cooling load is a **relative cooling-load index**. It must never be converted into HVAC kWh, carbon, cost, or payback.
 - The facade model retains a latent-load floor that shading cannot remove.
 - Open-Meteo data is provider forecast or reanalysis, not local building telemetry. MET Malaysia supplies daily context that shapes synthetic ticks.
-- Occupancy, indoor lux/temperature/RH, pyranometer noise, injected faults, facade control, and slab behavior remain simulated.
+- Occupancy, indoor lux/temperature/RH, pyranometer noise, injected faults, and facade control remain simulated.
 - Cloud-vision coverage is a **demo sky estimate**, not calibrated hemispheric cloud cover; projected cloud shadows are illustrative, not measured shadow locations.
-- Slab kWh is a model output from assumed or fitted parameters. `baseline_audit.claim_allowed` only establishes that a fixed-timer comparison is structurally eligible; it does **not** validate the model or prove field savings.
 - A result remains modelled until real building history, calibrated parameters, verified incumbent behavior, and a controlled field trial support a measured claim.
 - Weather warnings are advisory context and never replace local safety inputs.
 - Occupant-plane task illuminance (Et) and vertical eye illuminance (Ev) are modelled
@@ -143,9 +137,8 @@ The Building lens provides a manager-shaped evaluation view over simulated data.
 
 | Surface             | Route              | Purpose                                                                                                       |
 | ------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------- |
-| Product overview    | `/`                | Position the product, explain the three facade proofs and cost formula, and route users to both applications. |
+| Product overview    | `/`                | Position the product, explain the three facade proofs and cost formula, and route users into the twin.        |
 | Facade digital twin | `/dashboard`       | Four URL-selected lenses over one shared facade run: Building, Floor, Brains, Feeds.                                  |
-| Slab planner        | `/slab`            | Generate, assess, inspect, and export a modelled predictive night-charge plan.                                |
 | OpenAPI             | `/docs` on backend | Explore the FastAPI contract.                                                                                 |
 
 ### 5.2 Facade journey
@@ -169,16 +162,6 @@ The provenance strip appears above the rails after a successful run and preserve
 
 Environment controls stay available in every lens. Roof solar irradiation uses MJ/m²; it is not a conversion of facade cooling load to energy.
 
-### 5.3 Slab journey
-
-1. Opening `/slab` automatically asks for tomorrow's ST Diamond plan using Open-Meteo, the default model, no measured slab history, and no baseline log.
-2. The user may edit date, fallback sky profile, slab thickness, and choose no log or one of two generated demonstration baseline logs.
-3. **Generate plan** runs the selected-day facade twin, folds the selected facade's 16 zones into hourly demand, identifies or assumes the slab response, and plans the charge.
-4. Applicability states whether the supplied or fitted model clears the thermal-mass threshold; the adjacent fit source/note qualifies that result. The baseline audit states whether a fixed-timer comparison is eligible. Neither establishes real-building suitability.
-5. The user reviews charge, electrical energy, unmet zone-hours, standby loss, slab/dew-point trajectories, plant timing, forecast provenance, and the 4×4 zone command matrix.
-6. A supplied measurement protocol explains how to validate the modelled gap in the real building.
-7. **Export controller schedule** downloads the request and plan as JSON. No command is sent to a controller.
-
 ## 6. Functional requirements — current implementation
 
 ### 6.1 Environment and weather
@@ -201,7 +184,7 @@ Environment controls stay available in every lens. Roof solar irradiation uses M
 - **FR-C7:** Apply safety in this order: power loss → 60° fail-shaded; critical wind at or above 15 m/s → 0°; rain with power → 0°; otherwise optimise.
 - **FR-C8:** Compare against a naive controller that selects 60° when the roof pyranometer is at least 550 W/m² and 0° otherwise.
 - **FR-C9:** Emit top-level primary-facade target/final/naive angle, load, lux, trust, mode, movement, cost breakdown, and explanation per tick, with the reduced wall and zone contracts nested beside it.
-- **FR-C10:** Actuator travel is rate-limited to 1.2°/min, a commissioning assumption rather than a measured hardware specification.
+- **FR-C10:** Actuator travel is rate-limited to 6°/min (60° per 10-minute sample, the twin's full range), a commissioning assumption rather than a measured hardware specification. It was 1.2°/min, which lagged the sun by up to ~45° and left avoidable glare ticks; the dashboard allows 0.5–60°/min.
 
 The optimized cost is:
 
@@ -232,20 +215,6 @@ C(θ) = wT·L(θ) + wL·P(lux(θ))²
 - **FR-T5:** Store completed tier responses in browser memory, retain their findings/charts, and focus a stored response without another request.
 - **FR-T6:** Show loading, inline failure detail, and retry for an unavailable simulation API.
 
-### 6.5 Predictive radiant-slab planner
-
-- **FR-S1:** Accept planned date, seed, environment/site/geometry, slab model parameters, up to 8,760 hourly slab observations, and up to 1,000 baseline nights.
-- **FR-S2:** Treat adjacent list entries as consecutive hourly observations without validating chronology. With fewer than eight rows, discard those rows and fit 72 hours of fixed-seed synthetic behavior; retain supplied model constants only when the fit is non-physical.
-- **FR-S3:** Declare the application model-applicable when slab capacity is at least 60 Wh/m²K. This is an advisory flag; the current API still returns a plan when false.
-- **FR-S4:** Forecast hourly demand for the selected facade's 16 zones from transmitted facade gain, occupancy-linked internal gain, and base gain.
-- **FR-S5:** Model 24 ordered hours from 22:00 before the planned day through 21:00 on the planned day.
-- **FR-S6:** Place charge in the coolest available hours between 22:00 and 06:00, preferring later hours when temperature ties.
-- **FR-S7:** Search 25 evenly spaced charge targets and choose the fewest unmet hours first and lowest modelled electrical use second. This is a coarse grid result, not an exact minimum.
-- **FR-S8:** Never drive the slab below `max(structural minimum, maximum 24-hour proxy indoor dew point + 1°C)`.
-- **FR-S9:** Compare with a fixed timer commanding full charge power for every charging hour.
-- **FR-S10:** Audit baseline logs: fewer than five nights are insufficient; less than 5% charge variation is considered fixed; otherwise absolute load correlation of at least 0.5 is considered load-compensated. Only the fixed result sets `claim_allowed=true`.
-- **FR-S11:** Return model fit, applicability, baseline audit, modelled kWh, charge, peak, comfort, floor, rejected-command and standby-loss metrics, 24 hourly rows, 16 zone plans, and the measurement protocol.
-
 ### 6.6 API
 
 | Method and path                | Requirement                                                                             |
@@ -253,10 +222,9 @@ C(θ) = wT·L(θ) + wL·P(lux(θ))²
 | `GET /api/v1/health`           | Return liveness, service/model labels, and each provider's configuration, last observed status and last success. Performs no outbound probe; `ok` is backend liveness, not proof of current upstream availability. |
 | `GET /api/v1/config`           | Return default site, geometry, simulation limits, weather sources, and scenario titles. |
 | `POST /api/v1/simulations/run` | Validate the request and return the complete facade scenario payload.                   |
-| `POST /api/v1/slab/plan`       | Validate the request and return the complete predictive slab plan.                      |
 | `POST /api/v1/vision/clouds`   | Run one base64 JPEG sky frame through the Roboflow segmentation workflow and return union cloud mask, coverage, detections, and annotated frame. 503 when `ROBOFLOW_API_KEY` is absent. |
 
-Every normally handled response, including validation responses, includes a sanitized or generated `X-Request-ID`; unhandled failures are logged with the ID, but the outer 500 response may not carry it. Application logs are JSON lines and include request timing plus scenario- or slab-specific completion fields.
+Every normally handled response, including validation responses, includes a sanitized or generated `X-Request-ID`; unhandled failures are logged with the ID, but the outer 500 response may not carry it. Application logs are JSON lines and include request timing plus scenario-specific completion fields.
 
 **`LOG_FIELDS` in `backend/app/logging_config.py:7` is an allowlist.** Structured fields absent from that tuple never reach log output. Any new observability field must be added there or it is silently dropped.
 
@@ -284,7 +252,6 @@ Every normally handled response, including validation responses, includes a sani
 | Application | Browser inputs                                                                                                             | Additional API-only inputs                                                                    |
 | ----------- | -------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | Facade      | Source, date, cloud profile, site preset, primary facade, facade geometry, occupancy, wind mean, power, four weights, seed | Arbitrary coordinates/timezone/name, roof pitch, nullable wind mean override                  |
-| Slab        | Date, fallback sky profile, thickness, generated baseline-log choice                                                       | Weather source/site/geometry, all slab constants, measured slab history, real baseline nights |
 | Vision      | Sample interval (5/15/30/60 s), canopy visibility                                                                          | Raw base64 JPEG frame, width, height                                                          |
 
 ### 7.2 Facade metrics
@@ -299,18 +266,6 @@ Every normally handled response, including validation responses, includes a sani
 
 The current seeded reference results and bounded ten-seed check live in [`appendix/neuroskin-synthetic-results.md`](appendix/neuroskin-synthetic-results.md). They demonstrate logic, not measured building performance.
 
-### 7.3 Slab metrics
-
-| Metric                  | Meaning                                                                                                          |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Predictive/baseline kWh | Modelled electrical energy for delivered slab charge and air-side trim using temperature-dependent COP.          |
-| Charge Wh/m²            | Thermal energy actually accepted by the slab.                                                                    |
-| Unmet zone-hours        | Zone-hours where remaining load exceeded configured air-side trim capacity.                                      |
-| Floor hours             | Hours where a charge command was constrained by the dew-point/structural floor.                                  |
-| Rejected Wh/m²          | Commanded charge the slab could not safely accept.                                                               |
-| Standby-loss Wh/m²      | Modelled stored cooling lost outside useful zone demand.                                                         |
-| Saving percent          | Modelled difference from the fixed timer; not a field claim and meaningful only with the audit status beside it. |
-
 ## 8. Architecture and implementation baseline
 
 ### 8.1 Data flow
@@ -323,11 +278,7 @@ Synthetic / MET / Open-Meteo          Roboflow sky segmentation
             │
             ├──► 4 wall + 64 zone controllers ──► scenario API ──► 3D dashboard
             │
-            ├──► optional cached Et/Ev predictions ──► observe-only probe payload
-            │
-            └──► selected facade's 16 zones ──► 1R1C slab planner
-                                                    │
-                                                    └──► slab API ──► planner UI / JSON
+            └──► optional cached Et/Ev predictions ──► observe-only probe payload
 ```
 
 Offline daylight development follows louvre optics + room oracle → Parquet samples →
@@ -425,7 +376,7 @@ LangGraph reaching a stable 1.x materially reduces the API-drift risk previously
 | Requirement               | Current status                                                                                                                                                                                                     |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Synthetic reproducibility | Met: identical tested synthetic requests produce identical payloads. External provider data can change over time.                                                                                                  |
-| Trust-boundary validation | Met for enum/range limits and IANA timezone; slab history ordering and physical cross-field validity are not checked.                                                                                              |
+| Trust-boundary validation | Met for enum/range limits and IANA timezone; physical cross-field validity is not checked.                                                                                                                         |
 | Weather resilience        | Met: provider errors and invalid payloads fall back to labelled synthetic data. **The label never reaches the browser.**                                                                                           |
 | Vision resilience         | Met: one in-flight inference, 30-second client timeout, retry on the next scheduled scan, expiry past 60 seconds, weather-only refresh on failure.                                                                  |
 | Explainability            | Met in the API and Brains lens: primary tick objective contributions, target/final angles, trust/reason, scenario charts and the fixed oracle blindness experiment. Optional Floor probes expose modelled Et/Ev without affecting control.                                                                         |
@@ -450,12 +401,10 @@ LangGraph reaching a stable 1.x materially reduces the API-drift risk previously
 | AC5 — spatial control                           | Met: four facades, 64 zone states, and four roof faces are returned; zones can reach different angles.                                                                                                                                                                                                 |
 | AC6 — geometry behavior                         | Met for automated equinox/solstice reduction thresholds, overhang row shading, corner coupling, and flat/pitched roof invariants. Exact annual percentage claims in older prose do not have a checked-in reproduction script.                                                                          |
 | AC7 — weather modes                             | Met with mocked provider contracts, provenance, arbitrary-site handling, and fallback tests; live-provider contract tests are absent.                                                                                                                                                                  |
-| AC8 — slab plan                                 | Met for the 16-zone/24-hour endpoint, synthetic-fit recovery, coolest-hour scheduling, and floor enforcement. "No worse than the fixed timer" is tested only in one constructed one-zone mild-day case; measured-history fitting is not directly tested.                                               |
-| AC9 — baseline honesty gate                     | Met: no/short/fixed/compensated logs are distinguished and only fixed schedules allow the comparison flag.                                                                                                                                                                                             |
-| AC10 — browser workflow                         | Partially met: component tests cover landing routing, dashboard loading/error/retry, tier order/storage/playback, chart reveal, geometry helpers, solar exposure, cloud canopy, building comparison, zone sensors, controller calibration, slab grid, draft controls, and claim logic. Full slab auto-fetch, response rendering, API failure, charts, and JSON export are not component-tested. |
-| AC11 — cloud vision                             | Met for mask decode, confidence union, overlap counting, freshness expiry, and controller hand-off. Coverage accuracy against calibrated sky measurement is untested and out of scope.                                                                                                                 |
-| AC12 — daylight model evidence                  | Met within the synthetic oracle scope: physical invariants, feature parity, linear/scalar baselines, structural holdout, untouched orientation transfer and three reproducible training runs. Threshold errors remain material (§14.3). |
-| AC13 — daylight display and fallback            | Met locally: optional Floor readings/colours and Brains oracle table; unchanged legacy response values, repeatability in both flag states, null night values and missing-model fallback. No control or field-validation claim. |
+| AC8 — browser workflow                         | Partially met: component tests cover landing routing, dashboard loading/error/retry, tier order/storage/playback, chart reveal, geometry helpers, solar exposure, cloud canopy, building comparison, zone sensors and controller calibration.                                                           |
+| AC9 — cloud vision                             | Met for mask decode, confidence union, overlap counting, freshness expiry, and controller hand-off. Coverage accuracy against calibrated sky measurement is untested and out of scope.                                                                                                                 |
+| AC10 — daylight model evidence                  | Met within the synthetic oracle scope: physical invariants, feature parity, linear/scalar baselines, structural holdout, untouched orientation transfer and three reproducible training runs. Threshold errors remain material (§14.3). |
+| AC11 — daylight display and fallback            | Met locally: optional Floor readings/colours and Brains oracle table; unchanged legacy response values, repeatability in both flag states, null night values and missing-model fallback. No control or field-validation claim. |
 
 **Verification for the daylight/dashboard delivery on 13 September 2026** (implementation
 through `c3618d6`; documentation checkpoint `ac942da`). These are completed checks from
@@ -467,7 +416,7 @@ that delivery and batch-commit verification, not a new full-suite run for this P
 | Backend Ruff                                  | Passed across app, tests, scripts and notebook (`E,F,I,UP`)    |
 | Frontend tests                                | **82 passed** across 16 files; affected tests rechecked after final UI edits |
 | Frontend ESLint                               | Earlier v0.4 audit passed; no new whole-tree ESLint result claimed for this delivery |
-| Next.js production build and TypeScript check | Passed; `/`, `/dashboard`, `/slab` prerendered as static        |
+| Next.js production build and TypeScript check | Passed; `/` and `/dashboard` prerendered as static              |
 | Local Chromium / WebGL checks                 | Seat count matches API (43/70 west seats); selected floor, night, Brains and real missing-model response checked; no page errors or overflow at 1000 px |
 | Training reproducibility                     | Three clean-kernel runs; 21 ledger evaluations with identical metrics, parameters and dataset fingerprint |
 | Serving parity and latency                   | Real artifacts; off/on legacy-field parity, identical repeats, missing-model fallback and 1°/5° timing/interpolation comparison |
@@ -483,11 +432,7 @@ and the bundled oracle comparison is checked against its source JSON.
 
 ### 11.1 Priority 0 — blocks pilot or production claims
 
-- **No real control path:** JSON export is not BMS/plant integration, and no command acknowledgement or approval exists.
-- **No field calibration:** facade lux/load constants (including `WALL_LUX_PER_IRRADIANCE = 1.7`), daylight room reflectances (wall 0.5, floor 0.2, ceiling 0.8), full-wall aperture, room geometry, fixed 110 lm/W efficacy, actuator behavior, humidity proxy, COP, and safety thresholds remain assumptions. Real slab observations can fit only capacity and surface UA; baseline-night logs only classify incumbent behavior.
-- **Unchecked slab fit:** coefficient sign is the only fit-acceptance gate. Reported R² does not gate use, and positive fitted capacity/UA are not plausibility-bounded before planning.
-- **Savings flags are advisory:** `applicable=false` and `claim_allowed=false` do not suppress the returned slab schedule or savings fields. Generated demonstration baseline logs can also set `claim_allowed=true`; that proves the audit classifier path, not a real baseline.
-- **Simplified slab scope:** the selected facade's 16 zones represent the configured 12,000 m² floor area. Other facades, roof/conduction, detailed ventilation and latent loads, pumps, hydronics, tariffs, and measured humidity are omitted.
+- **No field calibration:** facade lux/load constants (including `WALL_LUX_PER_IRRADIANCE = 1.7`), daylight room reflectances (wall 0.5, floor 0.2, ceiling 0.8), full-wall aperture, room geometry, fixed 110 lm/W efficacy, actuator behavior, humidity proxy, and safety thresholds remain assumptions.
 - **Safety is uncommissioned:** combined power loss and critical wind resolves to the 60° power-loss state because power loss has precedence. The physically safe state and passive mechanism require engineering validation.
 - **No production trust boundary:** there is no identity, role, audit, rate, tenancy, persistence, or deployment security layer.
 - **Health is observational, not an active readiness probe:** `/api/v1/health` includes provider outcomes and last success, but top-level `ok` only reports backend liveness. Observations can be stale and reset on restart.
@@ -499,12 +444,8 @@ and the bundled oracle comparison is checked against its source JSON.
 - **Provenance disclosure resolved by §14.1:** the shared strip and Brains objective panel now render all five formerly omitted fields; fallback is visually distinct and its notice is preserved verbatim.
 - **Mixed-run dashboard state:** rerunning the focused scenario after changing settings does not invalidate stored results for the other tiers, so visible comparisons can combine different inputs.
 - **Non-Malaysia chart time:** chart labels are hard-coded to `Asia/Kuala_Lumpur` even when another site/timezone is selected; the stage inspector uses the requested timezone correctly.
-- **Measured slab input is API-only:** the UI cannot upload or enter slab observation history or real baseline nights; it exposes only generated demonstration logs.
 - **Unchecked API responses:** the frontend casts successful JSON responses to TypeScript types without runtime schema validation, a request timeout, or automatic retry; malformed payloads can fail during rendering.
-- **Slab input coupling:** the planner does not accept or forward facade controller weights, occupancy scale, wind override, or power state; its internal twin always runs `overview` with those facade defaults.
-- **Slab-history units:** observation `charge_w` is treated as W/m², while baseline-night charge and next-day cooling are building kWh; the API field names do not encode that distinction.
 - **MET/site mismatch:** `met_anchored` always uses Kuala Lumpur `Tn079`, even when another site is requested, and combines that Kuala Lumpur anchor with the selected site's solar geometry.
-- **Slab date approximation:** a null date uses the backend server's local "tomorrow," not the selected site timezone. The planner also borrows 22:00–23:00 weather from the planned day instead of fetching the preceding day.
 - **Large synchronous response:** a full simulation calculates all controllers and returns every zone for every tick in one request, with no job control, pagination, quota, or load target.
 - **Partial accessibility:** no keyboard/non-visual equivalent exists for zone-level 3D inspection, chart data, or rail resizing.
 - **Vision pipeline is sample-dependent:** the bundled clip is an all-sky view; coverage on a differently framed or obstructed camera is unvalidated.
@@ -513,8 +454,6 @@ and the bundled oracle comparison is checked against its source JSON.
 
 - The dashboard control hint says only the primary wall carries louvres, while the backend and 3D view run controllers and louvres on all four walls; only headline metrics are primary-only.
 - The FastAPI description says all inputs are synthetic despite Open-Meteo forecast/reanalysis and Roboflow vision support.
-- The slab UI can say "Thermal-mass building confirmed" when the capacity came from assumed constants and synthetic recovery; "model assumption passes O1" would be accurate.
-- "Export for the plant controller" currently means download a JSON file only.
 - The landing-page decision loop is a hard-coded illustrative preview, not live simulation output; it is not explicitly labelled as illustrative.
 - Open-Meteo parsing requires at least 24 matching hourly rows and takes the first 24, while the simulation always emits 144 ticks. A 23-hour daylight-saving day falls back; a 25-hour day is truncated.
 - Process-local weather caches are lost on restart and duplicated across workers.
@@ -541,7 +480,6 @@ The next product decisions, before more feature work, are:
 1. Choose the positioning: retrofit value on upright facades, with the Diamond as a passive-design control, or active value on the Diamond itself.
 2. Choose the pilot facade, physical zone mapping, available sensors, actuator interface, and safe mechanical states.
 3. Define measured acceptance thresholds for daylight, relative/absolute load, actuator movement, sensor-fault latency, condensation margin, and plant comfort.
-4. Decide which incumbent slab behavior is the real baseline and collect at least the slab/zone/charge and next-day cooling logs required to identify it.
 5. Decide whether the next deliverable is still a judge-facing proof or a secured operator workflow; the latter requires persistence, approvals, auditability, and integration before UI expansion.
 6. Decide whether the deferred live-rig fault phase (§14.2) is in scope, since a cross-request episode store would be the first item that deliberately breaks a §4.3 non-goal.
 
@@ -554,13 +492,11 @@ The next product decisions, before more feature work, are:
 | Facade controller          | `backend/app/domain/{validation,brain,safety,controller,thermal}.py`                          | `backend/tests/test_engine.py`, `backend/tests/test_api.py`        |
 | Geometry and zones         | `backend/app/domain/facade.py`, `backend/app/domain/scenarios.py`                             | `backend/tests/test_realworld.py`                                  |
 | Optics                     | `backend/app/domain/optics.py`                                                                | `backend/tests/test_optics.py`                                     |
-| Slab planner               | `backend/app/domain/slab.py`                                                                  | `backend/tests/test_slab.py`                                       |
 | Cloud vision               | `backend/app/vision.py`, `frontend/.../CloudVisionPanel.tsx`, `cloudCanopy.ts`                | `backend/tests/test_vision.py`, `CloudVisionPanel.test.tsx`, `cloudCanopy.test.ts` |
 | Product overview           | `frontend/src/components/neuroskin/NeuroSkinLanding.tsx`                                      | `NeuroSkinLanding.test.tsx`                                        |
 | Facade dashboard           | `NeuroSkinDashboard.tsx`, `TierAnalysis.tsx`, `SimulationControls.tsx`, `ControllerPanel.tsx` | `NeuroSkinDashboard.test.tsx`, `ControllerPanel.test.tsx`          |
 | 3D and charts              | `BuildingHeatmap.tsx`, `SimulationCharts.tsx`, `solarExposure.ts`, `buildingComparison.ts`    | `BuildingHeatmap.zones.test.ts`, `SimulationCharts.reveal.test.ts`, `solarExposure.test.ts`, `buildingComparison.test.ts` |
 | Zone inspection            | `ZoneSensorPanel.tsx`, `louvreAssembly.ts`                                                    | `ZoneSensorPanel.test.tsx`, `louvreAssembly.test.ts`               |
-| Slab UI                    | `PredictiveSlab.tsx`                                                                          | `PredictiveSlab.zones.test.ts`                                     |
 | Current synthetic evidence | `docs/appendix/neuroskin-synthetic-results.md`                                                | Seeded requests and audit dataset in `docs/appendix/`              |
 | Daylight oracle and training | `backend/app/domain/daylight/`, `backend/scripts/generate_daylight_dataset.py`, `backend/notebooks/daylight_surrogate_training.ipynb` | `backend/tests/test_daylight.py`, `docs/appendix/daylight-training-results.md`, `daylight-runs.jsonl` |
 | Daylight observations and evidence | `DaylightPanel.tsx`, `bandPlan.ts`, `backend/scripts/ablation_glare_blindness.py`, `backend/scripts/benchmark_daylight.py` | `DaylightPanel.test.tsx`, API parity checks, `docs/appendix/daylight-threshold-results.json` and serving/oracle reports |
@@ -754,7 +690,7 @@ it is not implemented or validated by this release:
 | Daylight evaluation floor |                          200 W/m² incident on primary wall |
 | Glazing SHGC              |                                                       0.40 |
 | Glare screen              |                                            25 W/m² direct |
-| Actuator speed            |                                                  1.2 °/min |
+| Actuator speed            |                                                    6 °/min |
 | Movement threshold        |                                                     0.0002 |
 | Critical wind             |                                                     15 m/s |
 | Power-loss state          |                                            60° fail-shaded |
@@ -783,24 +719,6 @@ These defaults are separate from the incumbent's 300–700 lux band:
 Training metrics, threshold assessment and control-readiness conditions are in §14.3 and
 [daylight-training-results.md](appendix/daylight-training-results.md). The executed
 notebook and append-only JSONL history record dataset/code fingerprints and seed.
-
-### Slab planner
-
-| Parameter                 |                                           Default |
-| ------------------------- | ------------------------------------------------: |
-| Planned date              | Tomorrow according to backend server when omitted |
-| Environment source        |                             Open-Meteo in browser |
-| Zones                     |                        Selected facade's 4×4 grid |
-| Floor area                |                                         12,000 m² |
-| Slab thickness            |                                            0.20 m |
-| Density / specific heat   |                           2,300 kg/m³ / 880 J/kgK |
-| Surface UA / loss UA      |                                   8.0 / 1.5 W/m²K |
-| Charge power              |                                           70 W/m² |
-| Minimum slab temperature  |                      19°C before dew-point margin |
-| Zone setpoint             |                                              24°C |
-| Air-side trim capacity    |                                           55 W/m² |
-| Charging hours            |                                       22:00–06:00 |
-| Useful-capacity threshold |                                         60 Wh/m²K |
 
 ### Cloud vision
 

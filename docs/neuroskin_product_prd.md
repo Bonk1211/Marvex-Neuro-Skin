@@ -63,9 +63,8 @@ be mistaken for a genuine environmental change. The intended outcome is explaina
 action with verified recovery when the evidence becomes unreliable.
 
 The current delivery covers simulation, externally supplied weather/vision context,
-modelled daylight and fault-injection experiments. The existing radiant-slab planner is a
-supporting application, not a fourth selling point or part of the three-layer facade brain.
-Physical integration and measured energy or comfort claims require a separate pilot.
+modelled daylight and fault-injection experiments. Physical integration and measured
+energy or comfort claims require a separate pilot.
 
 ## 3. Selling point 1 — interactive digital twin dashboard
 

@@ -240,7 +240,7 @@ synthetic even when the outdoor weather is measured; no hardware is connected.
 
 Normal motion is solar-responsive, not a timed 0°/60° switch. The controller
 refines fractional-angle targets over 0–60°, then limits travel to
-`actuator_speed_deg_per_min` (default 1.2°/min, or 12° per 10-minute sample).
+`actuator_speed_deg_per_min` (default 6°/min, or 60° per 10-minute sample: the twin's full range).
 The 3D actuator interpolates the achieved samples. This is sampled simulation,
 not a live hardware control loop; stable conditions can legitimately hold an
 angle. Wind/rain/power safety bypasses the normal travel limit.
@@ -274,10 +274,9 @@ Glare screening must not be read as “glare-free”: a full
 [Radiance evalglare assessment](https://www.radiance-online.org/learning/documentation/manual-pages/pdfs/evalglare.pdf)
 uses occupant-view luminance imagery. SHGC is the admitted solar heat fraction,
 not visible-light transmission ([US DOE](https://bsesc.energy.gov/energy-basics/energy-star-windows)).
-The existing `transmitted` field remains **pre-glazing** W/m² for the slab model;
-zone comfort predictions use the local sensor, while the spatial heat map uses
-modelled physical irradiance. The slab's separate `solar_to_floor` factor still
-contains its own glazing/area calibration and is not changed by this control.
+The existing `transmitted` field remains **pre-glazing** W/m²; zone comfort
+predictions use the local sensor, while the spatial heat map uses modelled
+physical irradiance.
 
 Select a zone in the dashboard's 4 × 4 sensor matrix (or in the 3D model), then
 use **Apply only this sensor** to inject irradiance and illuminance at the

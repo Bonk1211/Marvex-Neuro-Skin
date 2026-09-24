@@ -12,6 +12,20 @@ Target-release capabilities remain explicitly marked partial or planned below.
 modelled seat daylight and deterministic, verified fault recovery in simulation.**
 
 - One building, four lenses, one selected timeline tick.
+- The existing `/dashboard` console opens with sensor-health score, current solar/light
+  readings and weather; detailed daily comparisons expand on demand. `/onboarding`'s
+  **Demo setup** files the bundled samples, assembles geometry, and opens this console.
+- Selecting a floor group keeps the furnished floor in the main stage. **CSI X-ray**
+  fades those same surfaces to transparent wireframes and reveals occupant skeletons
+  in place, retaining the camera, zoom and timeline. Ev/Et controls appear in the side
+  inspector; reduced-motion preferences skip the fade. Scripted activity and facing
+  controls feed the daylight section's Ev calculation. An animated louvre
+  shows an illustrative comfort/efficiency proposal beside the applied simulation angle;
+  its after-values use approximate linear transmission and do not actuate hardware.
+- Brains displays the current 64-zone topology, four modelled floor groups and main
+  orchestrator. Illustrative message envelopes animate the path and blink the sender
+  once; they are not a backend multi-agent event stream. Zone selection still opens
+  that controller's actual simulation evidence.
 - Four facades × sixteen logical zones: **64 independent simulated zone states**.
 - Layer 1: global solar/cloud plausibility, fresh usable vision, local finite/range checks,
   and (with `fault_correction` enabled) per-zone peer, lux-channel and flatness assurance.
@@ -19,7 +33,6 @@ modelled seat daylight and deterministic, verified fault recovery in simulation.
 - Layer 3: **simulated, deterministic** episodes: authorise, snapshot, channel-level
   isolation, counterfactual verification, then retain, roll back, restore or escalate.
   The LLM diagnosis agent remains planned.
-- The radiant-slab planner is a supporting simulation application, not a fourth selling point.
 
 Every simulated healthy sensor is its model plus noise, so detection results are synthetic
 upper bounds. Verification judges on the same peer evidence that builds the substitute. There
@@ -41,10 +54,6 @@ optional models can be unavailable; their unavailable states are part of the pro
 | **5. Predict and supervise** · Floor → Brains | Load Et/Ev if available. At 15:00 (tick 90) inject a 2 h `dead` fault window on W6, open Brains, select W6 and scrub forward; approve the waiting episode. | “Extra Trees predicts illustrative daylight; those predictions do not choose the angle. Peers expose the dead sensor, and nothing changes until the episode is authorised and replayed.” | Mean Et, highest seat Ev and cap colouring; W6 moves suspect → fault in two ticks (tick 92); the recovery card lights detect/authorise and waits. After approval the replay shows snapshot and mitigation at 92 and, at tick 99, verification over six informative ticks and retention (corrected 2.370 vs uncorrected 6.030, relative objective). Other zones' decisions are unchanged. |
 | **6. Trust the boundaries** · Building → Brains → Feeds | In Building, run the sensor/optimisation/safety tests. In Brains, select an event; then open Feeds. | “The examples demonstrate current deterministic checks and safety. Here are the source, freshness and fallback conditions.” | Global dead-pyranometer rejection differs from genuine cloud; naive comparison has declared scope; power/wind/rain safety is independent of optimisation; missing vision is unavailable evidence. |
 
-Optional close: open **Slab charging**, generate a modelled schedule, inspect one zone and
-download the JSON plan. It demonstrates forecast-based planning and baseline auditing,
-not a connection to a real plant. Synthetic sample logs do not establish measured savings.
-
 ## Complete current-feature checklist
 
 Checked items were reviewed in code and covered by automated tests or browser checks.
@@ -57,7 +66,7 @@ controlled unavailable-provider tests; no external provider availability is asse
 - [x] The illustration identifies 64 logical zones and illustrative states.
 - [x] Layer 1 is simulated and peer-checked, Layer 2 observe-only and Layer 3 simulated and
       deterministic, with the LLM diagnosis agent still planned.
-- [x] Landing links open Building, Floor, Brains and Feeds; `/slab` stays supporting.
+- [x] Landing links open Building, Floor, Brains and Feeds.
 - [x] Lens changes preserve an active run, selected tick and relevant zone; deep links work.
 - [x] Loading, request error/retry and unknown-lens fallback remain usable.
 
@@ -128,23 +137,6 @@ controlled unavailable-provider tests; no external provider availability is asse
       separately, matches `tick.environment_cloud`.
 - [x] Model limits remain available without repeating long explanations in every panel.
 
-### Supporting slab planner
-
-- [x] Open `/slab` and return to the twin. The page identifies a modelled planning application.
-- [x] Change target date, sky, slab thickness and sample incumbent-log case as drafts;
-      generate the plan deliberately and inspect loading/error states.
-- [x] Inspect applicability/capacity, baseline audit, charge, modelled electricity,
-      unmet zone-hours and minimum slab-temperature floor.
-- [x] Compare 24-hour predictive/fixed-timer temperatures, dew point, charge power,
-      air-side trim and forecast load; modelled chart labels remain visible.
-- [x] Select among the planner's 16 zones; inspect target, charge hours, delivered charge,
-      minimum temperature and modelled energy. These are the planner's zones, not a claim
-      that the facade twin contains only sixteen zones.
-- [x] Inspect fitted/assumed slab response, fit-source note, forecast/fallback and physical
-      measurement protocol. Sample fixed/compensated logs remain labelled demonstrations.
-- [x] Export JSON containing the applied request and plan. Downloading is not dispatching
-      an actuator command; sample evidence is not a verified physical saving.
-
 ## Numbered PRD coverage
 
 **Implemented** means available simulation behavior with inspectable code evidence.
@@ -205,6 +197,9 @@ the target-release claim. A physical pilot remains separate.
 
 ## Inspectable evidence and validation
 
+Start with [known limitations](appendix/known-limitations.md): what each tier actually
+establishes, where the simulation grades itself, and which values are uncalibrated.
+
 ### Code and tests
 
 - [Controller and effective inputs](../backend/app/domain/controller.py),
@@ -225,9 +220,6 @@ the target-release claim. A physical pilot remains separate.
   [daylight UI tests](../frontend/src/components/neuroskin/DaylightPanel.test.tsx),
   [provenance tests](../frontend/src/components/neuroskin/ProvenanceStrip.test.tsx),
   [feed tests](../frontend/src/components/neuroskin/FeedsPanel.test.tsx).
-- [Slab backend tests](../backend/tests/test_slab.py) and
-  [slab UI tests](../frontend/src/components/neuroskin/PredictiveSlab.zones.test.ts):
-  model/temperature constraints, baseline audit, 16-zone order and draft/apply behavior.
 - Offline evidence: [training results](appendix/daylight-training-results.md),
   [threshold results](appendix/daylight-threshold-results.json),
   [oracle study](appendix/daylight-blindness-results.md),
@@ -281,7 +273,6 @@ Every other zone must retain identical payloads. The existing API regression ver
 | Frontend static checks and production build | ESLint, TypeScript and production build passed. Build output was isolated from the running dev server. |
 | Real-API Floor/Brains/Feeds browser | All **16 side/floor groups** match returned Et/Ev probes; W2 raw/admitted input and objective match; W2 override/clear, E7 cross-lens selection, primary reset, night/unavailable and zero mock occupants passed. Vision was deliberately stubbed unavailable; the controller/daylight API was real. |
 | Responsive browser | 1720px and 1000px live-API checks, plus 390px/1000px replay of that saved API response: no horizontal overflow or page errors. The main visual precedes panels; phone scene controls collapse. |
-| Landing and supporting slab browser | Desktop, 390px and 320px layout checks; all 16 slab zones, sample-log rerun, protocol disclosure and downloaded request/plan JSON passed against the real local slab API. |
 | Building browser | Eight wall/roof selections, four colour modes, orbit/focus, controlled/baseline, six formula disclosures, exact advanced draft/apply/reset payloads, scenario ordering/cached weights/events and loading/503/retry passed. Provider choices were inspected as drafts only. |
 | Safety browser/API reconciliation | All 64 zones returned 0° on 71 ticks with actual wind ≥15 m/s and on the synthetic rainy tick; power loss took precedence at 60°. **9,152** ordinary zone transitions respected the 12° per-tick limit. No page errors across the completed Building review. |
 | Physical acceptance | Outside this release; not evaluated. |
@@ -298,7 +289,6 @@ The physical-rig, diagnosis-agent and field gates above remain open.
 - Applying changed settings clears stale scenario results. Scenario tests are named
   separately from the three brain layers; chart scope is the primary reporting controller.
 - Labelled prerecorded sky, simulated sensors, observe-only daylight and planned recovery.
-  Slab sample logs and exported plans explicitly remain simulation evidence.
 - Kept the 3D instance mounted across lenses and skipped its hidden rendering work.
 
 ### Completed change batches
