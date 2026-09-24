@@ -2,12 +2,21 @@ import type { FacadeOrientation } from '@/lib/types'
 
 const SIDES: FacadeOrientation[] = ['north', 'east', 'south', 'west']
 
+export const MEETING_SEATS = [0, 1, 2, 3, 12, 13]
+
 /** Scripted demo counts, shared by the scene and inspector; no camera inference. */
 export function mockOccupancy(
   occupancy: number,
   side: FacadeOrientation,
-  band: number
+  band: number,
+  meetingDemo = false
 ) {
+  if (meetingDemo && side === 'west' && band === 3)
+    return {
+      total: MEETING_SEATS.length,
+      walking: 0,
+      seated: MEETING_SEATS.length,
+    }
   const capacity = 8 + ((SIDES.indexOf(side) * 3 + band * 2) % 5)
   const fraction = Number.isFinite(occupancy)
     ? Math.max(0, Math.min(1, occupancy))

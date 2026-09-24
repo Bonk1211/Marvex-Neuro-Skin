@@ -43,6 +43,8 @@ export function daylightColor(
       : value > status.et_band_high_lux
         ? '#d69b48'
         : '#43836c'
+  if (status.demo_control)
+    return value <= status.ev_cap_lux ? '#43836c' : '#c44a36'
   // Only the colour saturates; the readout retains the full illuminance.
   return `hsl(${120 * (1 - Math.min(1, value / status.ev_cap_lux))}, 60%, 42%)`
 }
@@ -50,9 +52,11 @@ export function daylightColor(
 export function DaylightReadout({
   probes,
   status,
+  demoControl = false,
 }: {
   probes: (DaylightProbePayload & { zone?: string })[]
   status: DaylightStatusPayload
+  demoControl?: boolean
 }) {
   const available = probes.filter(
     (p) => p.kind === 'seat' && validLux(p.eye_illuminance)
@@ -66,7 +70,7 @@ export function DaylightReadout({
       <p className='flex items-center justify-between gap-2'>
         <span className='console-card-title'>Daylight prediction</span>
         <span className='rounded-full bg-secondary px-2 py-0.5 text-[9px] font-medium'>
-          Observe-only
+          {demoControl ? 'Demo control' : 'Observe-only'}
         </span>
       </p>
       <dl className='mt-3 grid grid-cols-2 gap-2'>
@@ -112,7 +116,10 @@ export function DaylightReadout({
         <p className='mt-2'>
           Fixed probe predictions from {status.model}; Et is averaged over the
           work-plane probes. Readings stay at the desks and seats as mock people
-          move. Controller decisions do not use these estimates.
+          move.{' '}
+          {demoControl
+            ? 'This scripted demo uses the meeting room estimates to select its angle.'
+            : 'Controller decisions do not use these estimates.'}
         </p>
       </details>
       {!status.night && (

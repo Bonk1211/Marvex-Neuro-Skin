@@ -198,6 +198,7 @@ export interface ComfortStatePayload {
 }
 
 export interface DaylightStatusPayload {
+  demo_control?: boolean
   model: string
   night: boolean
   occupied: boolean
@@ -229,6 +230,10 @@ export interface FacadeHeat {
 }
 
 export interface TickPayload {
+  /** Local, explicitly scripted West Floor 7 presentation; never a live reading. */
+  meeting_demo?: 'ready' | 'glare' | 'balanced'
+  /** BH1's last reported servo command, not measured position; null uses demo motion. */
+  meeting_actuator_angle?: number | null
   daylight?: DaylightStatusPayload | null
   environment_cloud?: number | null
   cloud_source?: 'environment' | 'vision'

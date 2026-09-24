@@ -13,6 +13,7 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import { createBandPlan, FLOOR_STACK_GAP, WALL_ROTATION } from './bandPlan'
+import { MEETING_SEATS } from './floorOccupants'
 import { applyOrbit, orbitChanged, type OrbitAngles } from './sectionScene'
 import { floorBeam, type FloorLightView } from './floorSunlight'
 import type { CsiActivity } from './csiPosture'
@@ -522,6 +523,12 @@ export function BuildingHeatmap({
   planAngleRef.current = planAngle
   const [showHvac, setShowHvac] = useState(false)
   const [floorLight, setFloorLight] = useState<FloorLightView>('sun')
+  useEffect(() => {
+    if (!tick.meeting_demo) return
+    setFloorLight('sun')
+    setShowPeople(true)
+    setShowDetections(true)
+  }, [tick.meeting_demo])
   const lightingRef = useRef({
     tick,
     mode: csiView ? ('off' as const) : floorLight,
@@ -1004,6 +1011,38 @@ export function BuildingHeatmap({
         tag.position.y = 0.83
         tag.layers.set(1)
         person.marker.add(tag)
+        const index = level.people.indexOf(person)
+        if (
+          level.orientation === 'west' &&
+          level.band === 3 &&
+          index < MEETING_SEATS.length
+        ) {
+          tag.userData.regularLabel = true
+          const seatTag = labelSprite(
+            `Seat ${MEETING_SEATS[index] + 1}`,
+            index < 4 ? '#b77916' : '#087f9c'
+          )
+          seatTag.scale.set(0.58, 0.145, 1)
+          seatTag.position.y = 0.83
+          seatTag.layers.set(1)
+          seatTag.userData.meetingLabel = true
+          seatTag.visible = false
+          person.marker.add(seatTag)
+        }
+      }
+      if (level.orientation === 'west' && level.band === 3) {
+        for (const [caption, x, z, color] of [
+          ['MEETING · W13', -1.57, -2.2, '#b77916'],
+          ['CLOUD SHADE · W16', -2.14, 2.17, '#087f9c'],
+        ] as const) {
+          const tag = labelSprite(caption, color)
+          tag.position.set(x, 1.3, z)
+          tag.scale.set(1.6, 0.4, 1)
+          tag.layers.set(1)
+          tag.userData.meetingLabel = true
+          tag.visible = false
+          level.group.add(tag)
+        }
       }
     }
     scene.add(plan.group)
@@ -1602,7 +1641,8 @@ export function BuildingHeatmap({
           people.showPeople,
           people.showDetections,
           focusedBandRef.current,
-          csiRef.current.activity
+          csiRef.current.activity,
+          !!daylightTickRef.current?.meeting_demo
         )
         const target = Number(csiRef.current.enabled)
         csiMix = reducedMotion.matches

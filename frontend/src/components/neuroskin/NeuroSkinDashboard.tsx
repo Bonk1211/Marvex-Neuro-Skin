@@ -10,6 +10,13 @@ import { LiveHardwarePanel } from './LiveHardwarePanel'
 import { LiveCsiPanel } from './LiveCsiPanel'
 import { GlareBlindnessPanel } from './DaylightPanel'
 import { FloorPanel } from './FloorPanel'
+import {
+  MeetingGlareDemo,
+  meetingDemoTick,
+  MEETING_MOVE_MS,
+  type MeetingStage,
+} from './MeetingGlareDemo'
+import { getMeetingDemo, type MeetingDemoResponse } from '@/lib/api-client'
 import { FloorSectionPanel } from './FloorSectionPanel'
 import type { CsiActivity } from './csiPosture'
 import type { OrbitAngles } from './sectionScene'
@@ -206,6 +213,15 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
   }))
   const initialRequest = useRef(request)
   const [data, setData] = useState<SimulationRunResponse | null>(null)
+  const [meetingDemo, setMeetingDemo] = useState<MeetingDemoResponse | null>(
+    null
+  )
+  const [meetingStage, setMeetingStage] = useState<MeetingStage | null>(null)
+  const [meetingActuatorAngle, setMeetingActuatorAngle] = useState<
+    number | null
+  >(null)
+  const [meetingLoading, setMeetingLoading] = useState(false)
+  const [meetingError, setMeetingError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [timelineIndex, setTimelineIndex] = useState(36)
@@ -218,6 +234,7 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
   // wall's rotation so both show the same facade from the same side.
   const [orbit, setOrbit] = useState<OrbitAngles | null>(null)
   const focusFloor = useCallback((next: number | null) => {
+    setMeetingStage(null)
     setFloorFocused(next !== null)
     if (next !== null) setBand(next)
     setSelectedZone(null)
@@ -226,6 +243,7 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
     useState<BuildingVariant>('controlled')
   const isControlled = buildingVariant === 'controlled'
   const selectSurface = useCallback((surface: SurfaceId) => {
+    setMeetingStage(null)
     setSelectedWall(surface)
     setSelectedZone(null)
   }, [])
@@ -286,6 +304,7 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
       preserveTick?: number,
       keepClock = false
     ) => {
+      setMeetingStage(null)
       requestController.current?.abort()
       const controller = new AbortController()
       requestController.current = controller
@@ -376,6 +395,7 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
    * watch the tiers happen, and they read the same day so a reader can compare.
    */
   const runTiers = useCallback(async () => {
+    setMeetingStage(null)
     requestController.current?.abort()
     const controller = new AbortController()
     requestController.current = controller
@@ -495,8 +515,68 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
       ),
     [data]
   )
-  const selectedTick =
+  const timelineTick =
     data?.ticks[Math.min(timelineIndex, Math.max(0, data.ticks.length - 1))]
+  const meetingActive =
+    lens === 'floor' &&
+    selectedWall === 'wall:west' &&
+    band === 3 &&
+    floorFocused &&
+    isControlled &&
+    floorView !== 'live' &&
+    meetingStage !== null
+  const selectedTick = useMemo(
+    () =>
+      timelineTick && meetingDemo && meetingStage && meetingActive
+        ? meetingDemoTick(
+            timelineTick,
+            meetingDemo,
+            meetingStage,
+            meetingActuatorAngle
+          )
+        : timelineTick,
+    [
+      timelineTick,
+      meetingDemo,
+      meetingStage,
+      meetingActive,
+      meetingActuatorAngle,
+    ]
+  )
+  useEffect(() => {
+    if (!meetingActive || meetingStage !== 'glare') return
+    if (meetingActuatorAngle !== null) {
+      if (meetingActuatorAngle >= 179.8) setMeetingStage('balanced')
+      return
+    }
+    const timer = setTimeout(() => setMeetingStage('balanced'), MEETING_MOVE_MS)
+    return () => clearTimeout(timer)
+  }, [meetingActive, meetingStage, meetingActuatorAngle])
+  const startMeetingDemo = async () => {
+    setMeetingLoading(true)
+    setMeetingError(null)
+    try {
+      const preset = meetingDemo ?? (await getMeetingDemo())
+      setMeetingDemo(preset)
+      setPlaying(false)
+      setSelectedWall('wall:west')
+      setSelectedZone('W13')
+      setBand(3)
+      setFloorFocused(true)
+      setFloorView('normal')
+      setBuildingVariant('controlled')
+      setCsiActivity('working')
+      setMeetingStage('ready')
+    } catch (cause) {
+      setMeetingError(
+        cause instanceof Error
+          ? cause.message
+          : 'Could not prepare meeting demo.'
+      )
+    } finally {
+      setMeetingLoading(false)
+    }
+  }
   const primaryOrientation = selectedTick?.facade.find(
     (wall) => wall.primary
   )?.orientation
@@ -886,7 +966,8 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
                         }}
                       />
                     )}
-                    {selectedWallState &&
+                    {!meetingActive &&
+                      selectedWallState &&
                       (selectedWallState.zones?.length ?? 0) > 0 && (
                         <ZoneSensorPanel
                           buildingVariant={buildingVariant}
@@ -1086,7 +1167,9 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
                   className={`absolute inset-0 ${lens === 'brains' ? 'hidden' : ''}`}
                 >
                   <BuildingHeatmap
-                    solarTracking={data.scenario === 'solar_tracking'}
+                    solarTracking={
+                      meetingActive || data.scenario === 'solar_tracking'
+                    }
                     orbit={orbit}
                     onOrbitChange={setOrbit}
                     active={lens !== 'brains'}
@@ -1100,7 +1183,10 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
                       data.scenario === 'solar_tracking' ? null : visionSky
                     }
                     buildingVariant={buildingVariant}
-                    onBuildingVariantChange={setBuildingVariant}
+                    onBuildingVariantChange={(variant) => {
+                      setMeetingStage(null)
+                      setBuildingVariant(variant)
+                    }}
                     controlsSlot={lens === 'brains' ? null : sceneControls}
                     tick={selectedTick}
                     floors={data.metadata.floors}
@@ -1115,13 +1201,14 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
                     sunTrack={sunTrack}
                     ticks={data.ticks}
                     onSelectTick={(index) => {
+                      setMeetingStage(null)
                       setPlaying(false)
                       setTimelineIndex(index)
                     }}
                   />
                 </div>
                 {lens === 'brains' && isControlled && (
-                  <div className='absolute inset-0 flex flex-col overflow-hidden p-4 pb-44 sm:p-5 sm:pb-44'>
+                  <div className='absolute inset-0 flex flex-col overflow-hidden p-4 sm:p-5'>
                     <BrainFlow
                       tick={selectedTick}
                       floors={data.metadata.floors}
@@ -1137,7 +1224,7 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
                   </div>
                 )}
                 {lens === 'brains' && !isControlled && (
-                  <div className='absolute inset-0 flex items-center justify-center p-6 pb-44'>
+                  <div className='absolute inset-0 flex items-center justify-center p-6'>
                     <section className='console-card max-w-sm text-center'>
                       <h1 className='font-display text-xl font-semibold'>
                         No facade controller
@@ -1155,7 +1242,11 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
                     </section>
                   </div>
                 )}
-                <div className='stage-toolbar' data-tour='timeline-inspector'>
+                <div
+                  className='stage-toolbar'
+                  data-tour='timeline-inspector'
+                  style={{ display: lens === 'brains' ? 'none' : undefined }}
+                >
                   <div className='flex flex-wrap items-center gap-2'>
                     <button
                       aria-label={
@@ -1164,6 +1255,7 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
                       aria-pressed={playing}
                       className='play-button'
                       onClick={() => {
+                        setMeetingStage(null)
                         // Replay from 07:00 when the clock is parked at the end.
                         if (!playing && timelineIndex >= tickCount - 1)
                           setTimelineIndex(0)
@@ -1181,7 +1273,7 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
                       {timeLabel(selectedTick.timestamp, zone)}
                     </p>
                     <span className='text-[10px] text-muted-foreground'>
-                      {`sun ${selectedTick.solar_elevation.toFixed(0)}° elev · ${selectedTick.solar_azimuth.toFixed(0)}° az`}
+                      {`${meetingActive ? 'Scripted demo · ' : ''}sun ${selectedTick.solar_elevation.toFixed(0)}° elev · ${selectedTick.solar_azimuth.toFixed(0)}° az`}
                     </span>
                     <span className='text-[11px] font-semibold capitalize'>
                       {selectedKind === 'roof'
@@ -1219,9 +1311,10 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
                     min={0}
                     max={Math.max(0, data.ticks.length - 1)}
                     value={timelineIndex}
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      setMeetingStage(null)
                       setTimelineIndex(Number(event.target.value))
-                    }
+                    }}
                   />
 
                   <div className='flex flex-wrap items-center gap-1.5'>
@@ -1336,11 +1429,29 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
             className='console-rail console-rail-right'
             aria-label='Scene controls and sky monitoring'
           >
+            {lens === 'floor' && (
+              <MeetingGlareDemo
+                demo={meetingDemo}
+                stage={meetingActive ? meetingStage : null}
+                actuatorAngle={meetingActive ? meetingActuatorAngle : null}
+                loading={meetingLoading || loading || tierRunning || !data}
+                error={meetingError}
+                onStart={() => void startMeetingDemo()}
+                onStage={setMeetingStage}
+                onExit={() => {
+                  setMeetingStage(null)
+                  setCsiActivity('auto')
+                }}
+              />
+            )}
             <LiveHardwarePanel
               tick={isControlled ? (selectedTick ?? null) : null}
+              meetingDemo={meetingActive}
               onModeChange={setHardwareMode}
+              onMeetingAngleChange={setMeetingActuatorAngle}
             />
             {lens === 'floor' &&
+              !meetingActive &&
               csiView &&
               selectedTick &&
               (floorFocused ? (

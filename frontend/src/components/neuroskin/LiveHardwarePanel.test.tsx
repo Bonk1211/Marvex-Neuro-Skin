@@ -53,6 +53,122 @@ afterEach(() => {
 })
 
 describe('live hardware bridge', () => {
+  it('automatically connects on Simulate glare and keeps the other three captured poses through refresh and reset', async () => {
+    vi.useFakeTimers()
+    let current = {
+      ...STATUS,
+      panels: {
+        ...STATUS.panels,
+        bh2: panel('W14', { commanded_angle: 17 }),
+        bh3: panel('W9', { commanded_angle: 41 }),
+        bh4: panel('W10', { commanded_angle: 55 }),
+      },
+    }
+    const posts: { mode: string; angles?: Record<string, number> }[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        if (init?.method === 'POST') {
+          const control = JSON.parse(String(init.body))
+          posts.push(control)
+          current = { ...current, mode: control.mode }
+        }
+        return { ok: true, json: async () => current }
+      })
+    )
+    const tickAt = (angle: number, stage: TickPayload['meeting_demo']) => ({
+      ...TICK,
+      meeting_demo: stage,
+      facade: TICK.facade.map((wall) => ({
+        ...wall,
+        zones: wall.zones?.map((zone) => ({
+          ...zone,
+          angle: zone.zone === 'W13' ? angle : 0,
+        })),
+      })),
+    })
+    const onAngle = vi.fn()
+    const { rerender } = render(
+      <LiveHardwarePanel
+        tick={tickAt(0, 'ready')}
+        meetingDemo
+        onMeetingAngleChange={onAngle}
+      />
+    )
+    await act(async () => {})
+    expect(posts).toHaveLength(0)
+    await act(async () => {
+      rerender(
+        <LiveHardwarePanel
+          tick={tickAt(117, 'glare')}
+          meetingDemo
+          onMeetingAngleChange={onAngle}
+        />
+      )
+    })
+    expect(onAngle).toHaveBeenLastCalledWith(30)
+    expect(posts.at(-1)?.angles).toEqual({ W13: 180, W14: 17, W9: 41, W10: 55 })
+    current = {
+      ...current,
+      panels: { ...current.panels, bh1: panel('W13', { commanded_angle: 90 }) },
+    }
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500)
+    })
+    expect(onAngle).toHaveBeenLastCalledWith(90)
+    current = { ...current, online: false }
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500)
+    })
+    expect(onAngle).toHaveBeenLastCalledWith(null)
+    current = { ...current, online: true }
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000)
+    })
+    expect(posts.at(-1)?.angles).toEqual({ W13: 180, W14: 17, W9: 41, W10: 55 })
+    await act(async () => {
+      rerender(<LiveHardwarePanel tick={tickAt(117, 'balanced')} meetingDemo />)
+      await vi.advanceTimersByTimeAsync(5000)
+    })
+    expect(posts.at(-1)?.angles).toEqual({ W13: 180, W14: 17, W9: 41, W10: 55 })
+    await act(async () => {
+      rerender(<LiveHardwarePanel tick={tickAt(0, 'ready')} meetingDemo />)
+    })
+    expect(posts.at(-1)?.angles).toEqual({ W13: 0, W14: 17, W9: 41, W10: 55 })
+    await act(async () => {
+      rerender(<LiveHardwarePanel tick={TICK} />)
+    })
+    expect(posts.at(-1)).toEqual({ mode: 'auto' })
+    const stopped = posts.length
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6000)
+    })
+    expect(posts).toHaveLength(stopped)
+  })
+
+  it('reports a disconnected rig instead of silently running only the animation', async () => {
+    const fetchMock = vi.fn<
+      (url: string, init?: RequestInit) => Promise<Partial<Response>>
+    >(async () => ({
+      ok: true,
+      json: async () => ({ ...STATUS, online: false }),
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <LiveHardwarePanel
+        tick={{ ...TICK, meeting_demo: 'glare' }}
+        meetingDemo
+      />
+    )
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Hardware did not connect'
+    )
+    expect(
+      screen.getByRole('button', { name: '1 · Follow meeting demo' })
+    ).toHaveAttribute('aria-pressed', 'false')
+    expect(fetchMock.mock.calls.every((args) => !args[1]?.method)).toBe(true)
+  })
+
   it('shows live readings and pushes the twin angles for the mapped zones', async () => {
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => ({
       ok: true,

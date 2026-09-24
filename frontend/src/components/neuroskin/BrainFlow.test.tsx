@@ -1,7 +1,11 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TickPayload } from '@/lib/types'
 import { BrainFlow } from './BrainFlow'
+
+vi.mock('@/lib/api-client', () => ({
+  setHardwareControl: vi.fn().mockResolvedValue({ online: false, panels: {} }),
+}))
 
 const AZIMUTH: Record<string, number> = {
   north: 0,
@@ -69,7 +73,7 @@ describe('BrainFlow ticket notification', () => {
     expect(screen.getByText(/Waiting for the run/)).toBeInTheDocument()
   })
 
-  it('opens the channel straight away when the wind is already on the wall', () => {
+  it('opens the channel straight away when the wind is already on the wall', async () => {
     vi.useFakeTimers()
     const onSimulateWind = vi.fn()
     render(
@@ -80,7 +84,9 @@ describe('BrainFlow ticket notification', () => {
       />
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /Accept ticket/ }))
+    await act(async () =>
+      fireEvent.click(screen.getByRole('button', { name: /Accept ticket/ }))
+    )
     expect(onSimulateWind).not.toHaveBeenCalled()
     expect(screen.getByLabelText('Channel messages')).toBeInTheDocument()
   })

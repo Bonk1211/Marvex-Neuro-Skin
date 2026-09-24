@@ -8,10 +8,10 @@ vi.mock('@/lib/api-client', () => ({
   setHardwareControl: vi.fn().mockResolvedValue({
     online: true,
     panels: {
-      bh1: { zone: 'W13', commanded_angle: 45 },
-      bh2: { zone: 'W14', commanded_angle: 45 },
-      bh3: { zone: 'W9', commanded_angle: 30 },
-      bh4: { zone: 'W10', commanded_angle: 0 },
+      bh1: { zone: 'W13', commanded_angle: 15 },
+      bh2: { zone: 'W14', commanded_angle: 30 },
+      bh3: { zone: 'W9', commanded_angle: 45 },
+      bh4: { zone: 'W10', commanded_angle: 60 },
     },
   }),
 }))
@@ -119,30 +119,97 @@ describe('AgentRoom', () => {
     expect(thread()).toHaveTextContent('W13 zone agent joined')
   })
 
-  it('holds the retreat on the rig, then closes instead of looping', async () => {
+  it('stages different angles, retreats only at the finale, and stages again on replay', async () => {
     vi.useFakeTimers()
     render(room())
 
-    // The agreed angles go to the bridge as a wind hold, by zone.
+    const start = { W13: 15, W14: 30, W9: 45, W10: 60 }
+    const flat = { W13: 0, W14: 0, W9: 0, W10: 0 }
     expect(pushed).toHaveBeenCalledWith({
       mode: 'wind',
-      angles: { W13: 0, W14: 0, W9: 0, W10: 0 },
+      angles: start,
       refresh_only: false,
     })
 
+    await until('Safety rule confirmed')
+    expect(
+      pushed.mock.calls.every(
+        ([control]) =>
+          'angles' in control &&
+          JSON.stringify(control.angles) === JSON.stringify(start)
+      )
+    ).toBe(true)
+    expect(thread()).toHaveTextContent('W13 15°, W14 30°, W9 45°, W10 60°')
+
     await until('The retreat is on the rig')
-    // The travel each blade has to make is on the record, so a rig that does not
-    // move reads as "already there" rather than as a broken demo.
-    await until('W13 45° → 0°')
+    expect(pushed).toHaveBeenCalledWith({
+      mode: 'wind',
+      angles: flat,
+      refresh_only: false,
+    })
+    await until('W13 15° → 0°')
+    await until('W10 60° → 0°')
     await until('Conversation closed · the facade has retreated')
     const transcript = thread().textContent
 
-    // Time keeps passing; the channel does not start over.
+    // A keepalive reports the arrived pose but must preserve the original travel.
+    pushed.mockResolvedValueOnce({
+      online: true,
+      panels: Object.fromEntries(
+        Object.keys(start).map((zone, i) => [
+          `bh${i + 1}`,
+          { zone, commanded_angle: 0 },
+        ])
+      ),
+    } as Awaited<ReturnType<typeof setHardwareControl>>)
     await act(async () => void (await vi.advanceTimersByTimeAsync(30_000)))
     expect(thread().textContent).toBe(transcript)
-    expect(
+    expect(pushed).toHaveBeenLastCalledWith({
+      mode: 'wind',
+      angles: flat,
+      refresh_only: true,
+    })
+
+    fireEvent.click(
       screen.getByRole('button', { name: 'Replay the conversation' })
-    ).toBeInTheDocument()
+    )
+    expect(pushed).toHaveBeenLastCalledWith({
+      mode: 'wind',
+      angles: start,
+      refresh_only: false,
+    })
+    await until('Conversation closed · the facade has retreated')
+    expect(
+      pushed.mock.calls.filter(
+        ([control]) =>
+          'angles' in control &&
+          !control.refresh_only &&
+          Object.values(control.angles).every((angle) => angle === 0)
+      )
+    ).toHaveLength(2)
+  })
+
+  it('waits for the gust before starting the demo and keeps other walls off the rig', async () => {
+    vi.useFakeTimers()
+    const calm = tick(3, 'NORMAL')
+    const { rerender } = render(room({ tick: calm, waiting: true }))
+    await act(async () => void (await vi.advanceTimersByTimeAsync(60_000)))
+    expect(pushed).not.toHaveBeenCalled()
+
+    rerender(room())
+    expect(screen.getByLabelText('Working')).toHaveTextContent(
+      'Scanning all four walls'
+    )
+    expect(pushed).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        angles: { W13: 15, W14: 30, W9: 45, W10: 60 },
+      })
+    )
+
+    pushed.mockClear()
+    rerender(room({ tick: { ...tick(18, 'SAFE'), wind_direction: 112 } }))
+    await act(async () => void (await vi.advanceTimersByTimeAsync(60_000)))
+    expect(pushed).not.toHaveBeenCalled()
   })
 
   it('reads the live weather feed and maps the site before the bays report', async () => {
@@ -176,9 +243,21 @@ describe('AgentRoom', () => {
     expect(screen.getByLabelText('Tool call')).toHaveTextContent(
       '31.2 °C · 2026-09-24T10:45'
     )
+    await until('Safety rule confirmed')
+    expect(pushed).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        angles: { W13: 15, W14: 30, W9: 45, W10: 60 },
+      })
+    )
+    await until('Conversation closed · the facade has retreated')
+    expect(pushed).toHaveBeenCalledWith({
+      mode: 'wind',
+      angles: { W13: 0, W14: 0, W9: 0, W10: 0 },
+      refresh_only: false,
+    })
   })
 
-  it('posts an operator note into the thread without sending it anywhere', () => {
+  it('posts an operator note into the thread without sending it anywhere', async () => {
     vi.useFakeTimers()
     render(room())
 
@@ -186,6 +265,7 @@ describe('AgentRoom', () => {
       target: { value: 'Hold the west wall flat until the squall passes.' },
     })
     fireEvent.click(screen.getByLabelText('Post note'))
+    await act(async () => {})
     expect(thread()).toHaveTextContent('Operator (you)')
   })
 

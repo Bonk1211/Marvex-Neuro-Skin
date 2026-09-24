@@ -2,7 +2,12 @@ import * as THREE from 'three'
 import type { FacadeOrientation, TickPayload } from '@/lib/types'
 import { roofGrid } from './solarExposure'
 import { FLOOR_PLANS, floorProgram, WALL_ROTATION } from './floorWorkspaces'
-import { mockOccupancy, occupantId, walkingPosition } from './floorOccupants'
+import {
+  MEETING_SEATS,
+  mockOccupancy,
+  occupantId,
+  walkingPosition,
+} from './floorOccupants'
 import { poseSkeleton, type PosedSkeleton } from './sectionScene'
 import type { CsiActivity, CsiDetection } from './csiPosture'
 
@@ -770,6 +775,21 @@ export function createBandPlan(
       pickables.push(slab)
       const sunlight = createFloorSunlight(orientation, band)
       level.add(sunlight.group)
+      const meetingSun = new THREE.Mesh(
+        new THREE.CircleGeometry(0.46, 32),
+        new THREE.MeshBasicMaterial({
+          color: 0xffc44d,
+          transparent: true,
+          opacity: 0,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+        })
+      )
+      meetingSun.rotation.x = -Math.PI / 2
+      meetingSun.position.set(-1.57, 0.432, -2.2)
+      meetingSun.userData.floorLight = true
+      meetingSun.visible = false
+      level.add(meetingSun)
       const shadow = new THREE.Mesh(floorShadowGeometry, floorShadowMaterial)
       shadow.rotation.x = -Math.PI / 2
       shadow.position.y = 0.085
@@ -796,6 +816,7 @@ export function createBandPlan(
         probes,
         people,
         sunlight,
+        meetingSun,
         occluders,
         shadow,
         wire,
@@ -853,6 +874,7 @@ export function createBandPlan(
   let previousView = ''
   let previousDaylight: TickPayload | undefined
   let previousSun: TickPayload | undefined
+  let sunlightMoving = false
   return {
     group,
     levels,
@@ -960,7 +982,13 @@ export function createBandPlan(
         previousDaylight = daylightTick
       }
       const sunChanged = previousSun !== solar
-      if (changed || sunChanged) {
+      if (
+        changed ||
+        sunChanged ||
+        sunlightMoving ||
+        solar?.meeting_demo === 'glare'
+      ) {
+        sunlightMoving = false
         const centre = (focusedBand ?? 1.5) * FLOOR_STACK_GAP
         light.target.position.set(0, centre, 0)
         light.position.copy(
@@ -977,6 +1005,22 @@ export function createBandPlan(
         light.intensity = solar && solar.solar_elevation <= 0 ? 0.2 : 3.2
         group.updateMatrixWorld(true)
         for (const level of levels) {
+          level.meetingSun.visible =
+            !!solar?.meeting_demo &&
+            level.orientation === 'west' &&
+            level.band === 3 &&
+            mode === 'sun'
+          const meetingZone = solar?.facade
+            .find((wall) => wall.orientation === 'west')
+            ?.zones?.find((zone) => zone.zone === 'W13')
+          level.meetingSun.material.opacity = Math.min(
+            0.85,
+            Math.max(
+              0,
+              (meetingZone?.transmitted ?? 0) -
+                (meetingZone?.diffuse_transmitted ?? 0)
+            ) / 70
+          )
           level.shadow.visible =
             level.group.visible &&
             level.band === focusedBand &&
@@ -988,12 +1032,24 @@ export function createBandPlan(
             (focusedBand === null || level.band === focusedBand) &&
             mode === 'sun'
           if (visible)
-            level.sunlight.update(
-              solar,
-              lighting?.controlled ?? true,
-              level.occluders
-            )
+            sunlightMoving =
+              level.sunlight.update(
+                solar,
+                lighting?.controlled ?? true,
+                level.occluders
+              ) || sunlightMoving
           else level.sunlight.group.visible = false
+          if (
+            solar?.meeting_demo &&
+            level.orientation === 'west' &&
+            level.band === 3
+          ) {
+            const shift = level.sunlight.group.userData.openingShift ?? 0
+            level.meetingSun.position.x =
+              -1.57 -
+              shift / Math.tan(THREE.MathUtils.degToRad(solar.solar_elevation))
+            level.meetingSun.scale.setScalar(1 - shift / 0.16)
+          }
         }
         previousSun = solar
       }
@@ -1023,13 +1079,17 @@ export function createBandPlan(
       showPeople = true,
       showMarkers = true,
       focusedBand: number | null = null,
-      activity: CsiActivity = 'auto'
+      activity: CsiActivity = 'auto',
+      meetingDemo = false
     ) {
       for (const level of levels) {
+        for (const child of level.group.children)
+          if (child.userData.meetingLabel) child.visible = meetingDemo
         const counts = mockOccupancy(
           activity === 'empty' ? 0 : occupancy,
           level.orientation,
-          level.band
+          level.band,
+          meetingDemo
         )
         for (const [index, person] of level.people.entries()) {
           person.group.visible =
@@ -1039,15 +1099,23 @@ export function createBandPlan(
             (focusedBand === null || level.band === focusedBand)
           person.marker.visible = showMarkers
           if (!person.group.visible) continue
+          const meeting =
+            meetingDemo && level.orientation === 'west' && level.band === 3
+          const seat = meeting
+            ? level.probes.find(
+                (probe) => probe.index === MEETING_SEATS[index]
+              )!
+            : person.seat
           const walking =
-            activity === 'walking' ||
-            (activity === 'auto' && index < counts.walking)
+            !meeting &&
+            (activity === 'walking' ||
+              (activity === 'auto' && index < counts.walking))
           const point = walking
             ? walkingPosition(seconds, index, level.orientation, level.band)
-            : person.seat
+            : seat
           person.group.position.set(point.x, 0, point.z)
           person.group.rotation.y =
-            activity === 'window'
+            !meeting && activity === 'window'
               ? {
                   north: 0,
                   east: -Math.PI / 2,
@@ -1057,10 +1125,10 @@ export function createBandPlan(
               : point.rotation
           person.body.position.y = walking ? 0 : -0.06
           person.group.userData.state = walking ? 'walking' : 'seated'
-          person.group.userData.seatIndex = walking ? null : person.seat.index
+          person.group.userData.seatIndex = walking ? null : seat.index
           person.group.userData.reading = walking
             ? undefined
-            : person.seat.mesh.userData.reading
+            : seat.mesh.userData.reading
           for (const [leg, { thigh, shin }] of person.legs.entries()) {
             thigh.rotation.x = walking
               ? Math.sin(seconds * 4 + index + leg * Math.PI) * 0.4
@@ -1070,7 +1138,13 @@ export function createBandPlan(
           // Tracking labels appear in the focused floor; rings remain readable in the stack.
           for (const child of person.marker.children)
             if (child instanceof THREE.Sprite)
-              child.visible = focusedBand === level.band
+              child.visible =
+                focusedBand === level.band &&
+                (child.userData.meetingLabel
+                  ? meeting
+                  : child.userData.regularLabel
+                    ? !meeting
+                    : true)
         }
       }
     },

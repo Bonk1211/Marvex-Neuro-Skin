@@ -27,7 +27,13 @@ const PAUSE_MS = 1100
 const STREAM_MS = 16
 const CHARS_PER_TICK = 4
 /** The rig's four panels, bh1-bh4. Mirrors PANEL_ZONES in backend/app/hardware.py. */
-const RIG_ZONES = ['W13', 'W14', 'W9', 'W10']
+const RIG_START_ANGLES: Record<string, number> = {
+  W13: 15,
+  W14: 30,
+  W9: 45,
+  W10: 60,
+}
+const RIG_ZONES = Object.keys(RIG_START_ANGLES)
 /** The backend drops a hold after 30 s, so refresh it while the channel is open. */
 const RIG_KEEPALIVE_MS = 20_000
 
@@ -204,15 +210,20 @@ type Rig =
   | { status: 'skipped' }
 
 /**
- * Holds the agreed retreat on the rig for as long as the channel is open. The
- * backend keeps the hold for 30 s, so it is refreshed; leaving the channel hands
- * the panels back to their own lux control.
+ * Stages varied demo angles while the agents discuss, then holds their retreat
+ * when the actuator speaks. Refresh either pose inside the backend's 30 s TTL.
  */
-function useRig(roster: ZoneLoad[], active: boolean): Rig {
+function useRig(roster: ZoneLoad[], active: boolean, retreat: boolean): Rig {
   const [rig, setRig] = useState<Rig>({ status: 'idle' })
   const angles = useMemo(
-    () => Object.fromEntries(roster.map((load) => [load.zone, load.proposed])),
-    [roster]
+    () =>
+      Object.fromEntries(
+        roster.map((load) => [
+          load.zone,
+          retreat ? load.proposed : RIG_START_ANGLES[load.zone],
+        ])
+      ),
+    [roster, retreat]
   )
   const covered = RIG_ZONES.every((zone) => zone in angles)
   useEffect(() => {
@@ -233,7 +244,14 @@ function useRig(roster: ZoneLoad[], active: boolean): Rig {
               from: panel.commanded_angle ?? 0,
               to: angles[panel.zone],
             }))
-          if (!cancelled) setRig({ status: 'ok', online: status.online, moves })
+          // Keep the original travel on record; a keepalive sees the arrived pose.
+          if (!cancelled)
+            setRig((previous) => ({
+              status: 'ok',
+              online: status.online,
+              moves:
+                refresh && previous.status === 'ok' ? previous.moves : moves,
+            }))
         })
         .catch((error: Error) => {
           if (!cancelled) setRig({ status: 'error', error: error.message })
@@ -264,6 +282,9 @@ function windThread(
   const bearing = tick.wind_direction ?? 0
   const wall = roster[0].orientation
   const safe = tick.mode === 'SAFE'
+  const staged = RIG_ZONES.every((zone) =>
+    roster.some((load) => load.zone === zone)
+  )
   const limit = criticalPressure(CRITICAL_WIND).toFixed(0)
   const members: Member[] = [
     CHAIR,
@@ -316,6 +337,10 @@ function windThread(
         `Opening a channel for the ${roster.length} worst`,
       ],
       text:
+        (staged
+          ? `**Demo setup:** starting panels **${RIG_ZONES.map((zone) => `${zone} ${RIG_START_ANGLES[zone]}°`).join(', ')}**. ` +
+            'They hold these different angles during the discussion, then retreat together at the end. '
+          : '') +
         `**${tick.wind.toFixed(1)} m/s** from **${bearing.toFixed(0)}° (${cardinal(bearing)})**. ` +
         `The **${wall} facade** stands **${roster[0].incidence}° off head-on**, so it is taking the load. ` +
         `Pulling in the **${roster.length} bays** under the most pressure.`,
@@ -363,8 +388,8 @@ function windThread(
         'Comparing the proposals with the angle the controller applied',
       ],
       text: safe
-        ? `**Safety rule confirmed** at ${CRITICAL_WIND} m/s: every zone retracts flat to **${tick.angle_final.toFixed(0)}°** ` +
-          'and holds there. The retreat this room proposed stays on record.'
+        ? `**Safety rule confirmed** at ${CRITICAL_WIND} m/s: every zone must retract flat to **0°** ` +
+          'and hold there. The actuator will apply the retreat now.'
         : `Wind is still **under the ${CRITICAL_WIND} m/s safety limit**, so the retreat runs as the wind cost term, ` +
           `not as a safety hold. Applied **${tick.angle_final.toFixed(0)}°** on the primary wall.`,
       reactions: [{ emoji: safe ? '🛡️' : '✅', count: roster.length }],
@@ -403,8 +428,7 @@ function windThread(
             (!rig.online
               ? ', to be applied as soon as the bridge reports in. '
               : rig.moves.every((move) => Math.abs(move.from - move.to) < 0.5)
-                ? '. The blades were **already there**, so there is no travel to watch: ' +
-                  'light the sensors above 700 lx before the next ticket and they will have somewhere to retreat from. '
+                ? '. The bridge already reports the retreat angles. '
                 : `. The blades are travelling **${rig.moves.map((move) => `${move.zone} ${move.from.toFixed(0)}° → ${move.to.toFixed(0)}°`).join(', ')}**. `) +
             '**The facade has retreated. Nothing left to decide** until the wind changes, so the channel closes here.'
           : rig.status === 'skipped'
@@ -587,11 +611,22 @@ export function AgentRoom({
     () => tick.facade.flatMap((wall) => wall.zones ?? []),
     [tick]
   )
-  const roster = useMemo(
-    () => windRoster(tick, { floors, criticalWind: CRITICAL_WIND }),
-    [tick, floors]
-  )
-  const rig = useRig(roster, open && !waiting)
+  const roster = useMemo(() => {
+    const loads = windRoster(tick, { floors, criticalWind: CRITICAL_WIND })
+    if (!RIG_ZONES.every((zone) => loads.some((load) => load.zone === zone)))
+      return loads
+    return loads.map((load) => ({
+      ...load,
+      angle: RIG_START_ANGLES[load.zone],
+      proposed:
+        tick.mode === 'SAFE'
+          ? 0
+          : Math.min(RIG_START_ANGLES[load.zone], load.hold),
+    }))
+  }, [tick, floors])
+  // Actuation follows the chair, optional weather, bay reports, agreement and ruling.
+  const retreat = step >= 1 + Number(Boolean(site)) + roster.length + 2
+  const rig = useRig(roster, open && !waiting, retreat)
   const { members, messages } = useMemo(
     () =>
       roster.length
@@ -614,12 +649,12 @@ export function AgentRoom({
   }, [step])
   // Show the working first, then write the answer out, then hand over.
   useEffect(() => {
-    if (!open || !playing || !thinking || instant) return
+    if (!open || waiting || !playing || !thinking || instant) return
     const timer = setTimeout(() => setThinking(false), THINK_MS)
     return () => clearTimeout(timer)
-  }, [open, playing, thinking, instant, step])
+  }, [open, waiting, playing, thinking, instant, step])
   useEffect(() => {
-    if (!open || !playing || (thinking && !instant)) return
+    if (!open || waiting || !playing || (thinking && !instant)) return
     if (chars < full) {
       const timer = setTimeout(
         () => setChars((value) => value + CHARS_PER_TICK),
@@ -627,10 +662,21 @@ export function AgentRoom({
       )
       return () => clearTimeout(timer)
     }
-    if (ended) return
+    if (ended || rig.status === 'pushing') return
     const timer = setTimeout(() => setStep((value) => value + 1), PAUSE_MS)
     return () => clearTimeout(timer)
-  }, [open, playing, thinking, instant, chars, full, step, ended])
+  }, [
+    open,
+    waiting,
+    playing,
+    thinking,
+    instant,
+    chars,
+    full,
+    step,
+    ended,
+    rig.status,
+  ])
   useEffect(() => {
     const element = thread.current
     if (element) element.scrollTop = element.scrollHeight
@@ -682,7 +728,7 @@ export function AgentRoom({
       visible.some((message) => message.joins === entry.id)
   )
   const streaming = shown < full
-  const closed = ended && !streaming
+  const closed = ended && !streaming && !current?.tool?.pending
   const typing = streaming
     ? undefined
     : posted + 1 < messages.length
@@ -751,6 +797,8 @@ export function AgentRoom({
             className='agent-play'
             type='button'
             onClick={() => {
+              setStep(0)
+              setPlaying(true)
               setNotes([])
               onClose()
             }}
@@ -773,7 +821,11 @@ export function AgentRoom({
           const body = live ? message.text.slice(0, shown) : message.text
           const done = !live || shown >= message.text.length
           return (
-            <article key={index} className='agent-msg'>
+            <article
+              key={index}
+              className='agent-msg'
+              data-orchestrator={message.speaker === CHAIR.id}
+            >
               {message.joins && (
                 <p className='agent-system'>
                   {speaker?.name ?? message.joins} joined #{channel} ·{' '}

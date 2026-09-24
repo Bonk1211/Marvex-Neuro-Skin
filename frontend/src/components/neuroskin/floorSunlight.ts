@@ -115,6 +115,8 @@ export function createFloorSunlight(
   })
   const raycaster = new THREE.Raycaster()
   raycaster.layers.set(1)
+  let meetingAngle = 0
+  let updatedAt = performance.now()
   const positions = (
     geometry: THREE.BufferGeometry,
     points: THREE.Vector3[]
@@ -141,18 +143,51 @@ export function createFloorSunlight(
         Number.isFinite(tick.solar_azimuth) &&
         Number.isFinite(tick.solar_elevation) &&
         tick.solar_elevation > 0
-      if (!tick || !group.visible) return
+      if (!tick || !group.visible) return false
       const direction = floorSunDirection(
         tick.solar_azimuth,
         tick.solar_elevation
       )
       const originOffset = group.getWorldPosition(new THREE.Vector3())
       const wall = tick.facade.find((wall) => wall.orientation === orientation)
+      const now = performance.now()
+      const elapsed = Math.min(0.1, (now - updatedAt) / 1000)
+      updatedAt = now
+      let moving = false
       for (const bay of bays) {
         const zone = wall?.zones?.find(
           (zone) => zone.row === band && zone.column === bay.column
         )
         const beam = beamThrough(zone, controlled)
+        const meeting =
+          !!tick.meeting_demo &&
+          orientation === 'west' &&
+          band === 3 &&
+          bay.column === 0
+        if (meeting) {
+          const reported = tick.meeting_actuator_angle
+          const target = zone?.angle ?? 0
+          if (tick.meeting_demo === 'ready') meetingAngle = 0
+          else if (reported != null && Number.isFinite(reported)) {
+            // Map the labelled 0–180° prototype sweep onto the optical pose.
+            // Smooth reported commands without predicting motion past the latest one.
+            const pose = target * THREE.MathUtils.clamp(reported / 180, 0, 1)
+            meetingAngle = THREE.MathUtils.damp(meetingAngle, pose, 12, elapsed)
+            moving = Math.abs(meetingAngle - pose) > 0.001
+            if (!moving) meetingAngle = pose
+          } else {
+            meetingAngle =
+              tick.meeting_demo === 'balanced'
+                ? target
+                : Math.min(target, meetingAngle + elapsed * 20)
+          }
+        }
+        // Illustrative gap shift as the blade turns; incoming sunlight retains
+        // its solar direction. This is not a specular-reflection calculation.
+        const openingShift = meeting
+          ? 0.08 * Math.sin(THREE.MathUtils.degToRad(meetingAngle))
+          : 0
+        if (meeting) group.userData.openingShift = openingShift
         const visible =
           Number.isFinite(beam) && beam > 1 && normal.dot(direction) > 0.03
         bay.patch.visible =
@@ -176,7 +211,12 @@ export function createFloorSunlight(
           [0.7, 0.22],
           [0.7, 1.45],
           [-0.7, 1.45],
-        ].map(([x, y]) => centre.clone().addScaledVector(tangent, x).setY(y))
+        ].map(([x, y]) =>
+          centre
+            .clone()
+            .addScaledVector(tangent, x)
+            .setY(y - openingShift)
+        )
         positions(bay.window.geometry, aperture)
         const floor = clipToFloor(
           aperture.map((point) =>
@@ -196,7 +236,8 @@ export function createFloorSunlight(
           const start = centre
             .clone()
             .addScaledVector(tangent, offset)
-            .setY(1.25)
+            // The scripted W13 opening aims at the meeting tabletop.
+            .setY(meeting ? 1 - openingShift : 1.25)
           const distance = (start.y - 0.08) / direction.y
           raycaster.set(
             start.clone().add(originOffset).addScaledVector(direction, -0.015),
@@ -232,6 +273,7 @@ export function createFloorSunlight(
         }
         positions(bay.shaft.geometry, beams)
       }
+      return moving
     },
   }
 }

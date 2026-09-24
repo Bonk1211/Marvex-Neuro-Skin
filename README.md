@@ -186,6 +186,22 @@ The dashboard can also switch between the controlled facade and a **no-external-
 baseline** of the same building. This comparison shows how much irradiance the louvres
 remove.
 
+In **Floor**, choose **Set up meeting demo** to open West Floor 7 with people at seats
+1–4 and 13–14. The meeting starts with high Ev/Et. **Simulate glare** sweeps W13
+from 0° to the model-selected 117°, shifts the illustrated sunlight opening, and
+shows green comfort readings when BH1 reports the end of its sweep (7.5 seconds
+for the simulation without hardware); the other 15 west zones hold. Seats 13–14 remain
+under scripted local cloud shade. The angle is selected using the existing optics
+and independent-room radiosity model, separately from the normal day's controller.
+**Simulate glare** also connects the online rig automatically: BH1 demonstrates a
+full **0° → 180°** prototype sweep, separately labelled from the modelled shading angle,
+while BH2–BH4 retain their captured commanded angles. Reset prepares another sweep; exiting
+returns a rig controlled by this demo to sensor mode. These are modelled predictions,
+not live cloud or occupancy detections.
+The sunlight rays and tabletop highlight follow BH1's reported servo command,
+polled every 500 ms and smoothed between updates. The full prototype travel maps
+to the modelled shading pose; SG90 servos do not provide physical position feedback.
+
 ## API
 
 | Method | Path | Description |

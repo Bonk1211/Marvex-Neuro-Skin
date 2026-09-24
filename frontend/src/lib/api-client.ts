@@ -1,4 +1,8 @@
-import type { SimulationRunRequest, SimulationRunResponse } from './types'
+import type {
+  DaylightProbePayload,
+  SimulationRunRequest,
+  SimulationRunResponse,
+} from './types'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -300,6 +304,64 @@ export async function deleteOnboardingDocument(
 }
 
 // ---------------- Daylight section ----------------
+export interface MeetingLight {
+  angle: number
+  beam: number
+  diffuse: number
+  probes: DaylightProbePayload[]
+}
+
+export interface MeetingDemoResponse {
+  shaded: MeetingLight
+  glare: MeetingLight
+  balanced: MeetingLight
+  solar_elevation: number
+  solar_azimuth: number
+  ev_cap_lux: number
+  provenance: string
+}
+
+export async function getMeetingDemo(
+  signal?: AbortSignal
+): Promise<MeetingDemoResponse> {
+  const demo = await get<MeetingDemoResponse>(
+    '/api/v1/daylight/meeting-demo',
+    'Meeting demo',
+    signal
+  )
+  if (
+    !demo ||
+    !Number.isFinite(demo.solar_elevation) ||
+    !Number.isFinite(demo.solar_azimuth) ||
+    !(demo.ev_cap_lux > 0) ||
+    !['shaded', 'glare', 'balanced'].every((key) => {
+      const light = demo[key as 'shaded' | 'glare' | 'balanced']
+      return (
+        light &&
+        [light.angle, light.beam, light.diffuse].every(
+          (value) => Number.isFinite(value) && value >= 0
+        ) &&
+        light.angle <= 180 &&
+        Array.isArray(light.probes) &&
+        [0, 1, 2, 3, 12, 13].every((index) =>
+          light.probes.some(
+            (p) =>
+              p.index === index &&
+              p.kind === 'seat' &&
+              [p.task_illuminance, p.eye_illuminance].every(
+                (value) => value != null && Number.isFinite(value) && value >= 0
+              )
+          )
+        )
+      )
+    })
+  )
+    throw new Error(
+      'Meeting demo predictions are unavailable. Update the backend and retry.'
+    )
+  return demo
+}
+
 // The solved radiosity field behind a floor's Et/Ev, for the cross-section view.
 // Flux is what already passed the louvres, matching the oracle's own inputs.
 

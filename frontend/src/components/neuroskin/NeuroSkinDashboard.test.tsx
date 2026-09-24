@@ -253,6 +253,72 @@ describe('NeuroSkinDashboard', () => {
     window.localStorage.clear()
   })
 
+  it('sets up West Floor 7, balances meeting glare, resets and exits to the original run', async () => {
+    window.history.replaceState(null, '', '/dashboard?view=floor')
+    const light = (angle: number, lux: number) => ({
+      angle,
+      beam: angle ? 6 : 60,
+      diffuse: 9,
+      probes: [0, 1, 2, 3, 12, 13].map((index) => ({
+        index,
+        kind: 'seat',
+        task_illuminance: 390,
+        eye_illuminance: lux,
+      })),
+    })
+    const preset = {
+      shaded: { ...light(0, 500), beam: 0 },
+      glare: light(0, 7300),
+      balanced: light(23, 920),
+      solar_elevation: 20,
+      solar_azimuth: 270,
+      ev_cap_lux: 1000,
+      provenance: 'Modelled demo',
+    }
+    fetchMock.mockImplementation(async (url) => ({
+      ok: true,
+      json: async () =>
+        String(url).includes('/meeting-demo') ? preset : response,
+    }))
+    render(<NeuroSkinDashboard />)
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Set up meeting demo' })
+    )
+    expect(
+      await screen.findByText('High glare · meeting room needs shading')
+    ).toBeVisible()
+    expect(screen.getByLabelText('Mock occupants')).toHaveTextContent(
+      '6 people · 0 walking · 6 seated'
+    )
+    const hardware = () => vi.mocked(LiveHardwarePanel).mock.calls.at(-1)![0]
+    expect(hardware().meetingDemo).toBe(true)
+    vi.useFakeTimers()
+    fireEvent.click(screen.getByRole('button', { name: 'Simulate glare' }))
+    expect(hardware().tick?.meeting_demo).toBe('glare')
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(7500)
+    })
+    expect(
+      screen.getByText('Comfort restored · 15 other zones hold')
+    ).toBeVisible()
+    expect(hardware().tick?.meeting_demo).toBe('balanced')
+    fireEvent.click(screen.getByRole('button', { name: 'Reset demo' }))
+    expect(hardware().tick?.meeting_demo).toBe('ready')
+    fireEvent.click(screen.getByRole('button', { name: 'Simulate glare' }))
+    await act(async () => hardware().onMeetingAngleChange?.(90))
+    expect(hardware().tick?.meeting_actuator_angle).toBe(90)
+    expect(screen.getByText(/Sun path follows BH1/)).toHaveTextContent('90.0°')
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(7500)
+    })
+    expect(hardware().tick?.meeting_demo).toBe('glare')
+    await act(async () => hardware().onMeetingAngleChange?.(180))
+    expect(hardware().tick?.meeting_demo).toBe('balanced')
+    fireEvent.click(screen.getByRole('button', { name: 'Exit demo' }))
+    expect(hardware().meetingDemo).toBe(false)
+    expect(hardware().tick).toBe(response.ticks[0])
+  })
+
   it('renders direct impact metrics without narrative explanation', async () => {
     render(<NeuroSkinDashboard />)
     expect(await screen.findByText('Mean load')).toBeInTheDocument()
@@ -796,13 +862,20 @@ describe('NeuroSkinDashboard', () => {
     window.history.replaceState(null, '', '/dashboard?view=brains')
     render(<NeuroSkinDashboard />)
     await screen.findByRole('region', { name: 'Cost breakdown' })
+    const timeline = screen.getByLabelText('Simulation timeline')
+    expect(timeline).not.toBeVisible()
+    expect(
+      screen.queryByRole('button', { name: 'Play sun movement' })
+    ).not.toBeInTheDocument()
     expect(screen.queryByText('Mean load')).not.toBeInTheDocument()
     expect(
       screen.getByRole('region', { name: 'Data provenance' })
     ).toHaveTextContent(response.metadata.data_notice)
     fireEvent.click(screen.getByRole('link', { name: 'Building' }))
+    expect(timeline).toBeVisible()
     expect(screen.getByText('Mean load')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('link', { name: 'Floor' }))
+    expect(timeline).toBeVisible()
     expect(
       screen.getByText('Zone grid unavailable for this side')
     ).toBeInTheDocument()
@@ -1129,11 +1202,11 @@ describe('NeuroSkinDashboard', () => {
     const body = (call: number) =>
       JSON.parse(String(fetchMock.mock.calls[call][1].body))
     expect(body(0).fault_correction).toBe('review')
-    const timeline = screen.getByRole('slider', { name: 'Simulation timeline' })
-    fireEvent.change(timeline, { target: { value: '1' } })
     fireEvent.change(controller, { target: { value: 'W2' } })
 
     fireEvent.click(screen.getByRole('link', { name: 'Floor' }))
+    const timeline = screen.getByRole('slider', { name: 'Simulation timeline' })
+    fireEvent.change(timeline, { target: { value: '1' } })
     fireEvent.click(await screen.findByText('Inject fault window'))
     fireEvent.change(screen.getByRole('combobox', { name: 'Fault window' }), {
       target: { value: 'stuck' },

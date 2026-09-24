@@ -38,7 +38,7 @@ export function FloorPanel({
   const zones = allZones.filter((entry) => entry.orientation === orientation)
   const bands = focusedBand === null ? [0, 1, 2, 3] : [focusedBand]
   const crowd = bands.map((row) =>
-    mockOccupancy(tick.occupancy, orientation, row)
+    mockOccupancy(tick.occupancy, orientation, row, !!tick.meeting_demo)
   )
   const total = crowd.reduce((sum, counts) => sum + counts.total, 0)
   const walking = crowd.reduce((sum, counts) => sum + counts.walking, 0)
@@ -56,7 +56,10 @@ export function FloorPanel({
             .filter((entry) => entry.orientation === side)
             .map((entry) => entry.zone)
           const people = bands.reduce(
-            (sum, row) => sum + mockOccupancy(tick.occupancy, side, row).total,
+            (sum, row) =>
+              sum +
+              mockOccupancy(tick.occupancy, side, row, !!tick.meeting_demo)
+                .total,
             0
           )
           const light = daylightSummary(
@@ -105,7 +108,12 @@ export function FloorPanel({
         className='mt-3 grid grid-cols-2 gap-1'
       >
         {[0, 1, 2, 3].map((row) => {
-          const counts = mockOccupancy(tick.occupancy, orientation, row)
+          const counts = mockOccupancy(
+            tick.occupancy,
+            orientation,
+            row,
+            !!tick.meeting_demo
+          )
           const light = daylightSummary(
             tick.facade
               .find((wall) => wall.orientation === orientation)
@@ -175,6 +183,7 @@ export function FloorPanel({
       )}
       {controlled && tick.daylight && (
         <DaylightReadout
+          demoControl={!!tick.meeting_demo}
           status={tick.daylight}
           probes={zones.flatMap(({ zone }) =>
             (zone.conditions?.daylight_probes ?? []).map((p) => ({
@@ -190,8 +199,10 @@ export function FloorPanel({
       <details className='mt-3 border-t pt-2 text-[10px] leading-4 text-muted-foreground'>
         <summary className='cursor-pointer'>Scene & model assumptions</summary>
         <p className='mt-2'>
-          Cyan rings mark scripted people. Counts follow shared simulated
-          occupancy; no camera detection is running.
+          Cyan rings mark scripted people.{' '}
+          {tick.meeting_demo
+            ? 'Six seated people occupy seats 1–4 and 13–14 in this meeting demo.'
+            : 'Counts follow shared simulated occupancy; no camera detection is running.'}
         </p>
         <p className='mt-2'>
           Rooms and HVAC are illustrative, with no measured layout, airflow or
@@ -200,8 +211,12 @@ export function FloorPanel({
         </p>
         <p className='mt-2'>
           Et is mean work-plane illuminance; Ev is the highest seat estimate.
-          Predictions are observe-only and uncalibrated. Unsupported sites and
-          missing models have no readings. Direct-sun screening is not DGP.
+          Predictions are{' '}
+          {tick.meeting_demo
+            ? 'used by this scripted demo and remain'
+            : 'observe-only and'}{' '}
+          uncalibrated. Unsupported sites and missing models have no readings.
+          Direct-sun screening is not DGP.
         </p>
       </details>
     </section>

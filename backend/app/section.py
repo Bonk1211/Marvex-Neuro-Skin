@@ -11,6 +11,7 @@ Modelled from the same diffuse-patch oracle as the training labels. Not Radiance
 not measured comfort. See docs/appendix for what this does and does not establish.
 """
 
+from functools import lru_cache
 from math import degrees, pi, radians
 from typing import Literal
 
@@ -21,6 +22,7 @@ from app.config import DEFAULTS
 from app.domain.daylight.oracle import illuminance_at_probes, probe_breakdown, solve_radiosity
 from app.domain.daylight.room import RoomGeometry, probes_for, zone_for
 from app.domain.facade import ORIENTATIONS
+from app.domain.optics import FacadeOptics
 
 router = APIRouter(prefix="/api/v1/daylight", tags=["daylight"])
 
@@ -109,6 +111,72 @@ PROVENANCE = (
     "illustrative box. Modelled, not measured; not Radiance, and not a validated "
     "glare index."
 )
+
+
+@router.get("/meeting-demo")
+@lru_cache(maxsize=1)
+def meeting_demo() -> dict:
+    """Declared West Floor 7 inputs, solved with the existing optics and oracle."""
+    room = RoomGeometry()
+    probes = probes_for("west", 3)
+    optics = FacadeOptics(120 / 140, 20, 270, 270, reflector=True)
+
+    def readings(angle: int, sunny: bool) -> dict:
+        beam = 120 * optics.beam_transmittance(angle) if sunny else 0.0
+        diffuse = 20 * optics.diffuse_transmittance(angle)
+        lux = illuminance_at_probes(
+            room,
+            probes,
+            beam_flux=beam,
+            diffuse_flux=diffuse,
+            solar_elevation=20,
+            solar_azimuth=270,
+            wall_azimuth=270,
+        )
+        return {
+            "angle": angle,
+            "beam": beam,
+            "diffuse": diffuse,
+            "probes": [
+                {
+                    "index": i,
+                    "kind": p.kind,
+                    "task_illuminance": round(et, 1),
+                    "eye_illuminance": round(ev, 1),
+                }
+                for i, (p, (et, ev)) in enumerate(zip(probes, lux))
+            ],
+        }
+
+    shaded = readings(0, False)
+    glare = readings(0, True)
+    # Solve comfort at the optical angle. The separately labelled prototype
+    # travel demonstration does not change these predicted lux values.
+    candidates = [readings(angle, True) for angle in range(60, 181)]
+
+    def cost(candidate: dict) -> float:
+        meeting = candidate["probes"][:4]
+        et = sum(p["task_illuminance"] for p in meeting) / 4
+        ev = max(p["eye_illuminance"] for p in meeting)
+        return (
+            5 * max(0, ev / DEFAULTS.ev_cap_lux - 1)
+            + 3 * max(0, (300 - et) / 300)
+            + 2 * max(0, (et - 500) / 500)
+            + candidate["angle"] / 6000
+        )
+
+    # ponytail: independently lit rooms use the existing empty-box oracle; add
+    # measured partitions/apertures before claiming cross-room light transport.
+    return {
+        "shaded": shaded,
+        "glare": glare,
+        "balanced": min(candidates, key=cost),
+        "solar_elevation": 20,
+        "solar_azimuth": 270,
+        "ev_cap_lux": DEFAULTS.ev_cap_lux,
+        "provenance": "Scripted local cloud shade; independent-room optics + radiosity. "
+        "Modelled Ev/Et, not measured comfort or live cloud detection.",
+    }
 
 
 @router.post("/section", response_model=SectionResponse)
