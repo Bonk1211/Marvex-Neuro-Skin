@@ -1,0 +1,5 @@
+# Sample HVAC schedule for the NeuroSkin onboarding demo. Not a plant record.
+equipment,type,capacity_kw,cop,setpoint_c,hours,bms
+CH-01,centrifugal chiller,600,3.5,24,07:00-19:00,none
+CH-02,centrifugal chiller,600,3.5,24,07:00-19:00,none
+AHU-L1,air handling unit,90,,24,07:00-19:00,none

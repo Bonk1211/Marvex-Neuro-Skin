@@ -1,0 +1,38 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 552 >>
+stream
+BT /F1 16 Tf 60 760 Td (ST Diamond Building - Facade elevations (sample)) Tj ET
+BT /F1 11 Tf 60 720 Td (Sample document for the NeuroSkin onboarding demo. Not an as-built drawing.) Tj ET
+BT /F1 11 Tf 60 700 Td () Tj ET
+BT /F1 11 Tf 60 680 Td (Storeys above ground: 7      Floor-to-floor: 3.6 m) Tj ET
+BT /F1 11 Tf 60 660 Td (Primary facade: west         Facade tilt: 115 deg (leans out 25 deg)) Tj ET
+BT /F1 11 Tf 60 640 Td (Roof overhang: 1.6 m         Roof pitch: 10 deg) Tj ET
+BT /F1 11 Tf 60 620 Td (Louvre zones per wall: 4 rows x 4 columns) Tj ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+914
+%%EOF
