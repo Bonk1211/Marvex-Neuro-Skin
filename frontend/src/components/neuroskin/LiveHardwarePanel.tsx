@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react'
 import {
   getHardwareStatus,
   setHardwareControl,
+  type HardwareControl,
   type HardwarePanelId,
   type HardwareStatus,
 } from '@/lib/api-client'
@@ -23,7 +24,16 @@ export function twinAngles(
       .flatMap((wall) => wall.zones ?? [])
       .map((zone) => [zone.zone, zone.angle])
   )
-  if (!zones.length || zones.some((zone) => !angles.has(zone))) return null
+  if (
+    !zones.length ||
+    zones.some((zone) => {
+      const angle = angles.get(zone)
+      return (
+        angle == null || !Number.isFinite(angle) || angle < 0 || angle > 180
+      )
+    })
+  )
+    return null
   return Object.fromEntries(
     zones.map((zone) => [zone, angles.get(zone) as number])
   )
@@ -38,18 +48,21 @@ function asStatus(body: HardwareStatus | null | undefined) {
 export function settle(
   request: Promise<HardwareStatus>,
   onStatus: (status: HardwareStatus | null) => void,
-  onError: (message: string | null) => void
+  onError: (message: string | null) => void,
+  signal?: AbortSignal
 ) {
   return request
     .then((status) => {
+      if (signal?.aborted) return
       onStatus(asStatus(status))
       onError(null)
     })
-    .catch((caught: unknown) =>
-      onError(
-        caught instanceof Error ? caught.message : 'Hardware request failed.'
-      )
-    )
+    .catch((caught: unknown) => {
+      if (!signal?.aborted)
+        onError(
+          caught instanceof Error ? caught.message : 'Hardware request failed.'
+        )
+    })
 }
 
 export function connectionLabel(status: HardwareStatus | null) {
@@ -60,8 +73,8 @@ export function connectionLabel(status: HardwareStatus | null) {
     : `offline · ${status.last_seen_s}s ago`
 }
 
-/** Polls live hardware status once a second, with FeedsPanel's abort/timeout loop. */
-export function useHardwareStatus() {
+/** Polls hardware status (1 s default, 500 ms for CSI) with an abort/timeout loop. */
+export function useHardwareStatus(intervalMs = 1000) {
   const [status, setStatus] = useState<HardwareStatus | null>(null)
 
   useEffect(() => {
@@ -70,7 +83,10 @@ export function useHardwareStatus() {
       controller?.abort()
       const pending = new AbortController()
       controller = pending
-      const timeout = setTimeout(() => pending.abort(), 900)
+      const timeout = setTimeout(
+        () => pending.abort(),
+        Math.min(900, intervalMs)
+      )
       try {
         const result = await getHardwareStatus(pending.signal)
         if (!pending.signal.aborted) setStatus(asStatus(result))
@@ -81,39 +97,91 @@ export function useHardwareStatus() {
       }
     }
     void refresh()
-    const timer = setInterval(() => void refresh(), 1000)
+    const timer = setInterval(() => void refresh(), intervalMs)
     return () => {
       controller?.abort()
       clearInterval(timer)
     }
-  }, [])
+  }, [intervalMs])
 
   return [status, setStatus] as const
 }
 
-export function LiveHardwarePanel({ tick }: { tick: TickPayload | null }) {
+export function LiveHardwarePanel({
+  tick,
+  sensorOnly = false,
+  onModeChange,
+}: {
+  tick: TickPayload | null
+  sensorOnly?: boolean
+  onModeChange?: (mode: HardwareStatus['mode'] | null) => void
+}) {
   const [status, setStatus] = useHardwareStatus()
   const [error, setError] = useState<string | null>(null)
+  const [switching, setSwitching] = useState(false)
+  // Only the page where Follow simulation was selected may stream its timeline.
+  const [following, setFollowing] = useState(false)
 
   const zones = status ? PANELS.map((panel) => status.panels[panel].zone) : []
   const mirror = twinAngles(tick, zones)
   const mirrorKey = mirror ? JSON.stringify(mirror) : null
   const mode = status?.mode
 
+  useEffect(() => {
+    onModeChange?.(mode ?? null)
+    if (mode !== 'twin') setFollowing(false)
+  }, [mode, onModeChange])
+
+  // Opening the dedicated demo disconnects any running twin immediately.
+  useEffect(() => {
+    if (!sensorOnly) return
+    const controller = new AbortController()
+    void settle(
+      setHardwareControl({ mode: 'auto' }, controller.signal),
+      setStatus,
+      setError,
+      controller.signal
+    )
+    return () => controller.abort()
+  }, [sensorOnly, setStatus])
+
   // The backend reverts to auto 30 s after the last push; refresh well inside that.
   useEffect(() => {
-    if (mode !== 'twin' || !mirrorKey) return
+    if (sensorOnly || switching || !following || mode !== 'twin' || !mirrorKey)
+      return
+    const controller = new AbortController()
     const angles = JSON.parse(mirrorKey) as Record<string, number>
     const push = () =>
       void settle(
-        setHardwareControl({ mode: 'twin', angles }),
+        setHardwareControl(
+          { mode: 'twin', angles, refresh_only: true },
+          controller.signal
+        ),
         setStatus,
-        setError
+        setError,
+        controller.signal
       )
     push()
     const timer = setInterval(push, 5000)
-    return () => clearInterval(timer)
-  }, [mode, mirrorKey, setStatus])
+    return () => {
+      controller.abort()
+      clearInterval(timer)
+    }
+  }, [mode, mirrorKey, following, switching, sensorOnly, setStatus])
+
+  const selectMode = async (control: HardwareControl) => {
+    setSwitching(true)
+    setFollowing(false)
+    await settle(
+      setHardwareControl(control),
+      (next) => {
+        setStatus(next)
+        setFollowing(control.mode === 'twin' && next?.mode === 'twin')
+      },
+      setError
+    )
+    setSwitching(false)
+  }
 
   const toggle = (active: boolean) =>
     `rounded border px-2 py-1 text-[10px] font-semibold disabled:opacity-50 ${active ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:bg-secondary/60'}`
@@ -121,7 +189,7 @@ export function LiveHardwarePanel({ tick }: { tick: TickPayload | null }) {
   return (
     <section className='console-card' aria-label='Live hardware'>
       <h3 className='console-card-title flex justify-between gap-2'>
-        <span>Live hardware · ESP32</span>
+        <span>Hardware demo · ESP32</span>
         <span
           className={status?.online ? 'text-emerald-700' : 'text-amber-700'}
         >
@@ -130,50 +198,50 @@ export function LiveHardwarePanel({ tick }: { tick: TickPayload | null }) {
       </h3>
       <div
         role='group'
-        aria-label='Servo control source'
-        className='mt-2 flex gap-1'
+        aria-label='Demo mode'
+        className='mt-2 flex flex-wrap gap-1'
       >
+        {!sensorOnly && (
+          <button
+            type='button'
+            aria-pressed={mode === 'twin' && following}
+            disabled={!status || !mirror || switching}
+            title={
+              mirror
+                ? undefined
+                : 'Run a controlled simulation: the twin has no angles for the mapped zones.'
+            }
+            className={toggle(mode === 'twin' && following)}
+            onClick={() =>
+              mirror && void selectMode({ mode: 'twin', angles: mirror })
+            }
+          >
+            1 · Follow simulation
+          </button>
+        )}
         <button
           type='button'
           aria-pressed={mode === 'auto'}
-          disabled={!status}
+          disabled={!status || switching}
           className={toggle(mode === 'auto')}
-          onClick={() =>
-            void settle(
-              setHardwareControl({ mode: 'auto' }),
-              setStatus,
-              setError
-            )
-          }
+          onClick={() => void selectMode({ mode: 'auto' })}
         >
-          Auto (lux)
-        </button>
-        <button
-          type='button'
-          aria-pressed={mode === 'twin'}
-          disabled={!status || !mirror}
-          title={
-            mirror
-              ? undefined
-              : 'Run a controlled simulation: the twin has no angles for the mapped zones.'
-          }
-          className={toggle(mode === 'twin')}
-          onClick={() =>
-            mirror &&
-            void settle(
-              setHardwareControl({ mode: 'twin', angles: mirror }),
-              setStatus,
-              setError
-            )
-          }
-        >
-          Mirror twin
+          2 · Sensor only
         </button>
       </div>
+      <p className='mt-2 text-xs leading-relaxed text-muted-foreground'>
+        {mode === 'twin'
+          ? following
+            ? 'Play or run the simulation: these four panels follow their mapped zones. Playback uses 1 second per tick.'
+            : 'Simulation control is active in another view. Select a demo here to take control.'
+          : mode === 'auto'
+            ? `Each BH1750 controls only its own actuator: above ${status?.lux_band[1]} lux shades, below ${status?.lux_band[0]} lux opens; inside the band holds. Simulation angles are disconnected.`
+            : 'Select the control source for the physical 2×2 prototype.'}
+      </p>
       <div
         role='group'
         aria-label='Physical 2 by 2 rig'
-        className='mt-2 grid grid-cols-2 gap-1'
+        className={`mt-2 grid grid-cols-2 ${sensorOnly ? 'gap-3' : 'gap-1'}`}
       >
         {PANELS.map((panel) => {
           const state = status?.panels[panel]
@@ -181,7 +249,8 @@ export function LiveHardwarePanel({ tick }: { tick: TickPayload | null }) {
             <div
               key={panel}
               title={state?.reason}
-              className='min-w-0 rounded border border-border px-1 py-1.5 font-mono text-[10px]'
+              aria-label={`${panel.toUpperCase()} panel`}
+              className={`min-w-0 rounded border font-mono ${sensorOnly ? 'p-4 text-sm' : 'px-1 py-1.5 text-[10px]'} ${status?.online && state?.lux != null && state.lux > status.lux_band[1] ? 'border-amber-400 bg-amber-50' : 'border-border'}`}
             >
               <span className='flex justify-between gap-1 font-semibold'>
                 <span>
@@ -193,8 +262,9 @@ export function LiveHardwarePanel({ tick }: { tick: TickPayload | null }) {
                     : '—'}
                 </span>
               </span>
-              <span className='mt-0.5 block truncate text-[9px] text-muted-foreground'>
-                {state?.mode === 'fault'
+              <span className='mt-1 block text-muted-foreground'>
+                {state?.mode === 'fault' ||
+                (state?.lux === null && state.commanded_angle !== null)
                   ? 'sensor fault'
                   : state?.lux != null
                     ? `${state.lux.toFixed(0)} lux`
@@ -203,10 +273,21 @@ export function LiveHardwarePanel({ tick }: { tick: TickPayload | null }) {
                   ? ` · target ${state.target_angle.toFixed(1)}°`
                   : ''}
               </span>
+              <p className='mt-1 text-[10px] leading-relaxed text-muted-foreground'>
+                {state?.reason ?? 'Waiting for a sensor reading.'}
+              </p>
             </div>
           )
         })}
       </div>
+      {!sensorOnly && (
+        <Link
+          className='mt-2 block text-xs font-semibold text-primary hover:underline'
+          href='/demo'
+        >
+          Open sensor-only demo →
+        </Link>
+      )}
       {mode === 'calibrate' && (
         <p className='mt-2 text-[10px] font-semibold text-amber-700'>
           Calibration in progress: louvres hold the angles set on the

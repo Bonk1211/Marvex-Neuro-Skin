@@ -1,7 +1,15 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TickPayload } from '@/lib/types'
 import { LiveHardwarePanel, twinAngles } from './LiveHardwarePanel'
+import DemoPage from '@/app/demo/page'
 
 const panel = (zone: string, overrides = {}) => ({
   zone,
@@ -40,6 +48,7 @@ const TICK = {
 } as unknown as TickPayload
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
 })
 
@@ -55,7 +64,9 @@ describe('live hardware bridge', () => {
 
     expect(await screen.findByText('online · 0.4s')).toBeVisible()
     expect(screen.getByText('sensor fault · target 30.0°')).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: 'Mirror twin' }))
+    fireEvent.click(
+      screen.getByRole('button', { name: '1 · Follow simulation' })
+    )
 
     await waitFor(() =>
       expect(
@@ -76,7 +87,9 @@ describe('live hardware bridge', () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')))
     render(<LiveHardwarePanel tick={null} />)
     expect(await screen.findByText('backend unreachable')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Mirror twin' })).toBeDisabled()
+    expect(
+      screen.getByRole('button', { name: '1 · Follow simulation' })
+    ).toBeDisabled()
     expect(twinAngles(TICK, ['W13', 'W1'])).toBeNull()
   })
 
@@ -87,5 +100,125 @@ describe('live hardware bridge', () => {
     )
     render(<LiveHardwarePanel tick={TICK} />)
     expect(await screen.findByText('backend unreachable')).toBeVisible()
+  })
+
+  it('streams the displayed tick, refreshes paused angles, and stops immediately in sensor mode', async () => {
+    vi.useFakeTimers()
+    let current = { ...STATUS }
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'POST')
+        current = { ...current, mode: JSON.parse(String(init.body)).mode }
+      return { ok: true, json: async () => current }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const onModeChange = vi.fn()
+    const { rerender } = render(
+      <LiveHardwarePanel tick={TICK} onModeChange={onModeChange} />
+    )
+    await act(async () => {})
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: '1 · Follow simulation' })
+      )
+    })
+    expect(onModeChange).toHaveBeenLastCalledWith('twin')
+
+    const nextTick = {
+      ...TICK,
+      facade: TICK.facade.map((wall) => ({
+        ...wall,
+        zones: wall.zones?.map((zone) => ({ ...zone, angle: zone.angle + 5 })),
+      })),
+    }
+    const posts = () =>
+      fetchMock.mock.calls
+        .filter(([, init]) => init?.method === 'POST')
+        .map(([, init]) => JSON.parse(String(init?.body)))
+    await act(async () => {
+      rerender(
+        <LiveHardwarePanel tick={nextTick} onModeChange={onModeChange} />
+      )
+    })
+    expect(posts().at(-1)).toEqual({
+      mode: 'twin',
+      refresh_only: true,
+      angles: { W13: 17, W14: 29, W9: 41, W10: 53 },
+    })
+    const beforeRefresh = posts().length
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000)
+    })
+    expect(posts()).toHaveLength(beforeRefresh + 1)
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '2 · Sensor only' }))
+    })
+    const afterSwitch = posts().length
+    await act(async () => {
+      rerender(<LiveHardwarePanel tick={TICK} onModeChange={onModeChange} />)
+      await vi.advanceTimersByTimeAsync(6000)
+    })
+    expect(posts()).toHaveLength(afterSwitch)
+    expect(posts().at(-1)).toEqual({ mode: 'auto' })
+    expect(onModeChange).toHaveBeenLastCalledWith('auto')
+  })
+
+  it('opens the standalone sensor demo without fetching a simulation or sending twin angles', async () => {
+    let current = {
+      ...STATUS,
+      mode: 'twin',
+      panels: { ...STATUS.panels, bh1: panel('W13', { lux: 900 }) },
+    }
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'POST')
+        current = { ...current, mode: JSON.parse(String(init.body)).mode }
+      return { ok: true, json: async () => current }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<DemoPage />)
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: '2 · Sensor only' })
+      ).toHaveAttribute('aria-pressed', 'true')
+    )
+    expect(
+      screen.queryByRole('button', { name: '1 · Follow simulation' })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByRole('link', { name: 'Demo 1 · open simulation →' })
+    ).toHaveAttribute('href', '/dashboard')
+    expect(
+      screen.getByRole('region', { name: 'Corner-light demonstration' })
+    ).toBeVisible()
+    const rig = screen.getByRole('group', { name: 'Physical 2 by 2 rig' })
+    expect(within(rig).getByLabelText('BH1 panel')).toHaveClass('bg-amber-50')
+    expect(within(rig).getByLabelText('BH2 panel')).not.toHaveClass(
+      'bg-amber-50'
+    )
+    expect(
+      fetchMock.mock.calls.every(([url]) => url.includes('/hardware/'))
+    ).toBe(true)
+    expect(
+      fetchMock.mock.calls
+        .filter(([, init]) => init?.method === 'POST')
+        .map(([, init]) => JSON.parse(String(init?.body)))
+    ).toEqual([{ mode: 'auto' }])
+  })
+
+  it('does not take over another page’s running simulation on mount', async () => {
+    const fetchMock = vi.fn<
+      (url: string, init?: RequestInit) => Promise<Partial<Response>>
+    >(async () => ({
+      ok: true,
+      json: async () => ({ ...STATUS, mode: 'twin' }),
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<LiveHardwarePanel tick={TICK} />)
+    expect(
+      await screen.findByText(/Simulation control is active in another view/)
+    ).toBeVisible()
+    expect(
+      fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')
+    ).toBe(false)
   })
 })

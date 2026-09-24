@@ -43,7 +43,7 @@ export function HardwareCalibration() {
     const timer = setInterval(
       () =>
         void settle(
-          setHardwareControl({ mode: 'calibrate', angles }),
+          setHardwareControl({ mode: 'calibrate', angles, refresh_only: true }),
           setStatus,
           setError
         ),
