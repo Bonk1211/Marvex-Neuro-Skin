@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
+from app.config import DEFAULTS, TICK_COUNT
 from app.domain.environment import generate_day, solar_frame
 from app.domain.facade import (
     facade_heat,
@@ -27,7 +28,15 @@ KUALA_LUMPUR = Site("Kuala Lumpur, Malaysia", 3.1390, 101.6869, "Asia/Kuala_Lump
 PUTRAJAYA = Site("ST Diamond Building, Putrajaya", 2.9220, 101.6885, "Asia/Kuala_Lumpur")
 OSLO = Site("Oslo, Norway", 59.9139, 10.7522, "Europe/Oslo")
 DAY = date(2026, 3, 21)
-AFTERNOON_TICK = 16 * 6  # 16:00 at 10-minute ticks
+
+
+def tick_at(hour: int) -> int:
+    """Tick index of a local hour; the day starts at DEFAULTS.day_start_hour, not midnight."""
+
+    return (hour - DEFAULTS.day_start_hour) * 60 // DEFAULTS.tick_minutes
+
+
+AFTERNOON_TICK = tick_at(16)
 
 
 @pytest.fixture(autouse=True)
@@ -48,6 +57,7 @@ def _payload(day: date = DAY, hours: int = 24) -> dict[str, Any]:
             "temperature_2m": [26.0 + 0.01 * value for value in ghi],
             "cloud_cover": [40.0] * hours,
             "wind_speed_10m": [3.0] * hours,
+            "wind_direction_10m": [300.0 + hour for hour in range(hours)],
             "precipitation": [0.0] * hours,
         }
     }
@@ -105,13 +115,29 @@ def test_open_meteo_rejects_a_short_day():
 
 def test_observed_weather_drives_the_tick_irradiance():
     day = generate_day(DAY, observed=_observed(), site=KUALA_LUMPUR)
-    noon = day[13 * 6]
+    noon = day[tick_at(13)]
 
     assert noon.ghi == pytest.approx(900.0, rel=0.01)
     assert noon.dni == pytest.approx(630.0, rel=0.01)
     # The pyranometer reading stays a noisy synthetic sensor over the real value.
     assert noon.measured_irradiance != noon.ghi
     assert noon.measured_irradiance == pytest.approx(noon.ghi, rel=0.15)
+
+
+def test_wind_bearing_comes_from_the_feed_the_monsoon_or_the_override():
+    observed = generate_day(DAY, observed=_observed(), site=KUALA_LUMPUR)
+    # Hour-stepped, not interpolated: bearings do not average across 0 degrees.
+    assert observed[tick_at(13)].wind_direction == pytest.approx(313.0)
+
+    # March sits in the north-east monsoon; September in the south-west one.
+    march = generate_day(DAY, site=KUALA_LUMPUR)
+    september = generate_day(date(2026, 9, 21), site=KUALA_LUMPUR)
+    assert all(0 <= env.wind_direction < 360 for env in march + september)
+    assert np.mean([env.wind_direction for env in march]) == pytest.approx(45, abs=15)
+    assert np.mean([env.wind_direction for env in september]) == pytest.approx(225, abs=15)
+
+    squall = generate_day(DAY, site=KUALA_LUMPUR, wind_direction_override=292)
+    assert {env.wind_direction for env in squall} == {292.0}
 
 
 def test_site_changes_the_solar_geometry():
@@ -125,7 +151,7 @@ def test_solar_frame_follows_the_site_timezone():
     times, _position, _location = solar_frame(DAY, site=OSLO)
 
     assert str(times.tz) == "Europe/Oslo"
-    assert len(times) == 144
+    assert len(times) == TICK_COUNT
 
 
 def _poa_for(site: Site = KUALA_LUMPUR, tilt: float = 90.0, day: date = DAY):
@@ -191,7 +217,7 @@ def test_each_wall_reaches_its_own_angle():
             facade_tilt=90.0,
         )
     )
-    late = payload.ticks[17 * 6].facade
+    late = payload.ticks[tick_at(17)].facade
     angles = {wall.orientation: wall.angle for wall in late}
 
     assert len(set(angles.values())) > 1, angles
@@ -205,12 +231,8 @@ def test_each_wall_reaches_its_own_angle():
 def test_the_tilt_leaves_the_louvres_little_to_do():
     """As built, the 25 degree overhang already does the shading work."""
 
-    tilted = run_scenario(
-        SimulationRunRequest(date=DAY, cloud_profile="clear", facade_tilt=115.0)
-    )
-    upright = run_scenario(
-        SimulationRunRequest(date=DAY, cloud_profile="clear", facade_tilt=90.0)
-    )
+    tilted = run_scenario(SimulationRunRequest(date=DAY, cloud_profile="clear", facade_tilt=115.0))
+    upright = run_scenario(SimulationRunRequest(date=DAY, cloud_profile="clear", facade_tilt=90.0))
 
     def shaded_ticks(payload):
         return sum(wall.angle > 0 for tick in payload.ticks for wall in tick.facade)
@@ -244,9 +266,7 @@ def test_diamond_tilt_self_shades_north_and_south():
         for wall in ("north", "south"):
             assert beam(tilted, wall) < 0.25 * max(beam(upright, wall), 1.0)
         for wall in ("east", "west"):
-            reduction = 1 - (
-                tilted[wall]["poa_global"].sum() / upright[wall]["poa_global"].sum()
-            )
+            reduction = 1 - (tilted[wall]["poa_global"].sum() / upright[wall]["poa_global"].sum())
             assert 0.15 < reduction < 0.5
 
 
@@ -260,19 +280,15 @@ def test_upright_wall_still_available_for_comparison():
 def test_a_flat_roof_has_no_orientation_to_distinguish():
     """The degenerate case has to be right, or the heat map is lying."""
 
-    payload = run_scenario(
-        SimulationRunRequest(date=DAY, cloud_profile="clear", roof_pitch=0.0)
-    )
-    noon = payload.ticks[12 * 6].roof
+    payload = run_scenario(SimulationRunRequest(date=DAY, cloud_profile="clear", roof_pitch=0.0))
+    noon = payload.ticks[tick_at(12)].roof
 
     assert len({segment.incident for segment in noon}) == 1
 
 
 def test_a_pitched_roof_separates_its_faces():
-    payload = run_scenario(
-        SimulationRunRequest(date=DAY, cloud_profile="clear", roof_pitch=10.0)
-    )
-    late = {segment.quadrant: segment.incident for segment in payload.ticks[17 * 6].roof}
+    payload = run_scenario(SimulationRunRequest(date=DAY, cloud_profile="clear", roof_pitch=10.0))
+    late = {segment.quadrant: segment.incident for segment in payload.ticks[tick_at(17)].roof}
 
     assert len(set(late.values())) == 4, late
     # Late afternoon: the west-facing pitch leads, the east-facing one trails.
@@ -427,9 +443,7 @@ def test_zone_optics_preserves_roof_shaded_beam_without_inventing_corner_sun():
         top.azimuth,
         sky_fraction=top.sky_diffuse / (top.sky_diffuse + top.ground_diffuse),
     )
-    state = WallState(
-        angle=60, mode="HOLD", moved=False, lux=400, load_relative=0.4, reason=""
-    )
+    state = WallState(angle=60, mode="HOLD", moved=False, lux=400, load_relative=0.4, reason="")
     heat = zone_heat(top, state, outdoor_temp=31, wind=2, optics=optics)
     diffuse = top.sky_diffuse + top.ground_diffuse
     assert heat.diffuse_incident == pytest.approx(diffuse, abs=0.01)
@@ -448,7 +462,7 @@ def test_zone_optics_preserves_roof_shaded_beam_without_inventing_corner_sun():
     legacy = zone_heat(top, state, outdoor_temp=31, wind=2)
     assert legacy.diffuse_transmitted == pytest.approx(diffuse * 0.22, abs=0.01)
     assert legacy.transmitted == pytest.approx(top.incident * 0.22, abs=0.01)
-    # Pre-glazing solar irradiance remains the quantity consumed by the slab.
+    # Pre-glazing solar irradiance remains the quantity the zone model consumes.
     expected = beam * optics.beam_transmittance(60) + (
         top.sky_diffuse + top.ground_diffuse
     ) * optics.diffuse_transmittance(60)

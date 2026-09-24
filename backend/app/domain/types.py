@@ -19,6 +19,8 @@ class Environment:
     indoor_lux: float
     indoor_temp: float
     indoor_rh: float
+    # Bearing the wind blows FROM, degrees clockwise from north (meteorological).
+    wind_direction: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,8 @@ class ObservedWeather:
     cloud: tuple[float, ...]
     wind: tuple[float, ...]
     precipitation: tuple[float, ...]
+    # Empty when the feed omits it; the synthetic prevailing bearing stands in.
+    wind_direction: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)

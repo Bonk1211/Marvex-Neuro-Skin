@@ -3,6 +3,7 @@ import logging
 
 from fastapi.testclient import TestClient
 
+from app.config import TICK_COUNT
 from app.logging_config import JsonFormatter
 from app.main import app
 
@@ -37,7 +38,7 @@ def test_simulation_logger_records_summary(caplog) -> None:
     assert completed.scenario == "lie_detector"
     assert completed.seed == 42
     assert completed.environment_source == "synthetic"
-    assert completed.tick_count == 144
+    assert completed.tick_count == TICK_COUNT
     assert completed.sensor_fault_ticks > 0
     assert completed.fault_correction == "off"
     assert completed.episodes_opened is None
@@ -50,7 +51,7 @@ def test_fault_correction_counts_reach_the_json_log(caplog) -> None:
             "/api/v1/simulations/run",
             json={
                 "fault_correction": "auto",
-                "zone_perturbations": {"W6": {"kind": "dead", "start_tick": 78, "end_tick": 84}},
+                "zone_perturbations": {"W6": {"kind": "dead", "start_tick": 36, "end_tick": 42}},
             },
         )
     assert response.status_code == 200
@@ -76,10 +77,10 @@ def test_json_log_formatter_includes_context() -> None:
     )
     record.event = "simulation_completed"
     record.request_id = "request-1"
-    record.tick_count = 144
+    record.tick_count = TICK_COUNT
     payload = json.loads(JsonFormatter().format(record))
     assert payload["level"] == "INFO"
     assert payload["service"] == "neuroskin-api"
     assert payload["event"] == "simulation_completed"
     assert payload["request_id"] == "request-1"
-    assert payload["tick_count"] == 144
+    assert payload["tick_count"] == TICK_COUNT

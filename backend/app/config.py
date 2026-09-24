@@ -7,6 +7,10 @@ class SimulationDefaults:
     longitude: float = 101.6885
     timezone: str = "Asia/Kuala_Lumpur"
     tick_minutes: int = 10
+    # Facade performance is only judged over the occupied day: 07:00 to 19:00
+    # local time. Nothing the louvres do at 02:00 is worth simulating.
+    day_start_hour: int = 7
+    day_end_hour: int = 19
     seed: int = 42
     angle_min: float = 0.0
     angle_max: float = 60.0
@@ -16,7 +20,10 @@ class SimulationDefaults:
     critical_wind: float = 15.0
     movement_threshold: float = 0.0002
     # Commissioning assumptions, not measured hardware/glazing specifications.
-    actuator_speed_deg_per_min: float = 1.2
+    # A tick is 10 minutes, so 6 deg/min lets the louvres cover the full 0-60 range within one
+    # sample and still rate-limits anything faster. The old 1.2 moved at most 12 degrees a tick, so
+    # the facade lagged its target by up to ~45 degrees and left glare ticks it could have avoided.
+    actuator_speed_deg_per_min: float = 6.0
     glazing_shgc: float = 0.4
     # Direct solar exposure screen, not an occupant-view glare index (DGP).
     glare_limit_w_m2: float = 25.0
@@ -76,9 +83,18 @@ class SimulationDefaults:
     daylight_transfer_orientations: tuple[str, ...] = ("east", "north")
     # Declination coverage: solstices/equinoxes, both overhead passages (~Mar 28/Sep 15).
     daylight_dataset_days: tuple[str, ...] = (
-        "2026-01-21", "2026-02-21", "2026-03-20", "2026-03-28",
-        "2026-04-21", "2026-06-21", "2026-07-21", "2026-08-21",
-        "2026-09-15", "2026-09-23", "2026-10-21", "2026-12-21",
+        "2026-01-21",
+        "2026-02-21",
+        "2026-03-20",
+        "2026-03-28",
+        "2026-04-21",
+        "2026-06-21",
+        "2026-07-21",
+        "2026-08-21",
+        "2026-09-15",
+        "2026-09-23",
+        "2026-10-21",
+        "2026-12-21",
     )
     daylight_transfer_days: tuple[str, ...] = ("2026-03-20", "2026-06-21", "2026-12-21")
     daylight_dataset_tick_stride: int = 6
@@ -125,3 +141,8 @@ class SimulationDefaults:
 
 
 DEFAULTS = SimulationDefaults()
+
+# Ticks in one simulated day, derived from the occupied window above (72 at 07:00-19:00,
+# 10-minute ticks). Single source of truth for every tick index bound.
+TICK_COUNT = (DEFAULTS.day_end_hour - DEFAULTS.day_start_hour) * 60 // DEFAULTS.tick_minutes
+MAX_TICK = TICK_COUNT - 1

@@ -35,6 +35,7 @@ OPEN_METEO_VARIABLES = (
     "temperature_2m",
     "cloud_cover",
     "wind_speed_10m",
+    "wind_direction_10m",
     "precipitation",
 )
 
@@ -338,6 +339,13 @@ def _parse_open_meteo(payload: Any, simulation_date: date) -> ObservedWeather:
         temperature=_open_meteo_channel(hourly, "temperature_2m", rows),
         cloud=tuple(value / 100.0 for value in cloud_percent),
         wind=_open_meteo_channel(hourly, "wind_speed_10m", rows),
+        # Optional: an older cached response has no bearing, and the synthetic
+        # prevailing monsoon bearing stands in for it.
+        wind_direction=(
+            _open_meteo_channel(hourly, "wind_direction_10m", rows)
+            if isinstance(hourly.get("wind_direction_10m"), list)
+            else ()
+        ),
         precipitation=_open_meteo_channel(hourly, "precipitation", rows),
     )
 
@@ -364,8 +372,7 @@ def get_open_meteo_context(
         "end_date": simulation_date.isoformat(),
     }
     key = (
-        f"open-meteo:{dataset}:{latitude}:{longitude}:{site.timezone}:"
-        f"{simulation_date.isoformat()}"
+        f"open-meteo:{dataset}:{latitude}:{longitude}:{site.timezone}:{simulation_date.isoformat()}"
     )
     try:
         payload, fetched_at = _cached_fetch(key, OPEN_METEO_TTL_SECONDS, url, params, fetcher)

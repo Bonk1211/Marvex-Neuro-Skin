@@ -7,10 +7,7 @@ from app.config import DEFAULTS
 # Match BuildingHeatmap/louvreAssembly: two blades per row, chord/pitch 1.05,
 # 0.009 scene units = 0.09 m thick, with the 1/9.5-height podium excluded.
 _BLADE_PITCH_M = (
-    DEFAULTS.floors
-    * DEFAULTS.floor_height_m
-    * (1 - 1 / 9.5)
-    / (DEFAULTS.facade_zone_rows * 2)
+    DEFAULTS.floors * DEFAULTS.floor_height_m * (1 - 1 / 9.5) / (DEFAULTS.facade_zone_rows * 2)
 )
 _THICKNESS_TO_PITCH = 0.09 / _BLADE_PITCH_M
 
@@ -26,9 +23,10 @@ def _ray_transmittance(
         return 0.0
     # Negative X rotation lifts the outward edge of the blade.
     blocked = (
-        1.05 * abs(sz * sine - sy * cosine)
-        + _THICKNESS_TO_PITCH * abs(sz * cosine + sy * sine)
-    ) * cos_lean / incidence
+        (1.05 * abs(sz * sine - sy * cosine) + _THICKNESS_TO_PITCH * abs(sz * cosine + sy * sine))
+        * cos_lean
+        / incidence
+    )
     return _clamp(1 - blocked)
 
 
@@ -110,10 +108,9 @@ class FacadeOptics:
         return self.sky_fraction * sky_value + (1 - self.sky_fraction) * ground_value
 
     def solar_transmittance(self, angle: float) -> float:
-        return (
-            self.beam_fraction * self.beam_transmittance(angle)
-            + (1 - self.beam_fraction) * self.diffuse_transmittance(angle)
-        )
+        return self.beam_fraction * self.beam_transmittance(angle) + (
+            1 - self.beam_fraction
+        ) * self.diffuse_transmittance(angle)
 
     def daylight_transmittance(self, angle: float) -> float:
         # Opaque blades have the same geometric transmission for visible light;

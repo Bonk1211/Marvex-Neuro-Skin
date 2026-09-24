@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.config import DEFAULTS
+from app.config import DEFAULTS, TICK_COUNT
 from app.domain.brain import optimise_angle
 from app.domain.controller import run_tick
 from app.domain.environment import generate_day, inject_sensor_fault
@@ -36,7 +36,7 @@ def test_solar_is_dark_at_midnight_and_peaks_during_day() -> None:
 def test_day_generation_is_seeded_and_contains_diffuse_cloud_events() -> None:
     first = generate_day(date(2026, 3, 21), seed=42)
     second = generate_day(date(2026, 3, 21), seed=42)
-    assert len(first) == 144
+    assert len(first) == TICK_COUNT
     assert [tick.cloud for tick in first] == [tick.cloud for tick in second]
     assert max(tick.cloud for tick in first) > 0.5
     assert max(tick.diffuse_fraction for tick in first) >= 0.8
@@ -65,7 +65,7 @@ def test_weather_anchor_preserves_seeded_ticks_and_applies_daily_bounds() -> Non
 
 
 def test_dead_sensor_is_rejected_under_clear_sky_but_cloud_gate_is_trusted() -> None:
-    env = generate_day(date(2026, 3, 21), cloud_profile="clear")[72]
+    env = generate_day(date(2026, 3, 21), cloud_profile="clear")[30]
     solar = sun_position(env.t)
     fault = inject_sensor_fault(replace(env, cloud=0.05), "dead_pyranometer")
     trusted, reason = validate(fault, solar)
@@ -79,7 +79,7 @@ def test_dead_sensor_is_rejected_under_clear_sky_but_cloud_gate_is_trusted() -> 
 
 
 def test_latent_floor_remains_under_full_shading() -> None:
-    env = generate_day(date(2026, 3, 21))[72]
+    env = generate_day(date(2026, 3, 21))[30]
     load = predict_load(env, sun_position(env.t))
     shaded = load_at_angle(load, 60)
     assert shaded >= load.latent
@@ -99,7 +99,7 @@ def test_optimizer_weights_change_selected_angle_and_cost_sums() -> None:
 
 
 def test_safety_precedence_and_movement_budget() -> None:
-    env = generate_day(date(2026, 3, 21))[72]
+    env = generate_day(date(2026, 3, 21))[30]
     assert safety_gate(env, False)[:2] == ("SAFE", DEFAULTS.shaded_default)
     windy = replace(env, wind=DEFAULTS.critical_wind)
     assert safety_gate(windy, True)[:2] == ("SAFE", DEFAULTS.retract_flat)
@@ -110,7 +110,7 @@ def test_safety_precedence_and_movement_budget() -> None:
 
 
 def test_local_sensors_are_independent_of_roof_faults_but_share_safety() -> None:
-    env = generate_day(date(2026, 3, 21), cloud_profile="clear")[96]
+    env = generate_day(date(2026, 3, 21), cloud_profile="clear")[54]
     solar = sun_position(env.t)
     fault = replace(env, measured_irradiance=0, cloud=0.05, rain=False)
     assert validate(fault, solar)[0] is False
@@ -156,9 +156,7 @@ def test_local_sensors_are_independent_of_roof_faults_but_share_safety() -> None
     assert invalid.control_input.open_lux == pytest.approx(680)
     assert invalid.control_input.irradiance_source == "model"
     assert invalid.control_input.daylight_source == "model"
-    closed = run_tick(
-        fault, 0, ControllerWeights(), optics=FacadeOptics(1, 45, 270, 270), **kwargs
-    )
+    closed = run_tick(fault, 0, ControllerWeights(), optics=FacadeOptics(1, 45, 270, 270), **kwargs)
     assert closed.decision.sensor_trusted
     assert closed.control_input.irradiance == sensors.irradiance
     assert closed.control_input.irradiance_source == "sensor"
@@ -184,7 +182,7 @@ def test_local_sensors_are_independent_of_roof_faults_but_share_safety() -> None
 
 
 def test_glare_constraint_moves_gradually_despite_useful_lux_and_high_movement_budget() -> None:
-    env = replace(generate_day(date(2026, 3, 21))[96], rain=False, wind=3)
+    env = replace(generate_day(date(2026, 3, 21))[54], rain=False, wind=3)
     weights = ControllerWeights(thermal=0, lux=0.8, movement=0.2, risk=0)
     kwargs = {
         "solar": SolarState(270, 45, 1000),
@@ -218,7 +216,7 @@ def test_glare_constraint_moves_gradually_despite_useful_lux_and_high_movement_b
 
 
 def test_tracking_does_not_slew_between_clear_branches_through_a_glare_peak() -> None:
-    env = replace(generate_day(date(2026, 3, 21))[96], rain=False, wind=3)
+    env = replace(generate_day(date(2026, 3, 21))[54], rain=False, wind=3)
     optics = FacadeOptics(1, 30, 270, 270)
     result = run_tick(
         env,
@@ -237,7 +235,7 @@ def test_tracking_does_not_slew_between_clear_branches_through_a_glare_peak() ->
 
 
 def test_unsatisfiable_glare_screen_reports_residual_risk_with_rate_limited_travel() -> None:
-    env = replace(generate_day(date(2026, 3, 21))[96], rain=False, wind=3)
+    env = replace(generate_day(date(2026, 3, 21))[54], rain=False, wind=3)
     optics = FacadeOptics(1, 30, 270, 270)
     assert min(500 * optics.beam_transmittance(angle) for angle in range(61)) > 25
     result = run_tick(
@@ -249,6 +247,7 @@ def test_unsatisfiable_glare_screen_reports_residual_risk_with_rate_limited_trav
         local_sensors=ZoneSensors("W2", 500, 500),
         optics=optics,
         movement_threshold=10,
+        actuator_speed_deg_per_min=1.2,
     )
     assert result.decision.mode == "NORMAL"
     assert 0 < abs(result.decision.angle_final - 30) <= 12
@@ -276,7 +275,7 @@ def test_glazing_affects_the_thermal_target_without_shading_internal_load() -> N
 
 
 def test_optical_safety_bypasses_slew_and_reports_remaining_exposure() -> None:
-    env = replace(generate_day(date(2026, 3, 21))[96], rain=False, wind=3)
+    env = replace(generate_day(date(2026, 3, 21))[54], rain=False, wind=3)
     kwargs = {
         "solar": SolarState(270, 5, 1000),
         "gain": WallGain("west", 270, 500, 0, 0, 30),
@@ -297,10 +296,23 @@ def test_optical_safety_bypasses_slew_and_reports_remaining_exposure() -> None:
 
 
 def test_night_parking_remains_rate_limited_and_yields_to_hard_safety() -> None:
-    env = replace(generate_day(date(2026, 3, 21))[0], rain=False, wind=3)
+    # The simulated day stops at 19:00, before sunset here, so park the clock
+    # past sunset explicitly rather than reading a dark tick out of the day.
+    env = replace(
+        generate_day(date(2026, 3, 21))[-1],
+        t=datetime(2026, 3, 21, 20, 0, tzinfo=ZoneInfo(DEFAULTS.timezone)),
+        rain=False,
+        wind=3,
+    )
     current = 60.0
     for expected in [48, 36, 24, 12, 0]:
-        result = run_tick(env, current, ControllerWeights(), movement_threshold=10)
+        result = run_tick(
+            env,
+            current,
+            ControllerWeights(),
+            movement_threshold=10,
+            actuator_speed_deg_per_min=1.2,
+        )
         assert result.decision.angle_target == 0
         assert result.decision.angle_final == expected
         assert "park" in result.decision.reason
@@ -319,7 +331,7 @@ def test_night_parking_remains_rate_limited_and_yields_to_hard_safety() -> None:
     ],
 )
 def test_daylight_status_agrees_with_displayed_lux_precision(measured, status) -> None:
-    env = replace(generate_day(date(2026, 3, 21))[96], rain=False, wind=3)
+    env = replace(generate_day(date(2026, 3, 21))[54], rain=False, wind=3)
     result = run_tick(
         env,
         0,

@@ -3,7 +3,7 @@ from dataclasses import replace
 
 import pytest
 
-from app.config import DEFAULTS
+from app.config import DEFAULTS, TICK_COUNT
 from app.domain import recovery
 from app.domain.recovery import Episode, authorise, may_transition, open_episode, step, verdict
 from app.domain.scenarios import run_scenario
@@ -18,20 +18,20 @@ NONE: frozenset[str] = frozenset()
 @pytest.mark.parametrize(
     "mode,hypothesis,score,approved,expected",
     [
-        ("monitor", "dead", 1.0, {"W6:80:dead"}, "monitoring"),
+        ("monitor", "dead", 1.0, {"W6:38:dead"}, "monitoring"),
         ("review", "dead", 1.0, set(), "awaiting_approval"),
-        ("review", "dead", 1.0, {"W6:80:dead"}, "mitigating"),
+        ("review", "dead", 1.0, {"W6:38:dead"}, "mitigating"),
         ("auto", "dead", 1.0, set(), "mitigating"),
         ("auto", "stuck", 0.8, set(), "mitigating"),
         ("auto", "dead", 0.79, set(), "awaiting_approval"),
         ("auto", "drift_or_fouling", 1.0, set(), "awaiting_approval"),
-        ("auto", "drift_or_fouling", 1.0, {"W6:80:dead"}, "mitigating"),
+        ("auto", "drift_or_fouling", 1.0, {"W6:38:dead"}, "mitigating"),
     ],
 )
 def test_authority_follows_mode_policy_and_explicit_approval(
     mode, hypothesis, score, approved, expected
 ) -> None:
-    assert authorise(mode, hypothesis, score, "W6:80:dead", frozenset(approved))[0] == expected
+    assert authorise(mode, hypothesis, score, "W6:38:dead", frozenset(approved))[0] == expected
 
 
 def test_corrections_never_start_or_stop_under_a_safety_override() -> None:
@@ -72,7 +72,7 @@ def test_unapproved_episodes_close_when_the_evidence_clears() -> None:
 
 
 def mitigating(**fields) -> Episode:
-    base = Episode("W6:80:dead", "W6", "dead", 1.0, 80, "mitigating", 0.0, 80)
+    base = Episode("W6:38:dead", "W6", "dead", 1.0, 80, "mitigating", 0.0, 80)
     return replace(base, **fields)
 
 
@@ -144,14 +144,16 @@ def _zones(payload: dict) -> dict[tuple[int, str], dict]:
     }
 
 
-DEAD = {"W6": {"kind": "dead", "start_tick": 78, "end_tick": 120}}
+DEAD = {"W6": {"kind": "dead", "start_tick": 36, "end_tick": 70}}
 
 
 def test_an_automatic_correction_is_verified_retained_and_touches_only_its_zone() -> None:
-    off = _zones(_run(zone_perturbations=DEAD))
-    payload = _run(zone_perturbations=DEAD, fault_correction="auto")
+    # The 12-degree travel bound below is a 1.2 deg/min limit, so both arms pin it.
+    slow = {"actuator_speed_deg_per_min": 1.2}
+    off = _zones(_run(zone_perturbations=DEAD, **slow))
+    payload = _run(zone_perturbations=DEAD, fault_correction="auto", **slow)
     (episode,) = payload["episodes"]
-    assert episode["episode_id"] == "W6:80:dead"
+    assert episode["episode_id"] == "W6:38:dead"
     stages = [event["stage"] for event in episode["events"]]
     assert stages == ["detect", "authorise", "snapshot", "mitigate", "verify", "retain"]
     assert episode["e_corrected"] < episode["e_uncorrected"]
@@ -160,15 +162,15 @@ def test_an_automatic_correction_is_verified_retained_and_touches_only_its_zone(
     zones = _zones(payload)
     changed = {zone for (index, zone), state in zones.items() if state != off[(index, zone)]}
     assert changed == {"W6"}
-    isolated = zones[(90, "W6")]
+    isolated = zones[(48, "W6")]
     assert isolated["sensor_trusted"] is False
     assert isolated["control_input"]["irradiance_source"] == "model"
     # Only the dead irradiance channel is replaced; the live lux channel still counts.
     assert isolated["control_input"]["daylight_source"] == "sensor"
-    assert "W6:80:dead" in isolated["reason"]
+    assert "W6:38:dead" in isolated["reason"]
     assert all(
         abs(zones[(index, "W6")]["angle"] - zones[(index - 1, "W6")]["angle"]) <= 12.000001
-        for index in range(79, 144)
+        for index in range(37, TICK_COUNT)
     )
     assert payload["summary"]["episodes_retained"] == 1
 
@@ -190,7 +192,7 @@ def test_safety_owns_the_facade_while_a_correction_waits() -> None:
 
 
 def test_review_waits_for_an_approval_that_replays_deterministically() -> None:
-    fouled = {"W6": {"kind": "fouled", "start_tick": 78, "end_tick": 110, "severity": 0.4}}
+    fouled = {"W6": {"kind": "fouled", "start_tick": 36, "end_tick": 68, "severity": 0.4}}
     off = _zones(_run(zone_perturbations=fouled))
     waiting = _run(zone_perturbations=fouled, fault_correction="review")
     (episode,) = waiting["episodes"]
@@ -214,7 +216,7 @@ def test_review_waits_for_an_approval_that_replays_deterministically() -> None:
 
 
 def test_a_recovered_sensor_is_restored_to_its_own_reading() -> None:
-    brief = {"W6": {"kind": "dead", "start_tick": 78, "end_tick": 84}}
+    brief = {"W6": {"kind": "dead", "start_tick": 36, "end_tick": 42}}
     payload = _run(zone_perturbations=brief, fault_correction="auto")
     (episode,) = payload["episodes"]
     # Recovery is not a failed correction, so it neither rolls back nor marks the zone.
@@ -227,7 +229,7 @@ def test_a_recovered_sensor_is_restored_to_its_own_reading() -> None:
 
 
 def test_a_shared_shadow_opens_no_episode() -> None:
-    shadow = {zone: {"kind": "shadow", "start_tick": 78, "end_tick": 110} for zone in ("W6", "W7")}
+    shadow = {zone: {"kind": "shadow", "start_tick": 36, "end_tick": 68} for zone in ("W6", "W7")}
     payload = _run(zone_perturbations=shadow, fault_correction="auto")
     assert not payload.get("episodes")
     assert payload["summary"]["episodes_opened"] == 0

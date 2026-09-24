@@ -24,11 +24,12 @@ def solar_frame(
     site: Site | None = None,
     tick_minutes: int = DEFAULTS.tick_minutes,
 ) -> tuple[pd.DatetimeIndex, pd.DataFrame, pvlib.location.Location]:
-    """Tick timestamps and solar position for one local day at one site."""
+    """Tick timestamps and solar position for the occupied window of one local day."""
 
     site = site or default_site()
-    start = pd.Timestamp(day, tz=site.timezone)
-    periods = 24 * 60 // tick_minutes
+    start = pd.Timestamp(day, tz=site.timezone) + pd.Timedelta(hours=DEFAULTS.day_start_hour)
+    hours = DEFAULTS.day_end_hour - DEFAULTS.day_start_hour
+    periods = hours * 60 // tick_minutes
     times = pd.date_range(start, periods=periods, freq=f"{tick_minutes}min")
     location = pvlib.location.Location(site.latitude, site.longitude, tz=site.timezone)
     return times, location.get_solarposition(times), location
@@ -71,6 +72,20 @@ def _occupancy(hour: float, scale: float) -> float:
     return float(np.clip(base * scale, 0.0, 1.0))
 
 
+def _prevailing_bearing(day: date) -> float:
+    """Peninsular Malaysia monsoon bearing, degrees the wind blows from.
+
+    November-March is the north-east monsoon, May-September the south-west one.
+    The inter-monsoon months are dominated by afternoon squall lines that reach
+    the Klang Valley from the west. Feed Open-Meteo in for a measured bearing.
+    """
+    if day.month in (11, 12, 1, 2, 3):
+        return 45.0
+    if day.month in (5, 6, 7, 8, 9):
+        return 225.0
+    return 270.0
+
+
 def generate_day(
     day: date,
     *,
@@ -79,6 +94,7 @@ def generate_day(
     seed: int = DEFAULTS.seed,
     occupancy_scale: float = 1.0,
     wind_override: float | None = None,
+    wind_direction_override: float | None = None,
     weather_anchor: EnvironmentAnchor | None = None,
     observed: ObservedWeather | None = None,
     site: Site | None = None,
@@ -91,6 +107,10 @@ def generate_day(
 
     temp_series: np.ndarray | None = None
     wind_series: np.ndarray | None = None
+    direction_hours: tuple[float, ...] = ()
+    # Its own stream, so adding a bearing leaves every other seeded series alone.
+    direction_rng = np.random.default_rng(seed + 303_011)
+    prevailing = _prevailing_bearing(day)
     rain_series: np.ndarray | None = None
 
     if observed is not None:
@@ -102,6 +122,7 @@ def generate_day(
         cloud = np.clip(_hourly_to_ticks(hours, observed.cloud), 0.0, 0.96)
         temp_series = _hourly_to_ticks(hours, observed.temperature)
         wind_series = np.maximum(0.0, _hourly_to_ticks(hours, observed.wind))
+        direction_hours = observed.wind_direction
         rain_series = _hourly_to_ticks(hours, observed.precipitation) > 0.1
     else:
         clear = location.get_clearsky(times, model="ineichen")
@@ -141,8 +162,7 @@ def generate_day(
             raw_temp = np.array(
                 [
                     28.2
-                    + 3.8
-                    * np.sin((timestamp.hour + timestamp.minute / 60 - 9.5) / 24 * 2 * np.pi)
+                    + 3.8 * np.sin((timestamp.hour + timestamp.minute / 60 - 9.5) / 24 * 2 * np.pi)
                     + anchor_rng.normal(0, 0.18)
                     for timestamp in times
                 ]
@@ -176,6 +196,16 @@ def generate_day(
         else:
             wind = 2.3 + 1.1 * np.sin(hour / 24 * np.pi)
         wind = max(0.0, float(wind + rng.normal(0, 0.25)))
+        # Bearing the wind blows from. Hour-stepped rather than interpolated: 350
+        # and 10 degrees are 20 degrees apart, and np.interp would average them
+        # to 180. A degree of resolution past the hour buys nothing here.
+        if wind_direction_override is not None:
+            direction = wind_direction_override
+        elif direction_hours:
+            direction = float(direction_hours[min(int(hour), len(direction_hours) - 1)])
+        else:
+            direction = prevailing + 12 * np.sin(hour / 12 * np.pi) + direction_rng.normal(0, 4)
+        direction = float(direction % 360)
         if rain_series is not None:
             rain = bool(rain_series[i])
         else:
@@ -210,6 +240,7 @@ def generate_day(
                 indoor_lux=float(open_lux),
                 indoor_temp=float(indoor_temp),
                 indoor_rh=indoor_rh,
+                wind_direction=direction,
             )
         )
     return output

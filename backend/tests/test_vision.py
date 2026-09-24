@@ -117,7 +117,7 @@ def test_vision_reaches_brain_at_one_tick_and_keeps_safety_and_fallback():
     request = {"scenario": "lie_detector", "wind_override": 3}
     baseline = client.post("/api/v1/simulations/run", json=request).json()
     observation = {
-        "tick_index": 72,
+        "tick_index": 30,
         "captured_at": datetime.now(timezone.utc).isoformat(),
         "cloud_cover": 0.94,
     }
@@ -128,14 +128,14 @@ def test_vision_reaches_brain_at_one_tick_and_keeps_safety_and_fallback():
             "vision_observation": observation,
         },
     ).json()
-    assert fresh["ticks"][:72] == baseline["ticks"][:72]
-    assert not baseline["ticks"][72]["sensor_trusted"]
-    assert fresh["ticks"][72]["sensor_trusted"]
-    assert fresh["ticks"][72]["cloud_source"] == "vision"
-    assert fresh["ticks"][72]["environment_cloud"] == baseline["ticks"][72]["cloud"]
-    assert fresh["ticks"][72]["expected_ghi"] < baseline["ticks"][72]["expected_ghi"]
-    assert fresh["ticks"][73]["cloud_source"] == "environment"
-    for wall in fresh["ticks"][72]["facade"]:
+    assert fresh["ticks"][:30] == baseline["ticks"][:30]
+    assert not baseline["ticks"][30]["sensor_trusted"]
+    assert fresh["ticks"][30]["sensor_trusted"]
+    assert fresh["ticks"][30]["cloud_source"] == "vision"
+    assert fresh["ticks"][30]["environment_cloud"] == baseline["ticks"][30]["cloud"]
+    assert fresh["ticks"][30]["expected_ghi"] < baseline["ticks"][30]["expected_ghi"]
+    assert fresh["ticks"][31]["cloud_source"] == "environment"
+    for wall in fresh["ticks"][30]["facade"]:
         for zone in wall["zones"]:
             assert "AI vision sky estimate" in zone["reason"]
     for age in (61, -10):
@@ -159,7 +159,7 @@ def test_vision_reaches_brain_at_one_tick_and_keeps_safety_and_fallback():
             "vision_observation": observation,
         },
     ).json()
-    assert safety["ticks"][72]["mode"] == "SAFE"
+    assert safety["ticks"][30]["mode"] == "SAFE"
     assert (
         client.post(
             "/api/v1/simulations/run",

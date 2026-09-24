@@ -117,6 +117,7 @@ def _prepare_environment(
         seed=request.seed,
         occupancy_scale=request.occupancy_scale,
         wind_override=request.wind_override,
+        wind_direction_override=request.wind_direction,
         weather_anchor=weather_context.anchor if weather_context is not None else None,
         observed=open_meteo.observed if open_meteo is not None else None,
         site=site,
@@ -563,7 +564,8 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
                 }
                 # A sensor already set aside may not vouch for its neighbours.
                 isolated = frozenset(
-                    zone for zone, episode_id in zone_episode.items()
+                    zone
+                    for zone, episode_id in zone_episode.items()
                     if episodes[episode_id].isolating
                 )
                 for cell, _key, current_angle, optics, sensors, gain in sampled:
@@ -815,6 +817,7 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
             outdoor_temp=round(env.outdoor_temp, 2),
             occupancy=round(env.occupancy, 3),
             wind=round(env.wind, 2),
+            wind_direction=round(env.wind_direction, 1),
             rain=env.rain,
             load_relative=round(result.load_relative, 4),
             naive_load_relative=round(result.naive_load_relative, 4),

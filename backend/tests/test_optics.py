@@ -23,9 +23,7 @@ def test_night_rear_and_self_shaded_walls_have_no_direct_contribution(
 ) -> None:
     optics = FacadeOptics(0.8, elevation, azimuth, 180)
     assert optics.beam_transmittance(30) == 0
-    assert optics.solar_transmittance(30) == pytest.approx(
-        0.2 * optics.diffuse_transmittance(30)
-    )
+    assert optics.solar_transmittance(30) == pytest.approx(0.2 * optics.diffuse_transmittance(30))
     assert optics.daylight_transmittance(30) == optics.solar_transmittance(30)
 
 

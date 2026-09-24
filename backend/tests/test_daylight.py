@@ -61,7 +61,7 @@ def test_all_floor_programs_have_valid_local_probes_and_no_circular_imports() ->
 
 
 def test_features_are_deterministic_and_rotation_invariant_with_absolute_flux() -> None:
-    env = generate_day(date(2026, 3, 20))[60]
+    env = generate_day(date(2026, 3, 20))[18]
     room, probe = RoomGeometry(), Probe("seat", 2, 3, 1.2, 0)
     west = SolarState(250, 40, 800)
     south = replace(west, azimuth=160)
@@ -275,7 +275,7 @@ def test_real_surrogates_are_deterministic_night_safe_and_observe_only() -> None
 
     if not Path(DEFAULTS.daylight_model_dir, "ev.joblib").exists():
         pytest.skip("Run make daylight-train for the real-artifact integration check")
-    env = generate_day(date(2026, 3, 20))[60]
+    env = generate_day(date(2026, 3, 20))[18]
     solar, room = SolarState(250, 40, 800), RoomGeometry()
     probe = probes_for("west", 1)[0]
     optics = FacadeOptics(0.6, 40, 250, 270)

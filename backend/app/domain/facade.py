@@ -86,9 +86,9 @@ def poa_series(
         # from one it still reaches. Above 90 degrees the beam is off the plane
         # entirely and the wall is left with diffuse only.
         entry["aoi"] = np.nan_to_num(
-            pvlib.irradiance.aoi(
-                tilt, azimuth, zenith, solar_position["azimuth"]
-            ).to_numpy(dtype=float),
+            pvlib.irradiance.aoi(tilt, azimuth, zenith, solar_position["azimuth"]).to_numpy(
+                dtype=float
+            ),
             nan=180.0,
         )
         series[orientation] = entry
@@ -258,13 +258,9 @@ def zone_gains(
         for row in range(rows):
             incident, sunlit_fraction = rows_by_wall[gain.orientation][row]
             for column in range(columns):
-                neighbour = (
-                    left if column == 0 else right if column == columns - 1 else None
-                )
+                neighbour = left if column == 0 else right if column == columns - 1 else None
                 shared = (
-                    coupling * rows_by_wall[neighbour][row][0]
-                    if neighbour is not None
-                    else 0.0
+                    coupling * rows_by_wall[neighbour][row][0] if neighbour is not None else 0.0
                 )
                 cells.append(
                     ZoneGain(

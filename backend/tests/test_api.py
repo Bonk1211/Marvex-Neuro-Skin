@@ -3,6 +3,7 @@ from datetime import date, datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 
+from app.config import DEFAULTS, TICK_COUNT
 from app.main import app
 from app.weather import MetForecast, MetWarning, MetWeatherContext
 
@@ -16,7 +17,7 @@ def test_health_and_config() -> None:
     assert config["simulation"]["tick_minutes"] == 10
     assert config["simulation"]["daylight_evaluation_ghi"] == 200
     assert config["simulation"]["continuous_angles"] is True
-    assert config["simulation"]["actuator_speed_deg_per_min"] == 1.2
+    assert config["simulation"]["actuator_speed_deg_per_min"] == 6.0
 
 
 def test_health_reports_observations_without_contacting_upstreams(monkeypatch) -> None:
@@ -61,7 +62,7 @@ def test_simulation_is_reproducible_and_complete(enabled: bool) -> None:
     second = client.post("/api/v1/simulations/run", json=request)
     assert first.status_code == 200
     assert first.json() == second.json()
-    assert len(first.json()["ticks"]) == 144
+    assert len(first.json()["ticks"]) == TICK_COUNT
     assert first.json()["metadata"]["load_unit"] == "relative cooling-load index"
     assert first.json()["metadata"]["environment_source"] == "synthetic"
     assert first.json()["metadata"]["weather_context"] is None
@@ -89,7 +90,11 @@ def test_default_facade_actuators_follow_the_sun_and_reopen() -> None:
     assert any(ticks[index]["solar_azimuth"] < 180 for index in moves["east"])
     assert any(ticks[index]["solar_azimuth"] > 180 for index in moves["west"])
     assert walls["west"][moves["west"][0]]["angle"] > 0
-    assert walls["west"][moves["west"][-1]]["angle"] == 0
+    # The simulated day stops at 19:00, before sunset, so the wall reopens toward
+    # flat as the sun drops instead of reaching the night-parked 0 degrees.
+    peak = max(wall["angle"] for wall in walls["west"])
+    assert 0 <= walls["west"][moves["west"][-1]]["angle"] < peak
+    travel = DEFAULTS.actuator_speed_deg_per_min * DEFAULTS.tick_minutes
     for orientation, series in walls.items():
         assert len({tuple(zone["angle"] for zone in wall["zones"]) for wall in series}) > 1
         assert any(len({zone["angle"] for zone in wall["zones"]}) > 1 for wall in series)
@@ -102,7 +107,7 @@ def test_default_facade_actuators_follow_the_sun_and_reopen() -> None:
             for before, after in zip(previous["zones"], current["zones"]):
                 assert after["moved"] == (after["angle"] != before["angle"])
                 if after["mode"] != "SAFE":
-                    assert abs(after["angle"] - before["angle"]) <= 12.000001
+                    assert abs(after["angle"] - before["angle"]) <= travel + 1e-6
                 comfort = after["conditions"]
                 assert comfort["solar_heat_gain"] == pytest.approx(
                     comfort["transmitted"] * comfort["glazing_shgc"], abs=0.02
@@ -122,7 +127,7 @@ def test_one_sensor_override_changes_only_its_own_zone_and_future_state() -> Non
         json={
             **request,
             "zone_sensor_overrides": {
-                "W2": {"tick_index": 96, "irradiance": 900, "illuminance": 1200}
+                "W2": {"tick_index": 54, "irradiance": 900, "illuminance": 1200}
             },
         },
     )
@@ -146,8 +151,8 @@ def test_one_sensor_override_changes_only_its_own_zone_and_future_state() -> Non
                     assert old == new
         assert len(pairs) == 64
         own.append(pairs["W2"])
-    assert all(old == new for old, new in own[:96])
-    old, new = own[96]
+    assert all(old == new for old, new in own[:54])
+    old, new = own[54]
     assert new["angle_target"] > old["angle_target"]
     assert new["angle"] > old["angle"] and new["moved"]
     assert new["sensor_trusted"] and "Injected" in new["reason"]
@@ -166,8 +171,8 @@ def test_one_sensor_override_changes_only_its_own_zone_and_future_state() -> Non
     )
     assert set(new["cost_breakdown"]) == {"thermal", "lux", "movement", "risk"}
     assert sum(new["cost_breakdown"].values()) > 0
-    assert any(old["angle"] != new["angle"] for old, new in own[97:])
-    assert all(new["sensors"]["source"] == "simulated" for _, new in own[97:])
+    assert any(old["angle"] != new["angle"] for old, new in own[55:])
+    assert all(new["sensors"]["source"] == "simulated" for _, new in own[55:])
     assert baseline["comparison"] == changed["comparison"]
 
 
@@ -178,7 +183,7 @@ def test_one_sensor_override_changes_only_its_own_zone_and_future_state() -> Non
         ("w2", {}),
         ("N0", {}),
         ("W2", {"tick_index": -1}),
-        ("W2", {"tick_index": 144}),
+        ("W2", {"tick_index": TICK_COUNT}),
         ("W2", {"tick_index": 1.5}),
         ("W2", {"irradiance": -1}),
         ("W2", {"irradiance": 1601}),
@@ -193,7 +198,7 @@ def test_zone_sensor_override_rejects_invalid_ids_indices_and_readings(zone, rea
         "/api/v1/simulations/run",
         json={
             "zone_sensor_overrides": {
-                zone: {"tick_index": 96, "irradiance": 500, "illuminance": 400, **reading}
+                zone: {"tick_index": 54, "irradiance": 500, "illuminance": 400, **reading}
             }
         },
     )
@@ -223,7 +228,7 @@ def _without_assurance(payload: dict) -> dict:
 
 def test_fault_window_corrupts_one_zone_and_monitor_only_adds_evidence() -> None:
     request = {"scenario": "overview", "seed": 42}
-    dead = {"W6": {"kind": "dead", "start_tick": 78, "end_tick": 96}}
+    dead = {"W6": {"kind": "dead", "start_tick": 36, "end_tick": 54}}
     baseline = client.post("/api/v1/simulations/run", json=request).json()
     faulted = client.post(
         "/api/v1/simulations/run", json={**request, "zone_perturbations": dead}
@@ -231,11 +236,11 @@ def test_fault_window_corrupts_one_zone_and_monitor_only_adds_evidence() -> None
     before, after = _zone_states(baseline), _zone_states(faulted)
     changed = {key for key in before if before[key] != after[key]}
     assert changed and {zone for _, zone in changed} == {"W6"}
-    assert all(index >= 78 for index, _ in changed)
-    assert after[(80, "W6")]["sensors"] == {**before[(80, "W6")]["sensors"], "irradiance": 0}
+    assert all(index >= 36 for index, _ in changed)
+    assert after[(38, "W6")]["sensors"] == {**before[(38, "W6")]["sensors"], "irradiance": 0}
     # Zero is valid shade: without assurance the range check still admits it.
-    assert after[(80, "W6")]["sensor_trusted"] is True
-    assert "assurance" not in after[(80, "W6")]
+    assert after[(38, "W6")]["sensor_trusted"] is True
+    assert "assurance" not in after[(38, "W6")]
 
     monitored = client.post(
         "/api/v1/simulations/run", json={**request, "fault_correction": "monitor"}
@@ -250,13 +255,13 @@ def test_fault_window_corrupts_one_zone_and_monitor_only_adds_evidence() -> None
         json={**request, "zone_perturbations": dead, "fault_correction": "monitor"},
     ).json()
     states = _zone_states(watched)
-    assert [states[(index, "W6")]["assurance"]["verdict"] for index in (78, 79, 80)] == [
+    assert [states[(index, "W6")]["assurance"]["verdict"] for index in (36, 37, 38)] == [
         "suspect",
         "suspect",
         "fault",
     ]
-    assert states[(80, "W6")]["assurance"]["hypothesis"] == "dead"
-    assert states[(80, "W6")]["assurance"]["episode_id"] == "W6:80:dead"
+    assert states[(38, "W6")]["assurance"]["hypothesis"] == "dead"
+    assert states[(38, "W6")]["assurance"]["episode_id"] == "W6:38:dead"
     # Monitoring records the episode and closes it once the window ends; nothing acts.
     (episode,) = watched["episodes"]
     assert episode["status"] == "closed" and episode["mitigated_tick"] is None
@@ -272,10 +277,10 @@ def test_fault_window_corrupts_one_zone_and_monitor_only_adds_evidence() -> None
 @pytest.mark.parametrize(
     "body",
     [
-        {"zone_perturbations": {"W6": {"kind": "dead", "start_tick": 90, "end_tick": 80}}},
-        {"zone_perturbations": {"W6": {"kind": "melted", "start_tick": 80, "end_tick": 90}}},
-        {"zone_perturbations": {"W17": {"kind": "dead", "start_tick": 80, "end_tick": 90}}},
-        {"zone_perturbations": {"W6": {"kind": "drift", "start_tick": 80, "end_tick": 144}}},
+        {"zone_perturbations": {"W6": {"kind": "dead", "start_tick": 48, "end_tick": 38}}},
+        {"zone_perturbations": {"W6": {"kind": "melted", "start_tick": 38, "end_tick": 48}}},
+        {"zone_perturbations": {"W17": {"kind": "dead", "start_tick": 38, "end_tick": 48}}},
+        {"zone_perturbations": {"W6": {"kind": "drift", "start_tick": 38, "end_tick": TICK_COUNT}}},
         {
             "zone_perturbations": {
                 "W6": {"kind": "fouled", "start_tick": 8, "end_tick": 9, "severity": 0}
@@ -298,7 +303,7 @@ def test_fault_injection_and_correction_mode_reject_invalid_requests(body) -> No
         ("glare_limit_w_m2", 2001),
         ("glare_limit_w_m2", "Infinity"),
         ("actuator_speed_deg_per_min", 0),
-        ("actuator_speed_deg_per_min", 12.1),
+        ("actuator_speed_deg_per_min", 60.1),
         ("actuator_speed_deg_per_min", "NaN"),
     ],
 )
@@ -373,7 +378,7 @@ def test_met_failure_returns_a_successful_synthetic_fallback(monkeypatch) -> Non
 
     assert response.status_code == 200
     payload = response.json()
-    assert len(payload["ticks"]) == 144
+    assert len(payload["ticks"]) == TICK_COUNT
     assert payload["metadata"]["weather_context"]["status"] == "fallback"
     assert "upstream unavailable" in payload["metadata"]["weather_context"]["fallback_reason"]
     assert "fell back" in payload["metadata"]["data_notice"]
@@ -456,17 +461,53 @@ def test_daylight_off_preserves_the_prechange_http_bytes() -> None:
 
     from pydantic_core import to_json
 
-    response = client.post("/api/v1/simulations/run", json={"scenario": "overview", "seed": 42})
+    # Pinned at the speed the hash was taken at: this guards the daylight feature being
+    # off, and must not move when the actuator default is retuned.
+    response = client.post(
+        "/api/v1/simulations/run",
+        json={"scenario": "overview", "seed": 42, "actuator_speed_deg_per_min": 1.2},
+    )
     assert response.status_code == 200
     # New inspection evidence is additive; every pre-existing field and decision
-    # still reproduces the original pre-Phase-B bytes, including field ordering.
+    # still reproduces byte for byte, including field ordering. Rehashed when the
+    # simulated day was cut to the 07:00-19:00 occupied window.
     payload = response.json()
     for tick in payload["ticks"]:
+        assert tick.pop("wind_direction") is not None
         for wall in tick["facade"]:
             for zone in wall["zones"]:
                 assert zone.pop("control_input") is not None
                 assert zone.pop("cost_breakdown") is not None
     legacy = to_json(payload)
     assert hashlib.sha256(legacy).hexdigest() == (
-        "3a2e9e024982b9bb2948510361c9b261587e642b2a8d5167c63efb2431a42210"
+        "f665a877f17852a79ba9209034713f4a33318037cab9939cd66c643a24de1c87"
     )
+
+
+def _glare_ticks(**fields) -> int:
+    response = client.post(
+        "/api/v1/simulations/run", json={"scenario": "overview", "cloud_profile": "clear", **fields}
+    )
+    assert response.status_code == 200
+    return sum(
+        zone["conditions"]["glare_risk"]
+        for tick in response.json()["ticks"]
+        for wall in tick["facade"]
+        for zone in wall["zones"]
+    )
+
+
+def test_default_actuator_can_cover_the_whole_range_within_one_sample() -> None:
+    # The old 1.2 deg/min moved 12 degrees a tick, so the facade lagged the sun by up to
+    # ~45 degrees. The default must let the louvres reach any target within a sample.
+    assert (
+        DEFAULTS.actuator_speed_deg_per_min * DEFAULTS.tick_minutes
+        >= DEFAULTS.angle_max - DEFAULTS.angle_min
+    )
+
+
+def test_a_realistic_actuator_clears_glare_a_sluggish_one_leaves_behind() -> None:
+    sluggish = _glare_ticks(actuator_speed_deg_per_min=1.2)
+    default = _glare_ticks()
+    assert sluggish > 0, "the slow actuator should still leave glare, or this proves nothing"
+    assert default < sluggish

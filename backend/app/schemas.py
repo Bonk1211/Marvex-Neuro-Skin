@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.config import DEFAULTS
+from app.config import DEFAULTS, MAX_TICK
 
 ScenarioName = Literal["overview", "lie_detector", "co_optimization", "budget_failsafe"]
 CloudProfile = Literal["clear", "scattered", "overcast"]
@@ -15,7 +15,7 @@ ZoneId = Annotated[str, Field(pattern=r"^[NESW](?:[1-9]|1[0-6])$")]
 
 
 class ZoneSensorOverride(BaseModel):
-    tick_index: int = Field(ge=0, le=143, strict=True)
+    tick_index: int = Field(ge=0, le=MAX_TICK, strict=True)
     irradiance: float = Field(ge=0, le=1600, allow_inf_nan=False)
     illuminance: float = Field(ge=0, le=10000, allow_inf_nan=False)
 
@@ -25,7 +25,8 @@ FaultCorrectionMode = Literal["off", "monitor", "review", "auto"]
 # "<zone>:<opened tick>:<hypothesis>", stable when the same request is replayed.
 EpisodeId = Annotated[
     str,
-    Field(pattern=r"^[NESW](?:[1-9]|1[0-6]):(?:1[0-3]\d|14[0-3]|[1-9]?\d):[a-z_]+$", max_length=48),
+    # Tick index is whatever the run produced; MAX_TICK, not this pattern, bounds it.
+    Field(pattern=r"^[NESW](?:[1-9]|1[0-6]):\d{1,3}:[a-z_]+$", max_length=48),
 ]
 
 
@@ -33,8 +34,8 @@ class ZonePerturbation(BaseModel):
     """Declared test input. Faults corrupt the reading; shadow is a real, unmodelled drop."""
 
     kind: PerturbationKind
-    start_tick: int = Field(ge=0, le=143, strict=True)
-    end_tick: int = Field(ge=0, le=143, strict=True)
+    start_tick: int = Field(ge=0, le=MAX_TICK, strict=True)
+    end_tick: int = Field(ge=0, le=MAX_TICK, strict=True)
     severity: float = Field(0.5, gt=0, le=1, allow_inf_nan=False)
 
     @model_validator(mode="after")
@@ -61,7 +62,7 @@ class WeightInput(BaseModel):
 
 
 class VisionObservation(BaseModel):
-    tick_index: int = Field(ge=0, le=143, strict=True)
+    tick_index: int = Field(ge=0, le=MAX_TICK, strict=True)
     captured_at: AwareDatetime
     cloud_cover: float = Field(ge=0, le=1, allow_inf_nan=False)
 
@@ -76,6 +77,9 @@ class SimulationRunRequest(BaseModel):
     vision_observation: VisionObservation | None = None
     occupancy_scale: float = Field(1.0, ge=0, le=1.5)
     wind_override: float | None = Field(None, ge=0, le=40)
+    # Bearing the wind blows from, degrees clockwise from north. None keeps the
+    # prevailing monsoon bearing (or the measured one, on a real weather feed).
+    wind_direction: float | None = Field(None, ge=0, lt=360)
     power_ok: bool = True
     weights: WeightInput = Field(default_factory=WeightInput)
     zone_sensor_overrides: dict[ZoneId, ZoneSensorOverride] = Field(
@@ -90,7 +94,7 @@ class SimulationRunRequest(BaseModel):
     glazing_shgc: float = Field(DEFAULTS.glazing_shgc, ge=0, le=1, allow_inf_nan=False)
     glare_limit_w_m2: float = Field(DEFAULTS.glare_limit_w_m2, ge=0, le=2000, allow_inf_nan=False)
     actuator_speed_deg_per_min: float = Field(
-        DEFAULTS.actuator_speed_deg_per_min, ge=0.1, le=12, allow_inf_nan=False
+        DEFAULTS.actuator_speed_deg_per_min, ge=0.1, le=60, allow_inf_nan=False
     )
     latitude: float = Field(DEFAULTS.latitude, ge=-90, le=90)
     longitude: float = Field(DEFAULTS.longitude, ge=-180, le=180)
@@ -252,6 +256,7 @@ class TickPayload(BaseModel):
     outdoor_temp: float
     occupancy: float
     wind: float
+    wind_direction: float = 0.0
     rain: bool
     load_relative: float
     naive_load_relative: float
@@ -387,6 +392,4 @@ class SimulationRunResponse(BaseModel):
     ticks: list[TickPayload]
     comparison: list[ComparisonMetric]
     annotations: list[EventAnnotation]
-    episodes: list[RecoveryEpisodePayload] = Field(
-        default_factory=list, exclude_if=lambda v: not v
-    )
+    episodes: list[RecoveryEpisodePayload] = Field(default_factory=list, exclude_if=lambda v: not v)
