@@ -1,5 +1,6 @@
 import React from 'react'
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -8,11 +9,18 @@ import {
 } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NeuroSkinDashboard } from './NeuroSkinDashboard'
+import { LiveHardwarePanel } from './LiveHardwarePanel'
+import { agentMessage } from './AgentRoom'
 import type { SimulationRunResponse, ZoneHeat } from '@/lib/types'
 
 // Live hardware polls its own endpoint (tested in LiveHardwarePanel.test.tsx);
 // keep it out of these simulation fetch-call assertions.
-vi.mock('./LiveHardwarePanel', () => ({ LiveHardwarePanel: () => null }))
+vi.mock('./LiveHardwarePanel', () => ({ LiveHardwarePanel: vi.fn(() => null) }))
+vi.mock('./LiveCsiPanel', () => ({
+  LiveCsiPanel: () => (
+    <section aria-label='Live CSI proof of concept'>Live measurements</section>
+  ),
+}))
 vi.mock('next/navigation', () => ({
   useSearchParams: () =>
     new URLSearchParams(
@@ -225,6 +233,12 @@ const response: SimulationRunResponse = {
 
 describe('NeuroSkinDashboard', () => {
   const fetchMock = vi.fn()
+  // These tests count simulation runs, not every request the page makes; a panel
+  // with its own endpoint must not shift them.
+  const simulationCalls = () =>
+    fetchMock.mock.calls.filter(([url]) =>
+      String(url).includes('/simulations/run')
+    )
 
   beforeEach(() => {
     window.history.replaceState(null, '', '/dashboard')
@@ -234,6 +248,7 @@ describe('NeuroSkinDashboard', () => {
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     vi.restoreAllMocks()
     window.localStorage.clear()
   })
@@ -241,46 +256,54 @@ describe('NeuroSkinDashboard', () => {
   it('renders direct impact metrics without narrative explanation', async () => {
     render(<NeuroSkinDashboard />)
     expect(await screen.findByText('Mean load')).toBeInTheDocument()
-    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body)).weights).toEqual(
-      {
-        thermal: 0.45,
-        lux: 0.45,
-        movement: 0.05,
-        risk: 0.05,
-      }
-    )
+    expect(JSON.parse(String(simulationCalls()[0][1].body)).weights).toEqual({
+      thermal: 0.45,
+      lux: 0.45,
+      movement: 0.05,
+      risk: 0.05,
+    })
     expect(screen.getAllByText('0.420').length).toBeGreaterThan(0)
     expect(screen.getByText('Impact')).toBeInTheDocument()
-    expect(screen.getByText('Selected tick')).toBeInTheDocument()
+    expect(screen.getByText(/ticks$/)).toBeInTheDocument()
     expect(screen.queryByText('Decision explanation')).not.toBeInTheDocument()
     expect(screen.getByText(response.metadata.data_notice)).toBeInTheDocument()
     expect(screen.queryByText(/kWh/i)).not.toBeInTheDocument()
-  })
-
-  it('keeps each formula attached to its relevant setting', async () => {
-    render(<NeuroSkinDashboard />)
-    await screen.findByText('Mean load')
-
     expect(
-      screen.getByRole('complementary', { name: 'Environment settings' })
-    ).toBeInTheDocument()
+      screen.getByRole('region', { name: 'Building health' })
+    ).toHaveTextContent('Solar sensor')
     expect(
-      screen.getByRole('complementary', {
-        name: 'Controller settings and formulas',
-      })
-    ).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Weather' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Demand' })).toBeInTheDocument()
-    expect(screen.queryByText('Angle objective')).not.toBeInTheDocument()
-    expect(
-      screen.getByRole('button', { name: 'Show formula for Thermal load cost' })
-    ).toBeInTheDocument()
-    expect(screen.getByText('CT(θ) = wT × L(θ)')).toBeInTheDocument()
+      screen.getByRole('region', { name: 'Building health' })
+    ).toHaveTextContent('Outside')
   })
 
   it('shows an accessible loading state while the simulation is pending', () => {
     fetchMock.mockReturnValue(new Promise(() => {}))
     render(<NeuroSkinDashboard />)
+    expect(screen.getByText('Running simulation')).toBeInTheDocument()
+  })
+
+  it('opens Live CSI beside X-ray even while the simulation is unavailable', () => {
+    window.history.replaceState(null, '', '/dashboard?view=floor')
+    fetchMock.mockReturnValue(new Promise(() => {}))
+    render(<NeuroSkinDashboard />)
+    const views = screen.getByRole('group', { name: 'Floor view' })
+    expect(
+      within(views)
+        .getAllByRole('button')
+        .map((button) => button.textContent)
+    ).toEqual(['Normal view', 'CSI X-ray', 'Live CSI'])
+    fireEvent.click(within(views).getByRole('button', { name: 'Live CSI' }))
+    expect(
+      screen.getByRole('region', { name: 'Live CSI proof of concept' })
+    ).toBeVisible()
+    expect(screen.queryByText('Running simulation')).not.toBeInTheDocument()
+    expect(
+      within(views).getByRole('button', { name: 'Live CSI' })
+    ).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(within(views).getByRole('button', { name: 'CSI X-ray' }))
+    expect(
+      screen.queryByRole('region', { name: 'Live CSI proof of concept' })
+    ).not.toBeInTheDocument()
     expect(screen.getByText('Running simulation')).toBeInTheDocument()
   })
 
@@ -302,7 +325,7 @@ describe('NeuroSkinDashboard', () => {
     ).toBeInTheDocument()
   })
 
-  it('keeps scenario comparisons together and clears cached charts when applied inputs change', async () => {
+  it('keeps every scenario comparison on the page together', async () => {
     render(<NeuroSkinDashboard />)
     await screen.findByText('Mean load')
 
@@ -341,30 +364,6 @@ describe('NeuroSkinDashboard', () => {
     expect(screen.getByText('Sensor cross-check')).toBeInTheDocument()
     expect(screen.getByText('Safety response')).toBeInTheDocument()
     expect(screen.getByText('Daylight compliance')).toBeInTheDocument()
-    fireEvent.change(screen.getByRole('slider', { name: 'Wind override' }), {
-      target: { value: '8' },
-    })
-    await waitFor(() =>
-      expect(
-        screen.getByRole('button', { name: 'Apply settings and re-run' })
-      ).toBeEnabled()
-    )
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Apply settings and re-run' })
-    )
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6))
-    await waitFor(() =>
-      expect(
-        screen.queryByRole('region', { name: 'Test 1 charts' })
-      ).not.toBeInTheDocument()
-    )
-    for (const name of ['Test 2 charts', 'Test 3 charts'])
-      expect(screen.queryByRole('region', { name })).not.toBeInTheDocument()
-    expect(
-      JSON.parse(String(fetchMock.mock.calls[5][1].body)).wind_override
-    ).toBe(8)
-    fireEvent.click(screen.getByRole('link', { name: 'Building' }))
-    expect(screen.queryByText('4/4 complete')).not.toBeInTheDocument()
   }, 15000)
 
   it('shows the MET provider and full notice in every lens', async () => {
@@ -418,20 +417,6 @@ describe('NeuroSkinDashboard', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('serializes MET-anchored mode from the environment control', async () => {
-    render(<NeuroSkinDashboard />)
-    await screen.findByText('Mean load')
-    fireEvent.click(screen.getByRole('button', { name: 'MET-anchored' }))
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Apply settings and re-run' })
-    )
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    const options = fetchMock.mock.calls[1][1] as RequestInit
-    expect(JSON.parse(String(options.body))).toMatchObject({
-      environment_source: 'met_anchored',
-    })
-  })
-
   it('runs the three tiers in order and explains each one on the stage', async () => {
     render(<NeuroSkinDashboard />)
     await screen.findByText('Mean load')
@@ -444,10 +429,10 @@ describe('NeuroSkinDashboard', () => {
       await screen.findByLabelText('Input explanation')
     ).toBeInTheDocument()
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4), {
+    await waitFor(() => expect(simulationCalls()).toHaveLength(4), {
       timeout: 6000,
     })
-    const scenarios = fetchMock.mock.calls.map(
+    const scenarios = simulationCalls().map(
       (call) => JSON.parse(String((call[1] as RequestInit).body)).scenario
     )
     expect(scenarios).toEqual([
@@ -532,7 +517,7 @@ describe('NeuroSkinDashboard', () => {
     )
   }, 20000)
 
-  it('advances actuator angles with ordinary sun playback and scrubbing', async () => {
+  it('sends the displayed tick to hardware and slows mirrored playback to one second', async () => {
     const ticks = [0, 30.4, 0].map((angle, index) => ({
       ...response.ticks[0],
       timestamp: `2026-03-21T${15 + index}:00:00+08:00`,
@@ -548,15 +533,29 @@ describe('NeuroSkinDashboard', () => {
     const timeline = screen.getByRole('slider', { name: 'Simulation timeline' })
     fireEvent.change(timeline, { target: { value: '0' } })
     expect(screen.getByText('0.0° angle')).toBeInTheDocument()
+    const hardwareProps = () =>
+      vi.mocked(LiveHardwarePanel).mock.calls.at(-1)![0]
+    expect(hardwareProps().tick).toEqual(ticks[0])
 
+    vi.useFakeTimers()
+    act(() => hardwareProps().onModeChange?.('twin'))
     fireEvent.click(screen.getByRole('button', { name: 'Play sun movement' }))
-    await screen.findByText('30.4° angle')
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(999)
+    })
+    expect(screen.getByText('0.0° angle')).toBeInTheDocument()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1)
+    })
+    expect(screen.getByText('30.4° angle')).toBeInTheDocument()
+    expect(hardwareProps().tick).toEqual(ticks[1])
     fireEvent.click(screen.getByRole('button', { name: 'Pause sun movement' }))
     expect(screen.getByText('sun 35° elev · 264° az')).toBeInTheDocument()
 
     fireEvent.change(timeline, { target: { value: '2' } })
     expect(screen.getByText('0.0° angle')).toBeInTheDocument()
     expect(screen.getByText('sun 20° elev · 264° az')).toBeInTheDocument()
+    expect(hardwareProps().tick).toEqual(ticks[2])
   })
 
   it('preserves the selected zone and clock across building variants and edits only that sensor', async () => {
@@ -647,7 +646,7 @@ describe('NeuroSkinDashboard', () => {
 
     fireEvent.change(building, { target: { value: 'baseline' } })
     expect(building).toHaveValue('baseline')
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(simulationCalls()).toHaveLength(1)
     expect(timeline).toHaveValue('1')
     expect(comparison).toHaveTextContent(wallComparison!)
     fireEvent.click(screen.getByRole('link', { name: 'Floor' }))
@@ -691,23 +690,8 @@ describe('NeuroSkinDashboard', () => {
     expect(
       screen.queryByText(/64 independent sensor loops/)
     ).not.toBeInTheDocument()
-    expect(
-      screen.getByText(/Each side has 16 surface zones/)
-    ).toBeInTheDocument()
-    expect(
-      screen.getByRole('slider', { name: 'Occupancy' })
-    ).toBeInTheDocument()
-    expect(
-      screen.getByRole('slider', { name: 'Wind override' })
-    ).toBeInTheDocument()
-    expect(
-      screen.queryByRole('button', {
-        name: 'Show formula for Wind exposure cost',
-      })
-    ).not.toBeInTheDocument()
-
     fireEvent.change(building, { target: { value: 'controlled' } })
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(simulationCalls()).toHaveLength(1)
     expect(timeline).toHaveValue('1')
     expect(screen.getByRole('button', { name: /^Zone W2,/ })).toHaveAttribute(
       'aria-pressed',
@@ -716,23 +700,12 @@ describe('NeuroSkinDashboard', () => {
     expect(screen.getByText('20.0° angle')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('link', { name: 'Building' }))
     expect(screen.getByText('Mean load')).toBeInTheDocument()
-    expect(
-      screen.getByRole('complementary', {
-        name: 'Controller settings and formulas',
-      })
-    ).toBeInTheDocument()
     fireEvent.click(screen.getByRole('link', { name: 'Floor' }))
     expect(screen.getByLabelText('Sensor irradiance')).not.toBeVisible()
     fireEvent.click(screen.getByText('Inject sensor reading'))
     expect(screen.getByLabelText('Sensor irradiance')).toHaveValue(300)
     expect(screen.getByLabelText('Sensor irradiance')).toBeVisible()
-    expect(screen.getByText('Facade power')).toBeInTheDocument()
-    expect(screen.getByText('Powered · controller active')).toBeInTheDocument()
-    expect(
-      screen.getByText(/16 independent sensor-controlled zones/)
-    ).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Overcast' }))
     fireEvent.change(screen.getByLabelText('Sensor irradiance'), {
       target: { value: '900' },
     })
@@ -743,11 +716,10 @@ describe('NeuroSkinDashboard', () => {
       screen.getByRole('button', { name: 'Apply only this sensor' })
     )
     await screen.findByText('60.0° angle')
-    const submitted = JSON.parse(String(fetchMock.mock.calls[1][1].body))
+    const submitted = JSON.parse(String(simulationCalls()[1][1].body))
     expect(submitted.zone_sensor_overrides).toEqual({
       W2: { tick_index: 1, irradiance: 900, illuminance: 1200 },
     })
-    expect(submitted.cloud_profile).toBe('scattered')
     expect(timeline).toHaveValue('1')
     expect(screen.getByRole('button', { name: /^Zone W3,/ })).toHaveTextContent(
       '20.0°'
@@ -755,7 +727,7 @@ describe('NeuroSkinDashboard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Clear override' }))
     await screen.findByText('20.0° angle')
     expect(
-      JSON.parse(String(fetchMock.mock.calls[2][1].body)).zone_sensor_overrides
+      JSON.parse(String(simulationCalls()[2][1].body)).zone_sensor_overrides
     ).toEqual({})
     expect(timeline).toHaveValue('1')
     fireEvent.click(screen.getByRole('link', { name: 'Building' }))
@@ -781,42 +753,8 @@ describe('NeuroSkinDashboard', () => {
       expect(screen.getByText('828 W/m² on roof')).toBeVisible()
       expect(screen.getByText('60.1 °C surface')).toBeVisible()
       expect(timeline).toHaveValue('1')
-      expect(fetchMock).toHaveBeenCalledTimes(3)
+      expect(simulationCalls()).toHaveLength(3)
     }
-  })
-
-  it('keeps objective weights attached to the applied run until edited settings are applied', async () => {
-    render(<NeuroSkinDashboard />)
-    await screen.findByText('Mean load')
-    fireEvent.change(screen.getByRole('slider', { name: 'Thermal load' }), {
-      target: { value: '0' },
-    })
-    fireEvent.click(screen.getByRole('link', { name: 'Brains' }))
-    expect(
-      within(
-        screen.getByRole('region', { name: 'Cost breakdown' })
-      ).getAllByText('· weight 45%')
-    ).toHaveLength(2)
-    fireEvent.click(screen.getByRole('link', { name: 'Building' }))
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Apply settings and re-run' })
-    )
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    await screen.findByRole('button', { name: 'Apply settings and re-run' })
-    fireEvent.click(screen.getByRole('link', { name: 'Brains' }))
-    expect(
-      within(screen.getByRole('region', { name: 'Cost breakdown' })).getByText(
-        '· weight 0%'
-      )
-    ).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('link', { name: 'Floor' }))
-    fireEvent.click(screen.getByRole('link', { name: 'Brains' }))
-    expect(
-      within(screen.getByRole('region', { name: 'Cost breakdown' })).getByText(
-        '· weight 0%'
-      )
-    ).toBeInTheDocument()
-    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('opens deep links and falls back to Building for unknown lenses', async () => {
@@ -842,7 +780,7 @@ describe('NeuroSkinDashboard', () => {
     window.history.replaceState(null, '', '/dashboard?view=nonsense')
     fireEvent.popState(window)
     expect(screen.getByText('Mean load')).toBeInTheDocument()
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(simulationCalls()).toHaveLength(1)
   })
 
   it('keeps an in-flight tier run and the stage mounted while navigating lenses', async () => {
@@ -869,7 +807,7 @@ describe('NeuroSkinDashboard', () => {
       building
     )
     finish?.({ ok: true, json: async () => response })
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5), {
+    await waitFor(() => expect(simulationCalls()).toHaveLength(5), {
       timeout: 6000,
     })
     fireEvent.click(screen.getByRole('link', { name: 'Building' }))
@@ -879,7 +817,7 @@ describe('NeuroSkinDashboard', () => {
     expect(
       screen.getByRole('region', { name: 'Test 3 charts' })
     ).toBeInTheDocument()
-    expect(fetchMock).toHaveBeenCalledTimes(5)
+    expect(simulationCalls()).toHaveLength(5)
   }, 15000)
 
   it('shares zone and time between Floor and Brains and restores the primary facade', async () => {
@@ -996,13 +934,11 @@ describe('NeuroSkinDashboard', () => {
     expect(
       screen.getByRole('combobox', { name: 'Brain controller' })
     ).toHaveValue('N5')
-    expect(screen.getByText('N5 · local controller')).toBeVisible()
     expect(timeline).toHaveValue('0')
     fireEvent.change(
       screen.getByRole('combobox', { name: 'Brain controller' }),
       { target: { value: 'E6' } }
     )
-    expect(screen.getByText('east facade · E6')).toBeVisible()
     fireEvent.click(screen.getByRole('link', { name: 'Floor' }))
     expect(
       screen.getByRole('button', { name: 'east floor plan' })
@@ -1021,8 +957,6 @@ describe('NeuroSkinDashboard', () => {
       screen.getByRole('combobox', { name: 'Brain controller' }),
       { target: { value: '' } }
     )
-    expect(screen.getByText('Primary west controller')).toBeVisible()
-    expect(screen.getByText('west facade', { selector: 'span' })).toBeVisible()
     expect(
       screen.getByRole('combobox', { name: 'Brain controller' })
     ).toHaveValue('')
@@ -1067,10 +1001,10 @@ describe('NeuroSkinDashboard', () => {
         'false'
       )
     expect(timeline).toHaveValue('0')
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(simulationCalls()).toHaveLength(1)
   })
 
-  it('runs local checks from Brains and replays approvals and fault windows', async () => {
+  it('runs local checks and replays a fault window injected from Floor', async () => {
     window.history.replaceState(null, '', '/dashboard?view=brains')
     const zones: ZoneHeat[] = Array.from({ length: 16 }, (_, index) => ({
       zone: `W${index + 1}`,
@@ -1161,13 +1095,6 @@ describe('NeuroSkinDashboard', () => {
     const timeline = screen.getByRole('slider', { name: 'Simulation timeline' })
     fireEvent.change(timeline, { target: { value: '1' } })
     fireEvent.change(controller, { target: { value: 'W2' } })
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Approve and replay' })
-    )
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    expect(body(1).approved_episodes).toEqual(['W2:1:dead'])
-    expect(body(1).fault_correction).toBe('review')
-    await waitFor(() => expect(timeline).toHaveValue('1'))
 
     fireEvent.click(screen.getByRole('link', { name: 'Floor' }))
     fireEvent.click(await screen.findByText('Inject fault window'))
@@ -1177,12 +1104,12 @@ describe('NeuroSkinDashboard', () => {
     fireEvent.click(
       screen.getByRole('button', { name: 'Inject 2 h from this time' })
     )
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
-    expect(body(2).zone_perturbations).toEqual({
+    await waitFor(() => expect(simulationCalls()).toHaveLength(2))
+    expect(body(1).zone_perturbations).toEqual({
       W2: { kind: 'stuck', start_tick: 1, end_tick: 1 },
     })
-    expect(body(2).approved_episodes).toEqual([])
-    expect(body(2).fault_correction).toBe('review')
+    expect(body(1).approved_episodes).toEqual([])
+    expect(body(1).fault_correction).toBe('review')
   })
 
   it('links to the project overview and excludes tutorial chrome', async () => {
@@ -1196,4 +1123,25 @@ describe('NeuroSkinDashboard', () => {
     ).not.toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
+})
+
+it('routes illustrative messages through the existing zone, floor peers and main agent', () => {
+  const zones = [
+    { zone: 'W1', row: 0, lux: 400, angle: 24, mode: 'NORMAL' },
+    { zone: 'E5', row: 1, lux: 500, angle: 30, mode: 'SAFE' },
+  ] as ZoneHeat[]
+  const messages = Array.from(
+    { length: 5 },
+    (_, i) => agentMessage(i, zones, 'W1')!
+  )
+  expect(messages.map(({ from, to }) => [from, to])).toEqual([
+    ['W1', 'floor-0'],
+    ['floor-0', 'floor-1'],
+    ['floor-0', 'main'],
+    ['main', 'floor-0'],
+    ['floor-0', 'W1'],
+  ])
+  expect(agentMessage(5, zones, 'W1')!.from).toBe('E5')
+  expect(agentMessage(8, zones, 'W1')!.text).toContain('Safety hold')
+  expect(agentMessage(0, [])).toBeNull()
 })

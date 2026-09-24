@@ -1,11 +1,21 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
+import { createPortal } from 'react-dom'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
-import { createBandPlan, FLOOR_STACK_GAP } from './bandPlan'
+import { createBandPlan, FLOOR_STACK_GAP, WALL_ROTATION } from './bandPlan'
+import { applyOrbit, orbitChanged, type OrbitAngles } from './sectionScene'
 import { floorBeam, type FloorLightView } from './floorSunlight'
+import type { CsiActivity } from './csiPosture'
 import { FLOOR_PLANS, floorGroupLabel, floorProgram } from './floorWorkspaces'
 import { createCloudCanopy } from './cloudCanopy'
 import type { SkyObservation } from './CloudVisionPanel'
@@ -74,6 +84,11 @@ const FILM_WIND = 3.8
 // cardinals, which is what makes "the north and south facades" meaningful.
 const FLOOR_HEIGHT = 0.36
 const BASE_HALF_WIDTH = 1.73
+
+// How far a right-drag may slide the point of interest from the building, in scene
+// units. Wide enough to put a facade wherever you want it, tight enough that the
+// building never leaves the frame.
+const PAN_RADIUS = 6
 // Floor-line hairline. Wide enough to read as separate storeys, narrow enough
 // that the structure behind does not become the dominant colour.
 const PANEL_GAP = 0.012
@@ -127,14 +142,14 @@ const CROWN_HEIGHT_FRACTION = 1.0 / 9.5
 const halfWidthAt = (y: number, tiltFromVertical: number) =>
   BASE_HALF_WIDTH + y * Math.tan(THREE.MathUtils.degToRad(tiltFromVertical))
 
-const WALLS: Record<FacadeOrientation, number> = {
-  north: Math.PI,
-  east: Math.PI / 2,
-  south: 0,
-  west: -Math.PI / 2,
-}
+const WALLS = WALL_ROTATION
 
 const ORIENTATIONS = Object.keys(WALLS) as FacadeOrientation[]
+
+const poseOf = (controls: OrbitControls): OrbitAngles => ({
+  azimuth: controls.getAzimuthalAngle(),
+  polar: controls.getPolarAngle(),
+})
 
 /**
  * A leaning trapezoid on one wall: the shared shape of a facade zone and of a
@@ -415,6 +430,8 @@ function ZoneBubble({
 interface BuildingHeatmapProps {
   active?: boolean
   cameraMode?: CameraMode
+  csiView?: boolean
+  csiActivity?: CsiActivity
   band?: number
   focusedBand?: number | null
   onSelectBand?: (band: number | null) => void
@@ -436,11 +453,32 @@ interface BuildingHeatmapProps {
   onSelectTick?: (index: number) => void
   buildingVariant?: BuildingVariant
   onBuildingVariantChange?: (variant: BuildingVariant) => void
+  /** Render the scene controls into this element instead of over the canvas. */
+  controlsSlot?: HTMLElement | null
+  /** Shared orbit pose, so the floor section can face the same way as this scene. */
+  orbit?: OrbitAngles | null
+  onOrbitChange?: (orbit: OrbitAngles) => void
+}
+
+/* ponytail: a portal moves the panel's DOM only -- every control keeps its
+   state and handlers here, so nothing had to be lifted into the dashboard. */
+function Hosted({
+  slot,
+  children,
+}: {
+  slot?: HTMLElement | null
+  children: ReactNode
+}) {
+  return slot ? createPortal(children, slot) : <>{children}</>
 }
 
 export function BuildingHeatmap({
   active = true,
   cameraMode = 'orbit',
+  csiView = false,
+  csiActivity = 'auto',
+  orbit = null,
+  onOrbitChange,
   band = 0,
   focusedBand = null,
   onSelectBand,
@@ -460,9 +498,12 @@ export function BuildingHeatmap({
   onSelectTick,
   buildingVariant = 'controlled',
   onBuildingVariantChange,
+  controlsSlot = null,
 }: BuildingHeatmapProps) {
   const activeRef = useRef(active)
   activeRef.current = active
+  const csiRef = useRef({ enabled: csiView, activity: csiActivity })
+  csiRef.current = { enabled: csiView, activity: csiActivity }
   const [viewControlsOpen, setViewControlsOpen] = useState(true)
   useEffect(() => {
     if (window.matchMedia('(max-width: 639px)').matches)
@@ -477,12 +518,12 @@ export function BuildingHeatmap({
   const [floorLight, setFloorLight] = useState<FloorLightView>('sun')
   const lightingRef = useRef({
     tick,
-    mode: floorLight,
+    mode: csiView ? ('off' as const) : floorLight,
     controlled: buildingVariant === 'controlled',
   })
   lightingRef.current = {
     tick,
-    mode: floorLight,
+    mode: csiView ? ('off' as const) : floorLight,
     controlled: buildingVariant === 'controlled',
   }
   const showHvacRef = useRef(showHvac)
@@ -553,6 +594,9 @@ export function BuildingHeatmap({
     sunMarker: THREE.Mesh
   } | null>(null)
   const [supported, setSupported] = useState(true)
+  // Bumped whenever the scene is rebuilt, so the orbit sync can re-attach to the
+  // new OrbitControls instead of holding a disposed one.
+  const [sceneEpoch, setSceneEpoch] = useState(0)
   const [surfaceMode, setSurfaceMode] = useState<SurfaceMode>('irradiance')
   useEffect(() => {
     if (activeCameraMode === 'plan' && surfaceMode === 'exposure')
@@ -638,6 +682,9 @@ export function BuildingHeatmap({
     if (!anchor) return
     context.controls.minDistance = 1.5
     context.controls.target.copy(anchor)
+    // Re-anchor the pan bound, or update() would drag this framing back towards the
+    // building centre the cursor was left on.
+    context.controls.cursor.copy(anchor)
     context.camera.position
       .copy(anchor)
       .add(
@@ -654,6 +701,7 @@ export function BuildingHeatmap({
     if (!context) return
     context.controls.minDistance = 7
     context.controls.target.set(0, floors * FLOOR_HEIGHT * 0.95, 0)
+    context.controls.cursor.copy(context.controls.target)
     context.camera.position.set(-10.5, floors * FLOOR_HEIGHT * 3.3, 10.5)
     context.controls.update()
     setDetailedView(false)
@@ -734,7 +782,11 @@ export function BuildingHeatmap({
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.target.set(0, height * 0.95, 0)
     controls.enableDamping = true
-    controls.enablePan = false
+    // Right-drag pans (OrbitControls' default RIGHT button). Bounded to a sphere
+    // around the building so the view cannot be slid off into empty space.
+    controls.enablePan = true
+    controls.cursor.copy(controls.target)
+    controls.maxTargetRadius = PAN_RADIUS
     controls.minDistance = 7
     controls.maxDistance = 26
     controls.maxPolarAngle = Math.PI / 2 - 0.05
@@ -742,7 +794,8 @@ export function BuildingHeatmap({
     const planControls = new OrbitControls(planCamera, renderer.domElement)
     planControls.target.set(0, FLOOR_STACK_GAP * 1.5, 0)
     planControls.enableDamping = true
-    planControls.enablePan = false
+    planControls.enablePan = true
+    planControls.maxTargetRadius = PAN_RADIUS
     planControls.minZoom = 0.7
     planControls.maxZoom = 2.5
     planControls.minPolarAngle = 0
@@ -763,6 +816,8 @@ export function BuildingHeatmap({
         planCamera.position.set(-10, elevation + 10.4, 13)
         planControls.target.set(0, elevation, 0)
       }
+      // Keep the pan bound centred on whatever band was just framed.
+      planControls.cursor.copy(planControls.target)
       planCamera.zoom = 1
       planCamera.updateProjectionMatrix()
       planControls.update()
@@ -1294,7 +1349,10 @@ export function BuildingHeatmap({
       probe.textContent = `${String(sample.mesh.userData.surface).replace(':', ' · ')} · ${value.toFixed(0)} W/m²`
     }
     const onPointerDown = (event: PointerEvent) => {
-      pressedAt = { x: event.clientX, y: event.clientY }
+      // Left button only. Right-drag pans, and a short right-click must not land as
+      // a zone selection on the way back up.
+      pressedAt =
+        event.button === 0 ? { x: event.clientX, y: event.clientY } : null
     }
     const onPointerMove = (event: PointerEvent) => {
       const hit = pick(event)
@@ -1342,7 +1400,7 @@ export function BuildingHeatmap({
     controls.addEventListener('start', onPointerLeave)
     planControls.addEventListener('start', onPointerLeave)
     const onPointerUp = (event: PointerEvent) => {
-      if (!pressedAt) return
+      if (!pressedAt || event.button !== 0) return
       const travelled = Math.hypot(
         event.clientX - pressedAt.x,
         event.clientY - pressedAt.y
@@ -1401,12 +1459,13 @@ export function BuildingHeatmap({
         object.receiveShadow = true
       }
     })
-    // The raised service overlay should not cast false ceiling shadows on rooms.
+    // Service and signal overlays should not cast false shadows on rooms.
     for (const level of plan.levels)
-      level.hvac.traverse((object) => {
-        object.castShadow = false
-        object.receiveShadow = false
-      })
+      for (const overlay of [level.hvac, level.wifi])
+        overlay.traverse((object) => {
+          object.castShadow = false
+          object.receiveShadow = false
+        })
 
     const cloudCanopy = createCloudCanopy(height + 3)
     scene.add(cloudCanopy.mesh)
@@ -1421,6 +1480,7 @@ export function BuildingHeatmap({
     let lastCloudPaint = 0
     let lastPeopleShadow = 0
     let peopleSeconds = 0
+    let csiMix = 0
     const animate = () => {
       frame = requestAnimationFrame(animate)
       const now = performance.now()
@@ -1516,8 +1576,23 @@ export function BuildingHeatmap({
           people.occupancy,
           people.showPeople,
           people.showDetections,
-          focusedBandRef.current
+          focusedBandRef.current,
+          csiRef.current.activity
         )
+        const target = Number(csiRef.current.enabled)
+        csiMix = reducedMotion.matches
+          ? target
+          : THREE.MathUtils.damp(csiMix, target, 5, delta)
+        if (Math.abs(csiMix - target) < 0.002) csiMix = target
+        plan.updateXray(
+          csiMix,
+          focusedBandRef.current,
+          mount.clientWidth,
+          mount.clientHeight,
+          peopleSeconds
+        )
+        // Readable state for browser checks; the WebGL canvas and camera never swap.
+        mount.dataset.csiBlend = csiMix.toFixed(3)
         if (
           !people.peoplePaused &&
           people.occupancy > 0 &&
@@ -1582,6 +1657,7 @@ export function BuildingHeatmap({
       sunMarker,
     }
     setSupported(true)
+    setSceneEpoch((epoch) => epoch + 1)
 
     return () => {
       cancelAnimationFrame(frame)
@@ -1631,6 +1707,67 @@ export function BuildingHeatmap({
   useEffect(() => {
     sceneRef.current?.fitPlan()
   }, [planAngle, focusedBand, floors, overhang, roofPitch])
+
+  // Orbit sync. The floor lens drives the plan camera and the others the orbit one,
+  // so the sync follows whichever is live. Only a drag emits, so applying a pose from
+  // the other view cannot echo back and leave the two scenes chasing each other.
+  const draggingRef = useRef(false)
+  const onOrbitChangeRef = useRef(onOrbitChange)
+  onOrbitChangeRef.current = onOrbitChange
+  const lastOrbitRef = useRef<OrbitAngles | null>(null)
+  const liveControls = useCallback(
+    () =>
+      activeCameraMode === 'plan'
+        ? sceneRef.current?.planControls
+        : sceneRef.current?.controls,
+    [activeCameraMode]
+  )
+
+  useEffect(() => {
+    const controls = liveControls()
+    if (!controls) return
+    const start = () => {
+      draggingRef.current = true
+    }
+    const end = () => {
+      draggingRef.current = false
+    }
+    const change = () => {
+      if (!draggingRef.current) return
+      const pose = poseOf(controls)
+      if (!orbitChanged(lastOrbitRef.current, pose)) return
+      lastOrbitRef.current = pose
+      onOrbitChangeRef.current?.(pose)
+    }
+    controls.addEventListener('start', start)
+    controls.addEventListener('end', end)
+    controls.addEventListener('change', change)
+    return () => {
+      controls.removeEventListener('start', start)
+      controls.removeEventListener('end', end)
+      controls.removeEventListener('change', change)
+    }
+  }, [sceneEpoch, liveControls])
+
+  useEffect(() => {
+    const controls = liveControls()
+    if (!controls || !orbit || draggingRef.current) return
+    if (!orbitChanged(poseOf(controls), orbit)) return
+    lastOrbitRef.current = orbit
+    applyOrbit(controls.object, controls, orbit)
+  }, [orbit, sceneEpoch, liveControls])
+
+  // fitPlan re-frames the plan camera outright on a band or plan-angle change, and a
+  // camera-mode switch swaps which camera is authoritative. Publish the new pose so
+  // the section follows instead of holding the angle nobody is looking from any more.
+  useEffect(() => {
+    const controls = liveControls()
+    if (!controls || draggingRef.current) return
+    const pose = poseOf(controls)
+    if (!orbitChanged(lastOrbitRef.current, pose)) return
+    lastOrbitRef.current = pose
+    onOrbitChangeRef.current?.(pose)
+  }, [sceneEpoch, liveControls, planAngle, focusedBand])
 
   useEffect(() => {
     const context = sceneRef.current
@@ -1977,13 +2114,14 @@ export function BuildingHeatmap({
           ref={mountRef}
           className='absolute inset-0 cursor-grab active:cursor-grabbing'
           role='img'
+          data-floor-scene={activeCameraMode === 'plan' ? 'true' : undefined}
           aria-label={
             activeCameraMode === 'plan'
-              ? `${planAngle === 'top' ? 'Top-down detail' : 'Stacked 3D view'} of the ${planSide} floor plans · ${focusedBand === null ? 'all four floor groups in colour' : `${floorGroupLabel(focusedBand, floors)} selected; other levels greyed out`} · illustrative interiors; ${showHvac ? 'illustrative overhead HVAC supply, return and air-handling unit shown' : 'HVAC hidden'}; coloured edge shows only the ${planSide} facade readings`
+              ? `${csiView ? 'CSI X-ray view' : planAngle === 'top' ? 'Top-down detail' : 'Stacked 3D view'} of the ${planSide} floor plans · ${focusedBand === null ? 'all four floor groups' : `${floorGroupLabel(focusedBand, floors)} selected; other levels greyed out`} · ${csiView ? 'transparent structure, simulated Wi-Fi signal waves and occupant skeletons; same camera and floor geometry' : `illustrative interiors; ${showHvac ? 'illustrative overhead HVAC supply, return and air-handling unit shown' : 'HVAC hidden'}; coloured edge shows only the ${planSide} facade readings`}`
               : surfaceMode === 'irradiance'
                 ? `${BUILDING_VARIANTS[buildingVariant]}. Three-dimensional irradiance heatmap at ${timeLabel}. Blue means low irradiance, red means ${IRRADIANCE_MAX} watts per square metre or more. ${controlled ? 'Roof and louvre' : 'Passive roof and building'} shadows are sampled from the building mesh. Hover a surface for its local irradiance. Use Inspect surface for keyboard selection and the timeline for readings.`
                 : surfaceMode === 'model'
-                  ? `${BUILDING_VARIANTS[buildingVariant]}. Three-dimensional architectural model of ${locationName}, with glazing, floor bands, ${controlled ? 'louvres and actuators, ' : 'no external louvres or actuators, '}and a roof skylight. Drag to orbit.`
+                  ? `${BUILDING_VARIANTS[buildingVariant]}. Three-dimensional architectural model of ${locationName}, with glazing, floor bands, ${controlled ? 'louvres and actuators, ' : 'no external louvres or actuators, '}and a roof skylight. Drag to orbit, right-drag to pan.`
                   : surfaceMode === 'exposure'
                     ? `${BUILDING_VARIANTS[buildingVariant]}. Three-dimensional model of the building with every wall shaded by its surface temperature at ${timeLabel} and the roof shaded by its daily solar exposure, ranging from ${(roofRange[0] * 3.6).toFixed(1)} to ${(roofRange[1] * 3.6).toFixed(1)} megajoules per square metre. The roof legend shows the full daily range; the timeline shows the selected time.`
                     : `${BUILDING_VARIANTS[buildingVariant]}. Three-dimensional model of the building with every wall shaded by its surface temperature at ${timeLabel}. Select a surface to read its values in the timeline.`
@@ -2020,429 +2158,442 @@ export function BuildingHeatmap({
       </div>
 
       <div className='pointer-events-none absolute inset-x-3 top-3 z-10 flex flex-wrap items-start justify-between gap-2'>
-        <details
-          className='stage-panel w-full max-w-[340px]'
-          open={viewControlsOpen}
-          onToggle={(event) => setViewControlsOpen(event.currentTarget.open)}
-        >
-          <summary className='cursor-pointer text-[11px] font-semibold'>
-            Scene controls
-          </summary>
-          <p
+        <Hosted slot={controlsSlot}>
+          <details
             className={
-              activeCameraMode === 'plan'
-                ? 'hidden'
-                : 'flex items-center gap-1.5 text-[11px] font-semibold'
+              controlsSlot
+                ? 'console-card w-full'
+                : 'stage-panel w-full max-w-[340px]'
             }
+            open={viewControlsOpen}
+            onToggle={(event) => setViewControlsOpen(event.currentTarget.open)}
           >
-            <Box className='h-3.5 w-3.5 text-primary' />
-            {locationName}
-          </p>
-          <label className='mt-2 block text-[9px] uppercase tracking-wider text-muted-foreground'>
-            Monitored building
-            <select
-              aria-label='Monitored building'
-              className='mt-1 block w-full rounded-md border border-border bg-background px-2 py-1.5 text-[11px] font-semibold normal-case tracking-normal text-foreground'
-              value={buildingVariant}
-              disabled={!onBuildingVariantChange}
-              onChange={(event) =>
-                onBuildingVariantChange?.(event.target.value as BuildingVariant)
+            <summary className='cursor-pointer text-[11px] font-semibold'>
+              Scene controls
+            </summary>
+            <p
+              className={
+                activeCameraMode === 'plan'
+                  ? 'hidden'
+                  : 'flex items-center gap-1.5 text-[11px] font-semibold'
               }
             >
-              {Object.entries(BUILDING_VARIANTS).map(([value, label]) => (
-                <option value={value} key={value}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </label>
-          {activeCameraMode !== 'plan' && (
+              <Box className='h-3.5 w-3.5 text-primary' />
+              {locationName}
+            </p>
             <label className='mt-2 block text-[9px] uppercase tracking-wider text-muted-foreground'>
-              Inspect surface
+              Monitored building
               <select
-                aria-label='Inspect surface'
+                aria-label='Monitored building'
                 className='mt-1 block w-full rounded-md border border-border bg-background px-2 py-1.5 text-[11px] font-semibold normal-case tracking-normal text-foreground'
-                value={selected}
-                onChange={(event) => onSelect(event.target.value as SurfaceId)}
+                value={buildingVariant}
+                disabled={!onBuildingVariantChange}
+                onChange={(event) =>
+                  onBuildingVariantChange?.(
+                    event.target.value as BuildingVariant
+                  )
+                }
               >
-                {(['wall', 'roof'] as const).map((kind) => (
-                  <optgroup
-                    label={kind === 'wall' ? 'Facade' : 'Roof'}
-                    key={kind}
-                  >
-                    {ORIENTATIONS.map((side) => (
-                      <option key={side} value={`${kind}:${side}`}>
-                        {side} {kind === 'wall' ? 'facade' : 'roof'}
-                      </option>
-                    ))}
-                  </optgroup>
+                {Object.entries(BUILDING_VARIANTS).map(([value, label]) => (
+                  <option value={value} key={value}>
+                    {label}
+                  </option>
                 ))}
               </select>
             </label>
-          )}
-          <p
-            className={
-              activeCameraMode === 'plan'
-                ? 'hidden'
-                : 'mt-1 hidden text-[9px] text-muted-foreground sm:block'
-            }
-          >
-            Same geometry, sun, time and colour scales. Only the external
-            adaptive facade changes.
-          </p>
-          <div
-            role='group'
-            aria-label='Camera mode'
-            className='mt-2 flex gap-1'
-          >
-            {CAMERA_MODES.map(([mode, label]) => (
-              <button
-                type='button'
-                className='band-button'
-                aria-pressed={activeCameraMode === mode}
-                key={mode}
-                onClick={() => setCameraOverride(mode)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          {activeCameraMode === 'plan' && (
-            <>
-              <div
-                role='group'
-                aria-label='Floor light visualisation'
-                className='mt-3 flex flex-wrap gap-1'
-              >
-                {(
-                  [
-                    ['sun', 'Sun & shadows'],
-                    ['et', 'Et · desk light'],
-                    ['ev', 'Ev · eye light'],
-                    ['off', 'Off'],
-                  ] as const
-                ).map(([mode, label]) => (
+            {activeCameraMode !== 'plan' && (
+              <label className='mt-2 block text-[9px] uppercase tracking-wider text-muted-foreground'>
+                Inspect surface
+                <select
+                  aria-label='Inspect surface'
+                  className='mt-1 block w-full rounded-md border border-border bg-background px-2 py-1.5 text-[11px] font-semibold normal-case tracking-normal text-foreground'
+                  value={selected}
+                  onChange={(event) =>
+                    onSelect(event.target.value as SurfaceId)
+                  }
+                >
+                  {(['wall', 'roof'] as const).map((kind) => (
+                    <optgroup
+                      label={kind === 'wall' ? 'Facade' : 'Roof'}
+                      key={kind}
+                    >
+                      {ORIENTATIONS.map((side) => (
+                        <option key={side} value={`${kind}:${side}`}>
+                          {side} {kind === 'wall' ? 'facade' : 'roof'}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+              </label>
+            )}
+            <p
+              className={
+                activeCameraMode === 'plan'
+                  ? 'hidden'
+                  : 'mt-1 hidden text-[9px] text-muted-foreground sm:block'
+              }
+            >
+              Same geometry, sun, time and colour scales. Only the external
+              adaptive facade changes.
+            </p>
+            <div
+              role='group'
+              aria-label='Camera mode'
+              className='mt-2 flex gap-1'
+            >
+              {CAMERA_MODES.map(([mode, label]) => (
+                <button
+                  type='button'
+                  className='band-button'
+                  aria-pressed={activeCameraMode === mode}
+                  key={mode}
+                  onClick={() => setCameraOverride(mode)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {activeCameraMode === 'plan' && (
+              <>
+                <div
+                  role='group'
+                  aria-label='Floor light visualisation'
+                  className='mt-3 flex flex-wrap gap-1'
+                >
+                  {(
+                    [
+                      ['sun', 'Sun & shadows'],
+                      ['et', 'Et · desk light'],
+                      ['ev', 'Ev · eye light'],
+                      ['off', 'Off'],
+                    ] as const
+                  ).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type='button'
+                      className='band-button'
+                      aria-pressed={floorLight === mode}
+                      disabled={
+                        (mode === 'et' || mode === 'ev') &&
+                        (!controlled || !tick.daylight)
+                      }
+                      onClick={() => setFloorLight(mode)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <p className='mt-1 text-[9px] leading-4' aria-live='polite'>
+                  {floorLight === 'sun'
+                    ? tick.solar_elevation <= 0
+                      ? 'Night · no direct sunlight'
+                      : floorBeam(tick, planSide, band, controlled) <= 1
+                        ? 'This side is shaded now. Find sunlight or move the timeline.'
+                        : 'Gold: window sunlight · lines: sun paths · dark: furniture shadows.'
+                    : floorLight === 'off'
+                      ? 'Light overlay hidden'
+                      : !controlled || !tick.daylight
+                        ? 'Et/Ev readings are unavailable in this run'
+                        : tick.daylight?.night
+                          ? 'Night / low sun · probe readings unavailable'
+                          : floorLight === 'et'
+                            ? 'Et markers: blue = low · green = in band · amber = high'
+                            : 'Ev markers: green → red as eye light reaches the cap'}
+                </p>
+                <p className='mt-1 text-[9px] text-muted-foreground'>
+                  Sun paths are illustrative. Et/Ev colours use fixed model
+                  probes.
+                </p>
+                {floorLight === 'sun' && onSelectTick && (
                   <button
-                    key={mode}
+                    type='button'
+                    className='band-button mt-2 w-full'
+                    disabled={bestSunlight < 0}
+                    onClick={() => {
+                      onSelectBand?.(band)
+                      onSelectTick(bestSunlight)
+                    }}
+                  >
+                    {bestSunlight < 0
+                      ? 'No direct sun on this side in this run'
+                      : 'Find sunlight on this side'}
+                  </button>
+                )}
+                <div className='mt-2 flex flex-wrap gap-1'>
+                  <div
+                    role='group'
+                    aria-label='Floor viewing angle'
+                    className='flex gap-1'
+                  >
+                    <button
+                      type='button'
+                      className='band-button'
+                      aria-pressed={planAngle === 'cutaway'}
+                      onClick={() => setPlanAngle('cutaway')}
+                    >
+                      3D stack
+                    </button>
+                    <button
+                      type='button'
+                      className='band-button'
+                      aria-pressed={planAngle === 'top'}
+                      onClick={() => {
+                        if (focusedBand === null) onSelectBand?.(band)
+                        setPlanAngle('top')
+                      }}
+                    >
+                      Top down
+                    </button>
+                  </div>
+                  <button
                     type='button'
                     className='band-button'
-                    aria-pressed={floorLight === mode}
-                    disabled={
-                      (mode === 'et' || mode === 'ev') &&
-                      (!controlled || !tick.daylight)
+                    aria-pressed={showHvac}
+                    onClick={() => setShowHvac((shown) => !shown)}
+                  >
+                    HVAC overlay
+                  </button>
+                </div>
+                {showHvac && (
+                  <p className='mt-1 text-[9px] leading-4'>
+                    <span className='font-semibold text-cyan-700'>
+                      Supply → rooms
+                    </span>
+                    {' · '}
+                    <span className='font-semibold text-amber-800'>
+                      Return → AHU
+                    </span>
+                    {' · schematic'}
+                  </p>
+                )}
+                <div
+                  className='mt-2 flex flex-wrap gap-1'
+                  role='group'
+                  aria-label='Mock occupant controls'
+                >
+                  <button
+                    type='button'
+                    className='band-button'
+                    aria-pressed={showPeople}
+                    onClick={() => setShowPeople((shown) => !shown)}
+                  >
+                    People
+                  </button>
+                  <button
+                    type='button'
+                    className='band-button'
+                    aria-pressed={showDetections}
+                    disabled={!showPeople}
+                    onClick={() => setShowDetections((shown) => !shown)}
+                  >
+                    Detection markers
+                  </button>
+                  <button
+                    type='button'
+                    className='band-button'
+                    aria-pressed={peoplePaused}
+                    disabled={!showPeople && !csiView}
+                    onClick={() => setPeoplePaused((paused) => !paused)}
+                  >
+                    {peoplePaused ? 'Resume' : 'Pause'}{' '}
+                    {csiView ? 'motion' : 'people'}
+                  </button>
+                </div>
+                <p className='mt-1 text-[9px] text-muted-foreground'>
+                  {csiView &&
+                    'Expanding cyan waves: simulated Wi-Fi signal from each floor’s transmitter. '}
+                  Cyan rings: mock detection. Select a floor for tracking IDs.
+                  Hover people, seats or desks for details.
+                </p>
+                {controlled && tick.daylight && (
+                  <p className='mt-1 text-[9px] leading-4'>
+                    Et desks: <span className='text-blue-700'>low</span> /{' '}
+                    <span className='text-emerald-700'>in band</span> /{' '}
+                    <span className='text-amber-700'>high</span> (
+                    {tick.daylight.et_band_low_lux}–
+                    {tick.daylight.et_band_high_lux} lx). Ev seats: green → red
+                    at {tick.daylight.ev_cap_lux} lx.
+                    {tick.daylight.night ? ' Night: readings unavailable.' : ''}
+                  </p>
+                )}
+                <p className='mt-2 text-[10px] font-semibold'>
+                  {planSide.toUpperCase()} FLOOR STACK
+                </p>
+                <p className='mt-1 text-[9px] leading-4 text-muted-foreground'>
+                  {focusedBand === null
+                    ? 'Four levels · click a floor group to inspect'
+                    : `${floorGroupLabel(focusedBand, floors)} · ${FLOOR_PLANS[floorProgram(planSide, focusedBand)].name}`}
+                  <br />
+                  {planAngle === 'cutaway'
+                    ? 'Other levels grey out on selection · drag to rotate · right-drag to pan · scroll to zoom.'
+                    : 'North up · right-drag to pan · scroll to zoom.'}
+                </p>
+              </>
+            )}
+            <details open={activeCameraMode !== 'plan'}>
+              <summary
+                className={
+                  activeCameraMode === 'plan'
+                    ? 'mt-2 cursor-pointer text-[10px] font-semibold'
+                    : 'hidden'
+                }
+              >
+                View settings
+              </summary>
+              <div
+                aria-label='Surface colouring'
+                className='mt-2 flex flex-wrap gap-1'
+                role='group'
+              >
+                {SURFACE_MODES.filter(
+                  ([mode]) =>
+                    mode !== 'exposure' ||
+                    (ticks?.length && activeCameraMode !== 'plan')
+                ).map(([mode, label]) => (
+                  <button
+                    aria-pressed={surfaceMode === mode}
+                    className={
+                      surfaceMode === mode
+                        ? 'rounded-md bg-primary px-2 py-1.5 text-[10px] font-semibold text-primary-foreground'
+                        : 'rounded-md border border-border px-2 py-1.5 text-[10px] text-muted-foreground hover:bg-secondary/60'
                     }
-                    onClick={() => setFloorLight(mode)}
+                    key={mode}
+                    onClick={() => setSurfaceMode(mode)}
+                    type='button'
                   >
                     {label}
                   </button>
                 ))}
               </div>
-              <p className='mt-1 text-[9px] leading-4' aria-live='polite'>
-                {floorLight === 'sun'
-                  ? tick.solar_elevation <= 0
-                    ? 'Night · no direct sunlight'
-                    : floorBeam(tick, planSide, band, controlled) <= 1
-                      ? 'This side is shaded now. Find sunlight or move the timeline.'
-                      : 'Gold: window sunlight · lines: sun paths · dark: furniture shadows.'
-                  : floorLight === 'off'
-                    ? 'Light overlay hidden'
-                    : !controlled || !tick.daylight
-                      ? 'Et/Ev readings are unavailable in this run'
-                      : tick.daylight?.night
-                        ? 'Night / low sun · probe readings unavailable'
-                        : floorLight === 'et'
-                          ? 'Et markers: blue = low · green = in band · amber = high'
-                          : 'Ev markers: green → red as eye light reaches the cap'}
-              </p>
-              <p className='mt-1 text-[9px] text-muted-foreground'>
-                Sun paths are illustrative. Et/Ev colours use fixed model
-                probes.
-              </p>
-              {floorLight === 'sun' && onSelectTick && (
-                <button
-                  type='button'
-                  className='band-button mt-2 w-full'
-                  disabled={bestSunlight < 0}
-                  onClick={() => {
-                    onSelectBand?.(band)
-                    onSelectTick(bestSunlight)
-                  }}
-                >
-                  {bestSunlight < 0
-                    ? 'No direct sun on this side in this run'
-                    : 'Find sunlight on this side'}
-                </button>
-              )}
-              <div className='mt-2 flex flex-wrap gap-1'>
-                <div
-                  role='group'
-                  aria-label='Floor viewing angle'
-                  className='flex gap-1'
-                >
-                  <button
-                    type='button'
-                    className='band-button'
-                    aria-pressed={planAngle === 'cutaway'}
-                    onClick={() => setPlanAngle('cutaway')}
-                  >
-                    3D stack
-                  </button>
-                  <button
-                    type='button'
-                    className='band-button'
-                    aria-pressed={planAngle === 'top'}
-                    onClick={() => {
-                      if (focusedBand === null) onSelectBand?.(band)
-                      setPlanAngle('top')
-                    }}
-                  >
-                    Top down
-                  </button>
-                </div>
-                <button
-                  type='button'
-                  className='band-button'
-                  aria-pressed={showHvac}
-                  onClick={() => setShowHvac((shown) => !shown)}
-                >
-                  HVAC overlay
-                </button>
-              </div>
-              {showHvac && (
-                <p className='mt-1 text-[9px] leading-4'>
-                  <span className='font-semibold text-cyan-700'>
-                    Supply → rooms
-                  </span>
-                  {' · '}
-                  <span className='font-semibold text-amber-800'>
-                    Return → AHU
-                  </span>
-                  {' · schematic'}
-                </p>
-              )}
-              <div
-                className='mt-2 flex flex-wrap gap-1'
-                role='group'
-                aria-label='Mock occupant controls'
-              >
-                <button
-                  type='button'
-                  className='band-button'
-                  aria-pressed={showPeople}
-                  onClick={() => setShowPeople((shown) => !shown)}
-                >
-                  People
-                </button>
-                <button
-                  type='button'
-                  className='band-button'
-                  aria-pressed={showDetections}
-                  disabled={!showPeople}
-                  onClick={() => setShowDetections((shown) => !shown)}
-                >
-                  Detection markers
-                </button>
-                <button
-                  type='button'
-                  className='band-button'
-                  aria-pressed={peoplePaused}
-                  disabled={!showPeople}
-                  onClick={() => setPeoplePaused((paused) => !paused)}
-                >
-                  {peoplePaused ? 'Resume people' : 'Pause people'}
-                </button>
-              </div>
-              <p className='mt-1 text-[9px] text-muted-foreground'>
-                Cyan rings: mock detection. Select a floor for tracking IDs.
-                Hover people, seats or desks for details.
-              </p>
-              {controlled && tick.daylight && (
-                <p className='mt-1 text-[9px] leading-4'>
-                  Et desks: <span className='text-blue-700'>low</span> /{' '}
-                  <span className='text-emerald-700'>in band</span> /{' '}
-                  <span className='text-amber-700'>high</span> (
-                  {tick.daylight.et_band_low_lux}–
-                  {tick.daylight.et_band_high_lux} lx). Ev seats: green → red at{' '}
-                  {tick.daylight.ev_cap_lux} lx.
-                  {tick.daylight.night ? ' Night: readings unavailable.' : ''}
-                </p>
-              )}
-              <p className='mt-2 text-[10px] font-semibold'>
-                {planSide.toUpperCase()} FLOOR STACK
-              </p>
-              <p className='mt-1 text-[9px] leading-4 text-muted-foreground'>
-                {focusedBand === null
-                  ? 'Four levels · click a floor group to inspect'
-                  : `${floorGroupLabel(focusedBand, floors)} · ${FLOOR_PLANS[floorProgram(planSide, focusedBand)].name}`}
-                <br />
-                {planAngle === 'cutaway'
-                  ? 'Other levels grey out on selection · drag to rotate · scroll to zoom.'
-                  : 'North up · scroll to zoom.'}
-              </p>
-            </>
-          )}
-          <details open={activeCameraMode !== 'plan'}>
-            <summary
-              className={
-                activeCameraMode === 'plan'
-                  ? 'mt-2 cursor-pointer text-[10px] font-semibold'
-                  : 'hidden'
-              }
-            >
-              View settings
-            </summary>
-            <div
-              aria-label='Surface colouring'
-              className='mt-2 flex flex-wrap gap-1'
-              role='group'
-            >
-              {SURFACE_MODES.filter(
-                ([mode]) =>
-                  mode !== 'exposure' ||
-                  (ticks?.length && activeCameraMode !== 'plan')
-              ).map(([mode, label]) => (
-                <button
-                  aria-pressed={surfaceMode === mode}
-                  className={
-                    surfaceMode === mode
-                      ? 'rounded-md bg-primary px-2 py-1.5 text-[10px] font-semibold text-primary-foreground'
-                      : 'rounded-md border border-border px-2 py-1.5 text-[10px] text-muted-foreground hover:bg-secondary/60'
-                  }
-                  key={mode}
-                  onClick={() => setSurfaceMode(mode)}
-                  type='button'
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <label className='mt-3 flex items-center gap-2 text-[10px]'>
-              <input
-                type='checkbox'
-                checked={showClouds}
-                onChange={(event) => setShowClouds(event.target.checked)}
-              />
-              Clouds overhead · {Math.round(cloudCover * 100)}% ·{' '}
-              {visionSky ? 'AI vision' : 'weather / simulation'}
-            </label>
-            {showClouds && (
-              <p className='mt-1 text-[9px] text-muted-foreground'>
-                Projected cloud shadows · placement and drift modelled
-              </p>
-            )}
-            {surfaceMode !== 'model' && (
-              <div className='mt-3'>
-                <p className='mb-1.5 flex justify-between text-[9px] font-semibold uppercase tracking-wider text-muted-foreground'>
-                  <span>
-                    {surfaceMode === 'irradiance'
-                      ? 'Surface irradiance'
-                      : surfaceMode === 'exposure'
-                        ? 'Roof · daily solar exposure'
-                        : 'Sol-air temperature'}
-                  </span>
-                  <span>
-                    {surfaceMode === 'irradiance'
-                      ? 'W/m²'
-                      : surfaceMode === 'exposure'
-                        ? 'MJ/m²'
-                        : '°C'}
-                  </span>
-                </p>
-                <span
-                  className='block h-2.5 w-full rounded-sm'
-                  style={{
-                    backgroundImage: `linear-gradient(to right, ${(surfaceMode ===
-                    'irradiance'
-                      ? IRRADIANCE_LEGEND
-                      : surfaceMode === 'exposure'
-                        ? EXPOSURE_RAMP
-                        : HEAT_RAMP
-                    ).join(', ')})`,
-                  }}
+              <label className='mt-3 flex items-center gap-2 text-[10px]'>
+                <input
+                  type='checkbox'
+                  checked={showClouds}
+                  onChange={(event) => setShowClouds(event.target.checked)}
                 />
-                <div className='mt-1 flex justify-between font-mono text-[9px] tabular-nums text-muted-foreground'>
-                  {[0, 0.25, 0.5, 0.75, 1].map((fraction) => (
-                    <span key={fraction}>
+                Clouds overhead · {Math.round(cloudCover * 100)}% ·{' '}
+                {visionSky ? 'AI vision' : 'weather / simulation'}
+              </label>
+              {showClouds && (
+                <p className='mt-1 text-[9px] text-muted-foreground'>
+                  Projected cloud shadows · placement and drift modelled
+                </p>
+              )}
+              {surfaceMode !== 'model' && (
+                <div className='mt-3'>
+                  <p className='mb-1.5 flex justify-between text-[9px] font-semibold uppercase tracking-wider text-muted-foreground'>
+                    <span>
                       {surfaceMode === 'irradiance'
-                        ? `${fraction * IRRADIANCE_MAX}${fraction === 1 ? '+' : ''}`
+                        ? 'Surface irradiance'
                         : surfaceMode === 'exposure'
-                          ? (
-                              (roofRange[0] +
-                                fraction * (roofRange[1] - roofRange[0])) *
-                              3.6
-                            ).toFixed(1)
-                          : `${Math.round(TEMP_MIN + fraction * (TEMP_MAX - TEMP_MIN))}${fraction === 1 ? '+' : ''}`}
+                          ? 'Roof · daily solar exposure'
+                          : 'Sol-air temperature'}
                     </span>
-                  ))}
-                </div>
-                {surfaceMode === 'exposure' && (
-                  <p className='mt-1 text-[9px] text-muted-foreground'>
-                    Walls: surface temperature · {TEMP_MIN}–{TEMP_MAX} °C
-                    <span
-                      className='ml-2 inline-block h-1.5 w-16 rounded-full'
-                      style={{
-                        backgroundImage: `linear-gradient(to right, ${HEAT_RAMP.join(', ')})`,
-                      }}
-                    />
+                    <span>
+                      {surfaceMode === 'irradiance'
+                        ? 'W/m²'
+                        : surfaceMode === 'exposure'
+                          ? 'MJ/m²'
+                          : '°C'}
+                    </span>
                   </p>
+                  <span
+                    className='block h-2.5 w-full rounded-sm'
+                    style={{
+                      backgroundImage: `linear-gradient(to right, ${(surfaceMode ===
+                      'irradiance'
+                        ? IRRADIANCE_LEGEND
+                        : surfaceMode === 'exposure'
+                          ? EXPOSURE_RAMP
+                          : HEAT_RAMP
+                      ).join(', ')})`,
+                    }}
+                  />
+                  <div className='mt-1 flex justify-between font-mono text-[9px] tabular-nums text-muted-foreground'>
+                    {[0, 0.25, 0.5, 0.75, 1].map((fraction) => (
+                      <span key={fraction}>
+                        {surfaceMode === 'irradiance'
+                          ? `${fraction * IRRADIANCE_MAX}${fraction === 1 ? '+' : ''}`
+                          : surfaceMode === 'exposure'
+                            ? (
+                                (roofRange[0] +
+                                  fraction * (roofRange[1] - roofRange[0])) *
+                                3.6
+                              ).toFixed(1)
+                            : `${Math.round(TEMP_MIN + fraction * (TEMP_MAX - TEMP_MIN))}${fraction === 1 ? '+' : ''}`}
+                      </span>
+                    ))}
+                  </div>
+                  {surfaceMode === 'exposure' && (
+                    <p className='mt-1 text-[9px] text-muted-foreground'>
+                      Walls: surface temperature · {TEMP_MIN}–{TEMP_MAX} °C
+                      <span
+                        className='ml-2 inline-block h-1.5 w-16 rounded-full'
+                        style={{
+                          backgroundImage: `linear-gradient(to right, ${HEAT_RAMP.join(', ')})`,
+                        }}
+                      />
+                    </p>
+                  )}
+                </div>
+              )}
+              <p className='mt-2 hidden text-[10px] leading-relaxed text-muted-foreground sm:block'>
+                {surfaceMode === 'irradiance'
+                  ? controlled
+                    ? 'Modelled sunlight with roof, skylight and louvre shadows. Diffuse light uses the selected tick’s optical estimate. Hover to inspect.'
+                    : 'No external facade: passive roof and skylight shadows remain, without louvre shading. Hover to inspect.'
+                  : surfaceMode === 'exposure'
+                    ? 'Whole-day roof exposure. Unchanged between buildings; holds still as you scrub the timeline.'
+                    : surfaceMode === 'model'
+                      ? controlled
+                        ? 'Glazed facades, metal louvres and a diamond skylight.'
+                        : 'Glazing, building mass and skylight remain. No external louvres or actuators.'
+                      : controlled
+                        ? 'Estimated surface temperature after louvre shading.'
+                        : 'Estimated surface temperature with passive shading only; no external louvres.'}
+              </p>
+              <p className='mt-1 text-[9px] text-muted-foreground'>
+                {activeCameraMode === 'plan'
+                  ? 'Select a coloured facade zone · '
+                  : 'Drag to orbit · scroll to zoom · '}
+                {zone
+                  ? `zone ${zone.id} selected · esc to clear`
+                  : 'click any zone'}
+              </p>
+              <div className='mt-2 flex flex-wrap items-center gap-1.5 border-t border-border/60 pt-2'>
+                <button
+                  type='button'
+                  aria-label='Focus selected facade'
+                  onClick={focusFacade}
+                  className='flex items-center gap-1 rounded-md border border-border px-2 py-1.5 text-[10px] hover:bg-secondary/60'
+                >
+                  <Focus className='h-3 w-3' /> Façade detail
+                </button>
+                {detailedView && (
+                  <button
+                    type='button'
+                    aria-label='Show whole building'
+                    onClick={showBuilding}
+                    className='rounded-md border border-border p-1.5 hover:bg-secondary/60'
+                  >
+                    <RotateCcw className='h-3 w-3' />
+                  </button>
                 )}
               </div>
-            )}
-            <p className='mt-2 hidden text-[10px] leading-relaxed text-muted-foreground sm:block'>
-              {surfaceMode === 'irradiance'
-                ? controlled
-                  ? 'Modelled sunlight with roof, skylight and louvre shadows. Diffuse light uses the selected tick’s optical estimate. Hover to inspect.'
-                  : 'No external facade: passive roof and skylight shadows remain, without louvre shading. Hover to inspect.'
-                : surfaceMode === 'exposure'
-                  ? 'Whole-day roof exposure. Unchanged between buildings; holds still as you scrub the timeline.'
-                  : surfaceMode === 'model'
-                    ? controlled
-                      ? 'Glazed facades, metal louvres and a diamond skylight.'
-                      : 'Glazing, building mass and skylight remain. No external louvres or actuators.'
-                    : controlled
-                      ? 'Estimated surface temperature after louvre shading.'
-                      : 'Estimated surface temperature with passive shading only; no external louvres.'}
-            </p>
-            <p className='mt-1 text-[9px] text-muted-foreground'>
-              {activeCameraMode === 'plan'
-                ? 'Select a coloured facade zone · '
-                : 'Drag to orbit · scroll to zoom · '}
-              {zone
-                ? `zone ${zone.id} selected · esc to clear`
-                : 'click any zone'}
-            </p>
-            <div className='mt-2 flex flex-wrap items-center gap-1.5 border-t border-border/60 pt-2'>
-              <button
-                type='button'
-                aria-label='Focus selected facade'
-                onClick={focusFacade}
-                className='flex items-center gap-1 rounded-md border border-border px-2 py-1.5 text-[10px] hover:bg-secondary/60'
+              <p
+                ref={motionReadoutRef}
+                className='mt-1.5 font-mono text-[9px] capitalize text-muted-foreground'
               >
-                <Focus className='h-3 w-3' /> Façade detail
-              </button>
-              {detailedView && (
-                <button
-                  type='button'
-                  aria-label='Show whole building'
-                  onClick={showBuilding}
-                  className='rounded-md border border-border p-1.5 hover:bg-secondary/60'
-                >
-                  <RotateCcw className='h-3 w-3' />
-                </button>
-              )}
-            </div>
-            <p
-              ref={motionReadoutRef}
-              className='mt-1.5 font-mono text-[9px] capitalize text-muted-foreground'
-            >
-              {controlled
-                ? `${activeWall} louvres · follows timeline`
-                : 'No external louvres, actuators or control brain'}
-            </p>
+                {controlled
+                  ? `${activeWall} louvres · follows timeline`
+                  : 'No external louvres, actuators or control brain'}
+              </p>
+            </details>
           </details>
-        </details>
+        </Hosted>
 
-        <div className='stage-panel hidden flex-col items-end gap-1 sm:flex'>
+        <div className='stage-panel ml-auto hidden flex-col items-end gap-1 sm:flex'>
           <span className='flex items-center gap-1.5 text-[10px] font-semibold'>
             <Sun className='h-3.5 w-3.5 text-amber-500' />
             {tick.solar_elevation > 0

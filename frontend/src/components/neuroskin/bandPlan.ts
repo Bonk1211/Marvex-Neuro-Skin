@@ -1,8 +1,10 @@
 import * as THREE from 'three'
 import type { FacadeOrientation, TickPayload } from '@/lib/types'
 import { roofGrid } from './solarExposure'
-import { FLOOR_PLANS, floorProgram } from './floorWorkspaces'
+import { FLOOR_PLANS, floorProgram, WALL_ROTATION } from './floorWorkspaces'
 import { mockOccupancy, occupantId, walkingPosition } from './floorOccupants'
+import { poseSkeleton, type PosedSkeleton } from './sectionScene'
+import type { CsiActivity, CsiDetection } from './csiPosture'
 
 import { daylightColor } from './DaylightPanel'
 import {
@@ -12,6 +14,14 @@ import {
 } from './floorSunlight'
 
 export const FLOOR_STACK_GAP = 4.4
+
+/**
+ * World Y rotation of each wall in the building scene. South faces the camera at
+ * rotation 0, so a wall reads head-on when the orbit azimuth equals its entry here.
+ * Single source of truth: BuildingHeatmap frames walls with it and the floor section
+ * converts its own orbit through it.
+ */
+export { WALL_ROTATION } from './floorWorkspaces'
 
 /** Illustrative furnished cutaway with optional modelled occupant-plane readings. */
 export function createBandPlan(
@@ -455,12 +465,7 @@ export function createBandPlan(
         west: [-0.72, 0, 0.72],
       },
     ][designIndex]
-    for (const [orientation, rotation] of Object.entries({
-      north: Math.PI,
-      east: Math.PI / 2,
-      south: 0,
-      west: -Math.PI / 2,
-    })) {
+    for (const [orientation, rotation] of Object.entries(WALL_ROTATION)) {
       const branch = new THREE.Group()
       branch.name = `${orientation} route · supply and return`
       branch.rotation.y = rotation
@@ -544,6 +549,48 @@ export function createBandPlan(
     opacity: 0.5,
     depthWrite: false,
   })
+  // The X-ray is a material layer on the existing meshes, not another room.
+  const wireMaterial = new THREE.LineBasicMaterial({
+    color: 0x72d8f2,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+  })
+  const edgeCache = new Map<THREE.BufferGeometry, THREE.BufferAttribute>()
+  const point = new THREE.Vector3()
+  const glowPixels = new Uint8Array(32 * 32 * 4)
+  for (let y = 0; y < 32; y++)
+    for (let x = 0; x < 32; x++) {
+      const i = (y * 32 + x) * 4
+      glowPixels.set(
+        [
+          32,
+          204,
+          255,
+          Math.round(
+            160 * Math.max(0, 1 - Math.hypot(x - 15.5, y - 15.5) / 16) ** 2
+          ),
+        ],
+        i
+      )
+    }
+  const glowTexture = new THREE.DataTexture(glowPixels, 32, 32)
+  glowTexture.needsUpdate = true
+  // Illustrative wavefronts only; no measured RF propagation or signal strength.
+  const waveGeometry = new THREE.RingGeometry(0.985, 1, 96)
+  const wifiMaterial = new THREE.MeshBasicMaterial({
+    color: 0x61f3ff,
+    transparent: true,
+    opacity: 0,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    depthTest: false,
+  })
+  const waveMaterials = Array.from({ length: 4 }, () => wifiMaterial.clone())
+  const ghostMaterials = new Map<THREE.Material, THREE.Material>()
+  const originalMaterials = new Map<THREE.Material, THREE.Material>()
+  const xrayColor = new THREE.Color(0x52badb)
+  let previousXray = 0
   const sides = Object.keys(FLOOR_PLANS) as FacadeOrientation[]
   const levels = sides.flatMap((orientation) =>
     Array.from({ length: 4 }, (_, band) => {
@@ -577,6 +624,47 @@ export function createBandPlan(
         halo: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>
       }[] = []
       level.updateMatrixWorld(true)
+      const edges: number[] = []
+      const inverse = level.matrixWorld.clone().invert()
+      for (const mesh of materials.keys()) {
+        let vertices = edgeCache.get(mesh.geometry)
+        if (!vertices) {
+          const geometry = new THREE.EdgesGeometry(mesh.geometry, 35)
+          vertices = geometry.getAttribute('position') as THREE.BufferAttribute
+          edgeCache.set(mesh.geometry, vertices)
+          geometry.dispose()
+        }
+        const transform = inverse.clone().multiply(mesh.matrixWorld)
+        for (let i = 0; i < vertices.count; i++) {
+          point.fromBufferAttribute(vertices, i).applyMatrix4(transform)
+          edges.push(point.x, point.y, point.z)
+        }
+      }
+      const wire = new THREE.LineSegments(
+        new THREE.BufferGeometry().setAttribute(
+          'position',
+          new THREE.Float32BufferAttribute(edges, 3)
+        ),
+        wireMaterial
+      )
+      wire.visible = false
+      wire.renderOrder = 2
+      level.add(wire)
+      const wifi = new THREE.Group()
+      wifi.name = 'Wi-Fi transmitter and signal waves · simulated'
+      wifi.position.y = 0.82
+      wifi.visible = false
+      box(0.3, 0.07, 0.2, 0, 0, 0, wifiMaterial, wifi)
+      for (const x of [-0.1, 0.1])
+        cylinder(0.012, 0.18, x, 0.1, -0.06, wifiMaterial, wifi)
+      const waves = waveMaterials.map((finish) => {
+        const wave = new THREE.Mesh(waveGeometry, finish)
+        wave.rotation.x = -Math.PI / 2
+        wifi.add(wave)
+        return wave
+      })
+      for (const object of wifi.children) object.renderOrder = 3
+      level.add(wifi)
       interior.traverse((object) => {
         if (!object.userData.daylight) return
         const point = object.getWorldPosition(new THREE.Vector3())
@@ -653,7 +741,10 @@ export function createBandPlan(
         person.add(marker)
         person.userData = { band, surface: `wall:${orientation}`, occupant: id }
         body.traverse((mesh) => {
-          if (mesh instanceof THREE.Mesh) mesh.userData = person.userData
+          if (mesh instanceof THREE.Mesh) {
+            mesh.userData = person.userData
+            materials.set(mesh, mesh.material)
+          }
         })
         ring.userData = person.userData
         pickables.push(ring, head)
@@ -664,6 +755,11 @@ export function createBandPlan(
           legs,
           marker,
           id,
+          csi: null as {
+            detection: CsiDetection
+            skeleton: PosedSkeleton
+            glow: THREE.Sprite
+          } | null,
           seat: seats[
             index % 2
               ? seats.length - 1 - Math.floor(index / 2)
@@ -702,6 +798,9 @@ export function createBandPlan(
         sunlight,
         occluders,
         shadow,
+        wire,
+        wifi,
+        waves,
       }
     })
   )
@@ -923,10 +1022,15 @@ export function createBandPlan(
       occupancy: number,
       showPeople = true,
       showMarkers = true,
-      focusedBand: number | null = null
+      focusedBand: number | null = null,
+      activity: CsiActivity = 'auto'
     ) {
       for (const level of levels) {
-        const counts = mockOccupancy(occupancy, level.orientation, level.band)
+        const counts = mockOccupancy(
+          activity === 'empty' ? 0 : occupancy,
+          level.orientation,
+          level.band
+        )
         for (const [index, person] of level.people.entries()) {
           person.group.visible =
             showPeople &&
@@ -935,12 +1039,22 @@ export function createBandPlan(
             (focusedBand === null || level.band === focusedBand)
           person.marker.visible = showMarkers
           if (!person.group.visible) continue
-          const walking = index < counts.walking
+          const walking =
+            activity === 'walking' ||
+            (activity === 'auto' && index < counts.walking)
           const point = walking
             ? walkingPosition(seconds, index, level.orientation, level.band)
             : person.seat
           person.group.position.set(point.x, 0, point.z)
-          person.group.rotation.y = point.rotation
+          person.group.rotation.y =
+            activity === 'window'
+              ? {
+                  north: 0,
+                  east: -Math.PI / 2,
+                  south: Math.PI,
+                  west: Math.PI / 2,
+                }[level.orientation]
+              : point.rotation
           person.body.position.y = walking ? 0 : -0.06
           person.group.userData.state = walking ? 'walking' : 'seated'
           person.group.userData.seatIndex = walking ? null : person.seat.index
@@ -960,9 +1074,121 @@ export function createBandPlan(
         }
       }
     },
+    updateXray(
+      amount: number,
+      focusedBand: number | null,
+      width: number,
+      height: number,
+      seconds = 0
+    ) {
+      if (amount === 0 && previousXray === 0) return
+      const blendMaterial = (material: THREE.Material) => {
+        const original = originalMaterials.get(material) ?? material
+        if (!amount) return original
+        let ghost = ghostMaterials.get(original)
+        if (!ghost) {
+          ghost = original.clone()
+          ghost.transparent = true
+          ghost.depthWrite = false
+          ghostMaterials.set(original, ghost)
+          originalMaterials.set(ghost, original)
+        }
+        ghost.opacity = original.opacity * (1 - amount * 0.94)
+        if ('color' in ghost && 'color' in original)
+          (ghost.color as THREE.Color)
+            .copy(original.color as THREE.Color)
+            .lerp(xrayColor, amount)
+        return ghost
+      }
+      const shade = (mesh: THREE.Mesh) => {
+        mesh.material = Array.isArray(mesh.material)
+          ? mesh.material.map(blendMaterial)
+          : blendMaterial(mesh.material)
+      }
+      wireMaterial.opacity = amount * 0.28
+      wifiMaterial.opacity = amount
+      for (const level of levels) {
+        level.wire.visible =
+          amount > 0 && (focusedBand === null || level.band === focusedBand)
+        level.wifi.visible = level.group.visible && level.wire.visible
+        if (level.wifi.visible)
+          for (const [index, wave] of level.waves.entries()) {
+            const phase = (seconds / 4 + index / level.waves.length) % 1
+            wave.scale.setScalar(0.12 + phase * 4.5)
+            wave.material.opacity =
+              amount * 0.65 * (1 - phase) * Math.min(1, phase * 8)
+          }
+        if (level.group.visible || amount === 0)
+          for (const mesh of level.materials.keys()) shade(mesh)
+        for (const person of level.people) {
+          if (amount > 0 && person.group.visible && !person.csi) {
+            const detection: CsiDetection = {
+              probeIndex: person.seat.index,
+              zone: person.id,
+              posture: 'seated',
+              facingDeg: 0,
+              confidence: 0.85,
+              breathingBpm: 15,
+            }
+            const skeleton = poseSkeleton(
+              detection,
+              new THREE.Vector3(),
+              new THREE.Vector3(1, 0, 0),
+              0
+            )
+            skeleton.object.scale.setScalar(0.72 / 1.7)
+            skeleton.object.material.depthTest = false
+            skeleton.object.material.depthWrite = false
+            skeleton.object.renderOrder = 8
+            skeleton.object.layers.set(1)
+            const glow = new THREE.Sprite(
+              new THREE.SpriteMaterial({
+                map: glowTexture,
+                transparent: true,
+                depthWrite: false,
+                depthTest: false,
+                blending: THREE.AdditiveBlending,
+              })
+            )
+            glow.position.y = 0.38
+            glow.scale.set(0.9, 1.25, 1)
+            glow.layers.set(1)
+            glow.renderOrder = 7
+            person.group.add(glow, skeleton.object)
+            person.csi = { detection, skeleton, glow }
+          }
+          if (!person.csi) continue
+          const { detection, skeleton, glow } = person.csi
+          skeleton.object.visible = glow.visible = amount > 0
+          if (!amount || !person.group.visible) continue
+          detection.posture = person.group.userData.state
+          detection.confidence = detection.posture === 'walking' ? 0.94 : 0.85
+          skeleton.object.material.opacity = amount
+          skeleton.setResolution(width, height)
+          skeleton.update(seconds)
+          glow.material.opacity = amount * 0.6
+        }
+      }
+      for (const cell of cells) shade(cell)
+      previousXray = amount
+    },
     dispose() {
-      for (const level of levels)
+      for (const level of levels) {
         for (const probe of level.probes) probe.color.dispose()
+        level.wire.geometry.dispose()
+        for (const person of level.people)
+          if (person.csi) {
+            person.csi.skeleton.object.geometry.dispose()
+            person.csi.skeleton.object.material.dispose()
+            person.csi.glow.material.dispose()
+          }
+      }
+      for (const material of ghostMaterials.values()) material.dispose()
+      wireMaterial.dispose()
+      glowTexture.dispose()
+      waveGeometry.dispose()
+      wifiMaterial.dispose()
+      for (const material of waveMaterials) material.dispose()
       muted.dispose()
       grey.dispose()
       greySlab.dispose()

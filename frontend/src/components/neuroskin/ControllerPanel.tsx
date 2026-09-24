@@ -185,10 +185,10 @@ export function ControllerPanel({
             />
             <RangeControl
               label='Actuator speed limit'
-              value={value.actuator_speed_deg_per_min ?? 1.2}
-              min={0.1}
-              max={12}
-              step={0.1}
+              value={value.actuator_speed_deg_per_min ?? 6}
+              min={0.5}
+              max={60}
+              step={0.5}
               suffix=' °/min'
               onChange={(next) =>
                 onChange({ ...value, actuator_speed_deg_per_min: next })
@@ -232,7 +232,7 @@ export function ControllerPanel({
             {loading ? 'Simulating day…' : 'Apply settings and re-run'}
           </button>
           <p className='mt-2 text-center text-[9px] leading-4 text-muted-foreground'>
-            144 decisions · 10-minute intervals · repeatable
+            72 decisions · 07:00-19:00 · 10-minute intervals · repeatable
           </p>
         </section>
       </div>

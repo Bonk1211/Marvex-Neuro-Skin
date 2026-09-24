@@ -1,7 +1,82 @@
 'use client'
 
 import { AlertTriangle, LoaderCircle } from 'lucide-react'
-import type { ComparisonMetric } from '@/lib/types'
+import type { ComparisonMetric, TickPayload } from '@/lib/types'
+
+export function BuildingOverview({ tick }: { tick: TickPayload }) {
+  const sensors = tick.facade
+    .flatMap((wall) => wall.zones ?? [])
+    .filter((zone) => zone.sensor_trusted !== undefined)
+  const accepted = sensors.length
+    ? sensors.filter((zone) => zone.sensor_trusted).length
+    : Number(tick.sensor_trusted)
+  const total = sensors.length || 1
+  const score = Math.round((accepted / total) * 100)
+  const safe =
+    tick.facade.some(
+      (wall) =>
+        wall.mode === 'SAFE' || wall.zones?.some((zone) => zone.mode === 'SAFE')
+    ) || tick.mode === 'SAFE'
+  return (
+    <section
+      className='console-card building-overview'
+      aria-label='Building health'
+    >
+      <div className='flex items-center justify-between gap-3'>
+        <div>
+          <p className='console-card-title'>Building health</p>
+          <p className='mt-2 text-sm font-semibold'>
+            {safe
+              ? 'Safety hold active'
+              : score >= 95
+                ? 'Systems responding normally'
+                : 'Sensor attention needed'}
+          </p>
+          <p className='mt-1 text-[10px] text-muted-foreground'>
+            {accepted}/{total} sensor checks accepted · selected tick
+          </p>
+        </div>
+        <div
+          className={`health-score ${score < 95 || safe ? 'health-score-warning' : ''}`}
+        >
+          <strong>{score}</strong>
+          <span>/ 100</span>
+        </div>
+      </div>
+      <p className='mt-2 text-[9px] text-muted-foreground'>
+        Score reflects sensor health in this simulation.
+      </p>
+      <dl className='overview-readings'>
+        <div>
+          <dt>Solar sensor</dt>
+          <dd>
+            {tick.measured_irradiance.toFixed(0)} <small>W/m²</small>
+          </dd>
+        </div>
+        <div>
+          <dt>Light level</dt>
+          <dd>
+            {tick.lux.toFixed(0)} <small>lx</small>
+          </dd>
+        </div>
+        <div>
+          <dt>Outside</dt>
+          <dd>
+            {tick.outdoor_temp.toFixed(1)}
+            <small> °C</small>
+          </dd>
+        </div>
+        <div>
+          <dt>{tick.rain ? 'Rain' : 'Cloud cover'}</dt>
+          <dd>
+            {(tick.cloud * 100).toFixed(0)}
+            <small>% · {tick.wind.toFixed(1)} m/s</small>
+          </dd>
+        </div>
+      </dl>
+    </section>
+  )
+}
 
 export const timeLabel = (timestamp: string, timeZone = 'Asia/Kuala_Lumpur') =>
   new Intl.DateTimeFormat('en-MY', {
@@ -140,7 +215,9 @@ export function LoadingState() {
       <h2 className='mt-3 font-display text-lg font-semibold'>
         Running simulation
       </h2>
-      <p className='mt-1 text-xs text-muted-foreground'>144 decision ticks</p>
+      <p className='mt-1 text-xs text-muted-foreground'>
+        72 decision ticks · 07:00-19:00
+      </p>
     </div>
   )
 }

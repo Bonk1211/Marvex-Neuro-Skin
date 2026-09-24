@@ -41,6 +41,8 @@ export interface SimulationRunRequest {
   cloud_profile: CloudProfile
   occupancy_scale: number
   wind_override: number | null
+  /** Bearing the wind blows from; null keeps the prevailing monsoon bearing. */
+  wind_direction?: number | null
   power_ok: boolean
   weights: ControllerWeights
   latitude: number
@@ -239,6 +241,8 @@ export interface TickPayload {
   outdoor_temp: number
   occupancy: number
   wind: number
+  /** Bearing the wind blows from, degrees clockwise from north. */
+  wind_direction?: number
   rain: boolean
   load_relative: number
   naive_load_relative: number
@@ -300,167 +304,6 @@ export interface WeatherContextPayload {
   summary_when: string | null
   warnings: WeatherWarningPayload[]
   fallback_reason: string | null
-}
-
-/* Predictive radiant-slab charging — application 7.1. */
-
-export interface SlabModelInput {
-  thickness_m: number
-  density: number
-  specific_heat: number
-  surface_ua: number
-  charge_power: number
-  min_slab_temp: number
-  zone_setpoint: number
-  loss_ua: number
-  day_capacity: number
-  solar_to_floor: number
-  floor_area_m2: number
-}
-
-export interface BaselineNight {
-  date: string
-  charge_kwh: number
-  next_day_cooling_kwh: number
-}
-
-export interface SlabObservation {
-  hour: number
-  slab_temp: number
-  zone_temp: number
-  charge_w: number
-}
-
-export interface SlabPlanRequest {
-  date: string | null
-  seed: number
-  environment_source: EnvironmentSource
-  cloud_profile: CloudProfile
-  latitude: number
-  longitude: number
-  timezone: string
-  location_name: string
-  facade_orientation: FacadeOrientation
-  facade_tilt: number
-  roof_pitch: number
-  model: SlabModelInput
-  history: SlabObservation[]
-  baseline_nights: BaselineNight[]
-}
-
-export type BaselineVerdict =
-  | 'not_supplied'
-  | 'insufficient_data'
-  | 'fixed_schedule'
-  | 'partially_compensated'
-  | 'load_compensated'
-
-export interface BaselineAudit {
-  verdict: BaselineVerdict
-  nights: number
-  charge_variation: number | null
-  correlation: number | null
-  claim_allowed: boolean
-  note: string
-}
-
-export interface SlabResponseFit {
-  source: 'measured' | 'synthetic' | 'default'
-  samples: number
-  capacity_wh_per_m2k: number
-  surface_ua: number
-  time_constant_h: number
-  r_squared: number
-  note: string
-}
-
-export interface SlabZonePlan {
-  zone: string
-  /** Row from the bottom of the wall, 0-based — the same grid as the facade zones. */
-  row: number
-  column: number
-  forecast_gain_wh: number
-  charge_target_wh: number
-  delivered_wh: number
-  baseline_delivered_wh: number
-  charge_hours: number[]
-  min_slab_temp: number
-  predictive_kwh: number
-  baseline_kwh: number
-  unmet_hours: number
-  baseline_unmet_hours: number
-  floor_hours: number
-  baseline_floor_hours: number
-}
-
-export interface SlabHour {
-  slot: number
-  hour: number
-  label: string
-  outdoor_temp: number
-  dew_point: number
-  occupancy: number
-  cop: number
-  cooling_demand_w: number
-  predictive_charge_w: number
-  baseline_charge_w: number
-  predictive_slab_temp: number
-  baseline_slab_temp: number
-  predictive_trim_w: number
-  baseline_trim_w: number
-}
-
-export interface SlabSummary {
-  predictive_kwh: number
-  baseline_kwh: number
-  saving_kwh: number
-  saving_percent: number
-  predictive_charge_wh_m2: number
-  baseline_charge_wh_m2: number
-  predictive_peak_w_m2: number
-  baseline_peak_w_m2: number
-  predictive_unmet_hours: number
-  baseline_unmet_hours: number
-  predictive_floor_hours: number
-  baseline_floor_hours: number
-  predictive_rejected_wh_m2: number
-  baseline_rejected_wh_m2: number
-  predictive_standby_loss_wh_m2: number
-  baseline_standby_loss_wh_m2: number
-  slab_floor_temp: number
-  zones: number
-  floor_area_m2: number
-}
-
-export interface SlabPlanResponse {
-  date: string
-  title: string
-  /** Constraint O1: predictive charging presumes a thermal-mass building. */
-  applicable: boolean
-  applicability_note: string
-  metadata: {
-    location: string
-    latitude: number
-    longitude: number
-    timezone: string
-    facade_orientation: FacadeOrientation
-    environment_source: EnvironmentSource
-    forecast_status: string
-    forecast_provider: string
-    forecast_dataset: string | null
-    forecast_fallback: string | null
-    data_notice: string
-    capacity_wh_per_m2k: number
-    time_constant_h: number
-    charge_power_w_m2: number
-    synthetic: boolean
-  }
-  model_fit: SlabResponseFit
-  baseline_audit: BaselineAudit
-  summary: SlabSummary
-  hours: SlabHour[]
-  zones: SlabZonePlan[]
-  measurement_protocol: string[]
 }
 
 export interface SimulationRunResponse {

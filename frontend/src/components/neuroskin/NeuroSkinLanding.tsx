@@ -116,6 +116,12 @@ export function NeuroSkinLanding() {
             >
               Inside the brain
             </a>
+            <Link
+              className='hidden text-xs font-medium text-white/65 transition hover:text-white md:block'
+              href='/onboarding'
+            >
+              Onboard a building
+            </Link>
             <Link className='landing-nav-cta shrink-0' href='/dashboard'>
               Open twin <ArrowRight className='h-3.5 w-3.5' />
             </Link>
@@ -376,10 +382,7 @@ export function NeuroSkinLanding() {
         <div className='mx-auto flex max-w-[1240px] flex-col justify-between gap-3 text-[11px] text-muted-foreground sm:flex-row'>
           <span>
             NeuroSkin · Simulation and model-development demonstration
-          </span>
-          <Link className='hover:text-primary hover:underline' href='/slab'>
-            Supporting application: radiant-slab planner ↗
-          </Link>
+          </span>{' '}
         </div>
       </footer>
     </main>

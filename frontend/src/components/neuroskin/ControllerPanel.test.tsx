@@ -41,11 +41,11 @@ describe('controller calibration', () => {
     const speed = screen.getByRole('slider', { name: 'Actuator speed limit' })
     expect(glare).toHaveValue('25')
     expect(glazing).toHaveValue('0.4')
-    expect(speed).toHaveValue('1.2')
+    expect(speed).toHaveValue('6')
     expect(glare).toHaveAttribute('max', '2000')
     expect(glazing).toHaveAttribute('max', '1')
-    expect(speed).toHaveAttribute('min', '0.1')
-    expect(speed).toHaveAttribute('max', '12')
+    expect(speed).toHaveAttribute('min', '0.5')
+    expect(speed).toHaveAttribute('max', '60')
     fireEvent.change(glare, { target: { value: '75' } })
     expect(onChange).toHaveBeenLastCalledWith({
       ...request,
@@ -56,10 +56,10 @@ describe('controller calibration', () => {
       ...request,
       glazing_shgc: 0.55,
     })
-    fireEvent.change(speed, { target: { value: '2.3' } })
+    fireEvent.change(speed, { target: { value: '3.5' } })
     expect(onChange).toHaveBeenLastCalledWith({
       ...request,
-      actuator_speed_deg_per_min: 2.3,
+      actuator_speed_deg_per_min: 3.5,
     })
     expect(onRun).not.toHaveBeenCalled()
     fireEvent.click(

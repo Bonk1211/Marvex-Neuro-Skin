@@ -1,5 +1,5 @@
 import React from 'react'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { NeuroSkinLanding } from './NeuroSkinLanding'
 
@@ -50,11 +50,5 @@ describe('NeuroSkinLanding', () => {
     }
     expect(
       screen.getByRole('link', { name: /Explore the digital twin/ })
-    ).toHaveAttribute('href', '/dashboard?view=building')
-    expect(
-      within(screen.getByRole('contentinfo')).getByRole('link', {
-        name: /Supporting application: radiant-slab planner/,
-      })
-    ).toHaveAttribute('href', '/slab')
-  })
+    ).toHaveAttribute('href', '/dashboard?view=building')  })
 })

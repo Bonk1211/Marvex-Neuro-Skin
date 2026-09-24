@@ -35,7 +35,7 @@ export const TIER_STEPS: TierStep[] = [
     scenario: 'overview',
     tier: 'Input',
     label: 'Read sensor stream',
-    action: 'Pulling 144 ticks of irradiance, wind, temperature and occupancy.',
+    action: 'Pulling 72 ticks (07:00-19:00) of irradiance, wind, temperature and occupancy.',
     why: 'Every tier below reads the same day, so the three are comparable.',
     icon: Waves,
   },
@@ -134,7 +134,7 @@ export function TierRunner({
   return (
     <section className='console-card' aria-label='Scenario comparisons'>
       <div className='flex items-center justify-between gap-2'>
-        <p className='console-card-title'>Scenario comparisons</p>
+        <p className='console-card-title'>Sandbox simulation</p>
         <p className='text-[9px] text-muted-foreground'>
           {done}/{TIER_STEPS.length} complete
         </p>

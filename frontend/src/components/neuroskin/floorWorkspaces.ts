@@ -1,5 +1,13 @@
 import type { FacadeOrientation } from '@/lib/types'
 
+/** Shared building frame for floor scenes and daylight sections. */
+export const WALL_ROTATION: Record<FacadeOrientation, number> = {
+  north: Math.PI,
+  east: Math.PI / 2,
+  south: 0,
+  west: -Math.PI / 2,
+}
+
 /** Each facade owns a stack of four illustrative floor groups. */
 export const FLOOR_PLANS: Record<
   FacadeOrientation,

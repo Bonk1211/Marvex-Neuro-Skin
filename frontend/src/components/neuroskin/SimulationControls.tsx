@@ -18,6 +18,7 @@ import type {
   SimulationRunRequest,
 } from '@/lib/types'
 import type { BuildingVariant } from './buildingComparison'
+import { cardinal, DEFAULT_BEARING } from './windRoom'
 
 interface SimulationControlsProps {
   value: SimulationRunRequest
@@ -408,6 +409,35 @@ export function SimulationControls({
               <span className={controlled ? 'text-amber-700' : ''}>
                 {controlled ? '15 m/s safety limit' : 'Shared wind input'}
               </span>
+            </div>
+            <div className='mt-3'>
+              <RangeControl
+                icon={<Compass className='h-3.5 w-3.5' />}
+                label='Wind bearing'
+                formula={
+                  controlled
+                    ? {
+                        title: 'Windward pressure',
+                        expression: 'q(z) = 0.613 v(z)² Cp',
+                        description:
+                          'The wall nearest the bearing takes the load, and its upwind bays take the most of it.',
+                      }
+                    : undefined
+                }
+                value={value.wind_direction ?? DEFAULT_BEARING}
+                min={0}
+                max={355}
+                step={5}
+                suffix='°'
+                onChange={(next) =>
+                  onChange({ ...value, wind_direction: next })
+                }
+              />
+              <p className='mt-2 text-[10px] text-muted-foreground'>
+                Blowing from {cardinal(value.wind_direction ?? DEFAULT_BEARING)}
+                . Leave it near the primary facade&apos;s bearing to load that
+                wall.
+              </p>
             </div>
           </div>
         </ControlGroup>

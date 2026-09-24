@@ -6,9 +6,15 @@ import { ProvenanceStrip } from './ProvenanceStrip'
 import { CostBreakdownPanel } from './CostBreakdownPanel'
 import { ModelLimitsPanel } from './ModelLimitsPanel'
 import { FeedsPanel } from './FeedsPanel'
+import { LiveHardwarePanel } from './LiveHardwarePanel'
+import { LiveCsiPanel } from './LiveCsiPanel'
 import { GlareBlindnessPanel } from './DaylightPanel'
 import { FloorPanel } from './FloorPanel'
+import { FloorSectionPanel } from './FloorSectionPanel'
+import type { CsiActivity } from './csiPosture'
+import type { OrbitAngles } from './sectionScene'
 import { BrainFlow } from './BrainFlow'
+import { DEFAULT_BEARING } from './windRoom'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity,
@@ -18,7 +24,6 @@ import {
   Radio,
   AlertTriangle,
   ArrowLeft,
-  BatteryCharging,
   CheckCircle2,
   Leaf,
   Pause,
@@ -28,13 +33,18 @@ import {
 } from 'lucide-react'
 import {
   GaugeCard,
+  BuildingOverview,
   ImpactStrip,
   StatusBadge,
   LoadingState,
   ErrorState,
   timeLabel,
 } from './DashboardCards'
-import { runSimulation } from '@/lib/api-client'
+import {
+  runSimulation,
+  type BuildingProfile,
+  type HardwareStatus,
+} from '@/lib/api-client'
 import type {
   FacadeOrientation,
   PerturbationKind,
@@ -49,12 +59,10 @@ import {
   surfaceIrradianceComparison,
   type BuildingVariant,
 } from './buildingComparison'
-import { ControllerPanel, DEFAULT_WEIGHTS } from './ControllerPanel'
+import { DEFAULT_WEIGHTS } from './ControllerPanel'
 import { CloudVisionPanel, type SkyObservation } from './CloudVisionPanel'
 import { SimulationCharts } from './SimulationCharts'
-import { SimulationControls } from './SimulationControls'
 import { ZoneSensorPanel } from './ZoneSensorPanel'
-import { LiveHardwarePanel } from './LiveHardwarePanel'
 import { TIER_STEPS, TierCard, TierRunner } from './TierAnalysis'
 import type { TierStatus } from './TierAnalysis'
 
@@ -74,6 +82,7 @@ const DEFAULT_REQUEST: SimulationRunRequest = {
   cloud_profile: 'scattered',
   occupancy_scale: 1,
   wind_override: 3,
+  wind_direction: DEFAULT_BEARING,
   power_ok: true,
   weights: DEFAULT_WEIGHTS,
   latitude: 2.922,
@@ -85,13 +94,34 @@ const DEFAULT_REQUEST: SimulationRunRequest = {
   roof_pitch: 10,
   glare_limit_w_m2: 25,
   glazing_shgc: 0.4,
-  actuator_speed_deg_per_min: 1.2,
+  actuator_speed_deg_per_min: 6,
+}
+
+/**
+ * Overlay whatever the building manager filed on /onboarding. A deployment nobody
+ * has onboarded yet has no profile, and the shipped defaults stand unchanged.
+ */
+function withBuildingProfile(
+  request: SimulationRunRequest,
+  profile?: BuildingProfile
+): SimulationRunRequest {
+  if (!profile?.location || !profile.structure) return request
+  return {
+    ...request,
+    latitude: profile.location.latitude,
+    longitude: profile.location.longitude,
+    timezone: profile.location.timezone,
+    location_name: profile.location.name,
+    facade_orientation: profile.structure.facade_orientation,
+    facade_tilt: profile.structure.facade_tilt,
+    roof_pitch: profile.structure.roof_pitch,
+  }
 }
 
 /** How long a finished tier stays on screen before the next one starts. */
 const STEP_PAUSE_MS = 700
 
-// Leave time to see the actuator response; a full day takes about 43 seconds.
+// Leave time to see the actuator response; the 07:00-19:00 day takes about 22 seconds.
 const PLAY_INTERVAL_MS = 300
 
 const pause = (ms: number, signal: AbortSignal) =>
@@ -154,14 +184,22 @@ function RailHandle({
   )
 }
 
-export function NeuroSkinDashboard() {
+export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
   const view = useSearchParams().get('view')
   const lens: Lens = LENSES.find(([id]) => id === view)?.[0] ?? 'building'
+  // Read on the server from /onboarding; absent on a deployment nobody has onboarded.
+  const onboarded = withBuildingProfile(DEFAULT_REQUEST, profile)
   const [band, setBand] = useState(0)
   const [floorFocused, setFloorFocused] = useState(false)
+  const [floorView, setFloorView] = useState<'normal' | 'xray' | 'live'>(
+    'normal'
+  )
+  const csiView = floorView === 'xray'
+  const liveCsi = lens === 'floor' && floorView === 'live'
+  const [csiActivity, setCsiActivity] = useState<CsiActivity>('auto')
   const [visionAgeSeconds, setVisionAgeSeconds] = useState<number | null>(null)
   const [request, setRequest] = useState<SimulationRunRequest>(() => ({
-    ...DEFAULT_REQUEST,
+    ...onboarded,
     daylight_model_enabled: lens === 'floor',
     // Opening Brains directly runs local sensor checks; approvals stay manual.
     fault_correction: lens === 'brains' ? 'review' : 'off',
@@ -170,11 +208,15 @@ export function NeuroSkinDashboard() {
   const [data, setData] = useState<SimulationRunResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [timelineIndex, setTimelineIndex] = useState(72)
+  const [timelineIndex, setTimelineIndex] = useState(36)
   const [selectedWall, setSelectedWall] = useState<SurfaceId>(
-    `wall:${DEFAULT_REQUEST.facade_orientation}`
+    `wall:${onboarded.facade_orientation}`
   )
   const [selectedZone, setSelectedZone] = useState<string | null>(null)
+  // One orbit pose shared by the building scene and the floor section, in the
+  // building's frame. Either view may set it; the section converts it through its
+  // wall's rotation so both show the same facade from the same side.
+  const [orbit, setOrbit] = useState<OrbitAngles | null>(null)
   const focusFloor = useCallback((next: number | null) => {
     setFloorFocused(next !== null)
     if (next !== null) setBand(next)
@@ -198,9 +240,14 @@ export function NeuroSkinDashboard() {
   const [activeTier, setActiveTier] = useState<ScenarioName | null>(null)
   const [tierRunning, setTierRunning] = useState(false)
   const [cardDismissed, setCardDismissed] = useState(false)
+  // The 3D view portals its scene controls into the right rail.
+  const [sceneControls, setSceneControls] = useState<HTMLElement | null>(null)
   // Clock playback: walks the timeline so the sun crosses the sky on the real
   // solar positions the run returned.
   const [playing, setPlaying] = useState(false)
+  const [hardwareMode, setHardwareMode] = useState<
+    HardwareStatus['mode'] | null
+  >(null)
   const requestController = useRef<AbortController | null>(null)
   const appliedRequest = useRef<SimulationRunRequest>(initialRequest.current)
   const tierRequests = useRef<
@@ -209,23 +256,28 @@ export function NeuroSkinDashboard() {
   const [visionSky, setVisionSky] = useState<SkyObservation | null>(null)
 
   const tickCount = data?.ticks.length ?? 0
+  // The clock walks to the end of the day and stops there rather than wrapping
+  // back to 07:00, so a finished run leaves the facade at its last state.
   useEffect(() => {
     if (!playing || tickCount < 2) return
     const timer = setInterval(
-      () => setTimelineIndex((index) => (index + 1) % tickCount),
-      PLAY_INTERVAL_MS
+      () => setTimelineIndex((index) => Math.min(index + 1, tickCount - 1)),
+      hardwareMode === 'twin' ? 1000 : PLAY_INTERVAL_MS
     )
     return () => clearInterval(timer)
-  }, [playing, tickCount])
+  }, [playing, tickCount, hardwareMode])
+
+  useEffect(() => {
+    if (playing && tickCount > 0 && timelineIndex >= tickCount - 1)
+      setPlaying(false)
+  }, [playing, timelineIndex, tickCount])
 
   /** Point the stage, timeline and charts at one run's result. */
   const focusOn = useCallback((response: SimulationRunResponse) => {
     setData(response)
-    const focusTime = response.annotations[0]?.timestamp
-    const focusIndex = focusTime
-      ? response.ticks.findIndex((tick) => tick.timestamp === focusTime)
-      : Math.floor(response.ticks.length / 2)
-    setTimelineIndex(Math.max(0, focusIndex))
+    // Land on the end of the simulated day. This used to jump to the scenario's
+    // headline annotation, which parked the clock mid-afternoon on every run.
+    setTimelineIndex(Math.max(0, response.ticks.length - 1))
   }, [])
 
   const execute = useCallback(
@@ -278,7 +330,8 @@ export function NeuroSkinDashboard() {
   useEffect(() => {
     // The first load is the sensor read, so the analysis opens with that step
     // already banked and the three tiers waiting on the run button.
-    void execute(initialRequest.current).then((response) => {
+    // Start in the occupied afternoon so light, people and shading are visible.
+    void execute(initialRequest.current, 48).then((response) => {
       if (!response) return
       tierRequests.current.overview = initialRequest.current
       setTierResults((prev) => ({ ...prev, overview: response }))
@@ -328,9 +381,9 @@ export function NeuroSkinDashboard() {
         // Let the step land on screen before the next one starts.
         await pause(STEP_PAUSE_MS, controller.signal)
       }
-      // Settle on the last tier's own event once the day has been walked.
-      setPlaying(false)
-      if (last) focusOn(last)
+      // Let the clock finish the day on the last tier's data; it stops itself at
+      // the final tick instead of snapping back to that tier's headline event.
+      if (last) setData(last)
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === 'AbortError') return
       setTierStatus((prev) => {
@@ -344,14 +397,18 @@ export function NeuroSkinDashboard() {
           ? cause.message
           : 'The simulation could not be loaded.'
       )
+      // A failed analysis has nothing left to animate.
+      setPlaying(false)
     } finally {
       if (!controller.signal.aborted) {
         setTierRunning(false)
-        setPlaying(false)
+        // The clock is NOT stopped here: the three runs finish in a few seconds,
+        // long before the day does, and killing playback here parked it at
+        // whatever tick the last fetch happened to land on (late morning).
         setLoading(false)
       }
     }
-  }, [focusOn, request])
+  }, [request])
 
   const focusTier = useCallback(
     (scenario: ScenarioName) => {
@@ -505,6 +562,15 @@ export function NeuroSkinDashboard() {
     setActiveTier(null)
     await execute({ ...appliedRequest.current, ...changes }, sensorTick)
   }
+  /** The wind-response demo: raise the gust on the squall bearing and re-run. */
+  const applyWind = async (wind: number) => {
+    const sensorTick = Math.min(timelineIndex, Math.max(0, tickCount - 1))
+    setPlaying(false)
+    const changes = { wind_override: wind, wind_direction: DEFAULT_BEARING }
+    setRequest((draft) => ({ ...draft, ...changes }))
+    await execute({ ...appliedRequest.current, ...changes }, sensorTick)
+  }
+
   const updateZonePerturbation = (
     zoneId: string,
     kind: PerturbationKind | null
@@ -550,11 +616,16 @@ export function NeuroSkinDashboard() {
   }
 
   return (
-    <div className='console-shell'>
+    <div className='console-shell' data-lens={lens}>
       <nav className='console-nav' aria-label='Console'>
-        <div className='brand-mark h-10 w-10 shrink-0 rounded-xl'>
+        <Link
+          href='/onboarding'
+          aria-label='Building onboarding'
+          title='Building onboarding'
+          className='brand-mark h-10 w-10 shrink-0 rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white'
+        >
           <Leaf className='h-4 w-4' />
-        </div>
+        </Link>
         {LENSES.map(([id, label, Icon]) => (
           <Link
             key={id}
@@ -569,14 +640,6 @@ export function NeuroSkinDashboard() {
             <span>{label}</span>
           </Link>
         ))}
-        <Link
-          aria-label='Predictive slab charging'
-          className='console-nav-button'
-          href='/slab'
-          title='Supporting simulation · predictive slab charging'
-        >
-          <BatteryCharging className='h-4 w-4' />
-        </Link>
         <Link
           aria-label='Actuator calibration'
           className='console-nav-button'
@@ -614,10 +677,10 @@ export function NeuroSkinDashboard() {
               <>
                 <header className='flex items-start justify-between gap-3 px-1'>
                   <div>
-                    <p className='eyebrow'>24-hour result</p>
+                    <p className='eyebrow'>Engineering console</p>
                     <h1 className='mt-0.5 font-display text-lg font-semibold tracking-tight'>
                       {isControlled
-                        ? 'Facade performance'
+                        ? 'Building overview'
                         : 'No external facade'}
                     </h1>
                     {isControlled && activeStep && (
@@ -640,6 +703,8 @@ export function NeuroSkinDashboard() {
                   </div>
                 </header>
 
+                {selectedTick && <BuildingOverview tick={selectedTick} />}
+
                 {isControlled && (
                   <div data-tour='scenario-tabs'>
                     <TierRunner
@@ -658,7 +723,10 @@ export function NeuroSkinDashboard() {
             {data && (
               <>
                 {lens === 'building' && (
-                  <>
+                  <details className='space-y-3'>
+                    <summary className='cursor-pointer px-1 py-1 text-xs font-semibold text-muted-foreground'>
+                      Performance & comparison · 07:00–19:00
+                    </summary>
                     {irradianceComparison && (
                       <section
                         className='console-card'
@@ -729,7 +797,10 @@ export function NeuroSkinDashboard() {
                           icon={ShieldCheck}
                           label='Movements'
                           display={String(data.summary.movement_count)}
-                          fraction={Number(data.summary.movement_count) / 144}
+                          fraction={
+                            Number(data.summary.movement_count) /
+                            Math.max(1, tickCount)
+                          }
                           detail={`${data.summary.safe_mode_ticks} SAFE`}
                         />
                       </div>
@@ -743,7 +814,7 @@ export function NeuroSkinDashboard() {
                       Building-wide simulated occupancy:{' '}
                       {((selectedTick?.occupancy ?? 0) * 100).toFixed(0)}%
                     </p>
-                  </>
+                  </details>
                 )}
 
                 {lens === 'feeds' && (
@@ -861,7 +932,8 @@ export function NeuroSkinDashboard() {
                     )}
 
                     <p className='px-1 text-[10px] text-muted-foreground'>
-                      Scenario charts · primary reporting controller · full day
+                      Scenario charts · primary reporting controller ·
+                      07:00-19:00
                     </p>
                     {/* Each tier keeps its own charts on the page. One clock drives all
                 of them, so the three read side by side instead of one chart
@@ -909,7 +981,11 @@ export function NeuroSkinDashboard() {
 
           <RailHandle side='left' label='Resize results panel' />
 
-          <section className='console-stage' aria-label='Building model'>
+          <section
+            className='console-stage'
+            aria-label='Building model'
+            data-csi={lens === 'floor' && csiView}
+          >
             {lens === 'building' &&
               isControlled &&
               activeStep &&
@@ -922,7 +998,48 @@ export function NeuroSkinDashboard() {
                 />
               )}
 
-            {error ? (
+            {lens === 'floor' && (
+              <>
+                <div
+                  className='floor-view-switch'
+                  role='group'
+                  aria-label='Floor view'
+                >
+                  <button
+                    type='button'
+                    aria-pressed={floorView === 'normal'}
+                    onClick={() => setFloorView('normal')}
+                  >
+                    Normal view
+                  </button>
+                  <button
+                    type='button'
+                    aria-pressed={csiView}
+                    onClick={() => setFloorView('xray')}
+                  >
+                    CSI X-ray
+                  </button>
+                  <button
+                    type='button'
+                    aria-pressed={liveCsi}
+                    onClick={() => setFloorView('live')}
+                  >
+                    Live CSI
+                  </button>
+                </div>
+                <p className='floor-view-caption'>
+                  {liveCsi
+                    ? 'ESP32 bridge · live CSI room · illustrative layout'
+                    : csiView
+                      ? 'WiFi CSI · simulated signal waves + poses · transparent structure'
+                      : 'Furnished floor · drag to orbit · scroll to zoom'}
+                </p>
+              </>
+            )}
+
+            {liveCsi ? (
+              <LiveCsiPanel />
+            ) : error ? (
               <ErrorState
                 message={error}
                 onRetry={() => void execute(request)}
@@ -931,18 +1048,24 @@ export function NeuroSkinDashboard() {
               <LoadingState />
             ) : data && selectedTick ? (
               <>
+                <div className='csi-scene-wash' aria-hidden='true' />
                 <div
-                  className={`absolute inset-0 ${lens === 'brains' || lens === 'feeds' ? 'invisible' : ''}`}
+                  className={`absolute inset-0 ${lens === 'brains' ? 'hidden' : ''}`}
                 >
                   <BuildingHeatmap
-                    active={lens === 'building' || lens === 'floor'}
+                    orbit={orbit}
+                    onOrbitChange={setOrbit}
+                    active={lens !== 'brains'}
                     cameraMode={lens === 'floor' ? 'plan' : 'orbit'}
+                    csiView={lens === 'floor' && csiView}
+                    csiActivity={csiActivity}
                     band={band}
                     focusedBand={floorFocused ? band : null}
                     onSelectBand={focusFloor}
                     visionSky={visionSky}
                     buildingVariant={buildingVariant}
                     onBuildingVariantChange={setBuildingVariant}
+                    controlsSlot={lens === 'brains' ? null : sceneControls}
                     tick={selectedTick}
                     floors={data.metadata.floors}
                     facadeTilt={data.metadata.facade_tilt}
@@ -962,30 +1085,18 @@ export function NeuroSkinDashboard() {
                   />
                 </div>
                 {lens === 'brains' && isControlled && (
-                  <div className='absolute inset-0 overflow-y-auto p-4 pb-44 sm:p-5 sm:pb-44'>
+                  <div className='absolute inset-0 flex flex-col overflow-hidden p-4 pb-44 sm:p-5 sm:pb-44'>
                     <BrainFlow
                       tick={selectedTick}
+                      floors={data.metadata.floors}
                       selectedZone={selectedZoneState}
                       onSelectZone={selectZone}
-                      episodes={data.episodes}
-                      tickIndex={timelineIndex}
-                      loading={loading || tierRunning}
-                      onApproveEpisode={(episodeId) =>
-                        void replayFaultCorrection({
-                          approved_episodes: [
-                            ...new Set([
-                              ...(appliedRequest.current.approved_episodes ??
-                                []),
-                              episodeId,
-                            ]),
-                          ],
-                        })
-                      }
-                      onEnableAssurance={() =>
-                        void replayFaultCorrection({
-                          fault_correction: 'review',
-                        })
-                      }
+                      onSimulateWind={(wind) => void applyWind(wind)}
+                      site={{
+                        latitude: data.metadata.latitude,
+                        longitude: data.metadata.longitude,
+                        name: data.metadata.location,
+                      }}
                     />
                   </div>
                 )}
@@ -1008,23 +1119,6 @@ export function NeuroSkinDashboard() {
                     </section>
                   </div>
                 )}
-                <div
-                  hidden={lens !== 'feeds'}
-                  className='absolute inset-0 overflow-y-auto p-4 pb-44 sm:p-5 sm:pb-44'
-                >
-                  <header className='mb-4'>
-                    <p className='eyebrow'>Evidence sources</p>
-                    <h1 className='mt-1 font-display text-2xl font-semibold'>
-                      Sky context, with a traceable source
-                    </h1>
-                  </header>
-                  <CloudVisionPanel
-                    onObservation={updateSkyObservation}
-                    onSkyChange={setVisionSky}
-                    onAgeChange={setVisionAgeSeconds}
-                  />
-                </div>
-
                 <div className='stage-toolbar' data-tour='timeline-inspector'>
                   <div className='flex flex-wrap items-center gap-2'>
                     <button
@@ -1033,7 +1127,12 @@ export function NeuroSkinDashboard() {
                       }
                       aria-pressed={playing}
                       className='play-button'
-                      onClick={() => setPlaying((value) => !value)}
+                      onClick={() => {
+                        // Replay from 07:00 when the clock is parked at the end.
+                        if (!playing && timelineIndex >= tickCount - 1)
+                          setTimelineIndex(0)
+                        setPlaying((value) => !value)
+                      }}
                       type='button'
                     >
                       {playing ? (
@@ -1070,7 +1169,10 @@ export function NeuroSkinDashboard() {
                       <span className='stage-chip'>No controller</span>
                     )}
                     <span className='ml-auto text-[10px] uppercase tracking-wider text-muted-foreground'>
-                      Selected tick
+                      {`Day ${timeLabel(data.ticks[0].timestamp, zone)}-${timeLabel(
+                        data.ticks[data.ticks.length - 1].timestamp,
+                        zone
+                      )} · ${data.ticks.length} ticks`}
                     </span>
                   </div>
 
@@ -1192,58 +1294,48 @@ export function NeuroSkinDashboard() {
             ) : null}
           </section>
 
-          <RailHandle side='right' label='Resize settings panel' />
+          <RailHandle side='right' label='Resize scene controls' />
 
-          <aside className='console-rail console-rail-right'>
-            {lens !== 'building' && (
-              <button
-                className='run-button-light shrink-0'
-                type='button'
-                disabled={loading || tierRunning}
-                onClick={() => void execute(request, timelineIndex)}
-              >
-                {loading ? 'Applying settings…' : 'Apply settings and re-run'}
-              </button>
-            )}
-            <SimulationControls
-              buildingVariant={buildingVariant}
-              value={request}
-              onChange={setRequest}
-              onReset={() => {
-                const reset = { ...DEFAULT_REQUEST, scenario: request.scenario }
-                setRequest(reset)
-                void execute(reset)
-              }}
-            />
+          <aside
+            className='console-rail console-rail-right'
+            aria-label='Scene controls and sky monitoring'
+          >
             <LiveHardwarePanel
               tick={isControlled ? (selectedTick ?? null) : null}
+              onModeChange={setHardwareMode}
             />
-            {lens === 'building' &&
-              (isControlled ? (
-                <ControllerPanel
-                  value={request}
-                  loading={loading}
-                  onChange={setRequest}
-                  onRun={() => void execute(request)}
+            {lens === 'floor' &&
+              csiView &&
+              selectedTick &&
+              (floorFocused ? (
+                <FloorSectionPanel
+                  key={`${selectedOrientation}-${band}-${selectedZone ?? 'all'}`}
+                  tick={selectedTick}
+                  orientation={selectedOrientation}
+                  band={band}
+                  controlled={isControlled}
+                  zone={selectedZone}
+                  compact
+                  activity={csiActivity}
+                  onActivityChange={setCsiActivity}
                 />
               ) : (
                 <section className='console-card'>
-                  <p className='console-card-title'>Uncontrolled building</p>
-                  <p className='mt-2 text-xs leading-5 text-muted-foreground'>
-                    No external louvres or mechatronic brain. Weather and
-                    geometry settings apply to both buildings for a
-                    like-for-like comparison.
+                  <p className='console-card-title'>CSI X-ray · simulated</p>
+                  <p className='mt-2 text-xs'>
+                    Select a floor in the model or the floor list to inspect its
+                    Ev / Et comfort response.
                   </p>
-                  <button
-                    className='retry-button mt-3'
-                    type='button'
-                    disabled={loading || tierRunning}
-                    onClick={() => void execute(request)}
-                  >
-                    {loading ? 'Running…' : 'Run simulation'}
-                  </button>
                 </section>
               ))}
+            {/* Portal target for the 3D view's scene controls. Kept childless
+                so React and the portal never fight over the same node. */}
+            <div ref={setSceneControls} />
+            <CloudVisionPanel
+              onObservation={updateSkyObservation}
+              onSkyChange={setVisionSky}
+              onAgeChange={setVisionAgeSeconds}
+            />
           </aside>
         </div>
       </div>
