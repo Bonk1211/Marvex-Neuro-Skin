@@ -42,11 +42,16 @@ sensor, stands in for one 2×2 block of the digital twin's west wall. Every
 and receives four louvre angles. The dashboard picks where those angles come
 from:
 
-- **Auto (default):** each panel steps 5° toward shading above 700 lux, 5°
-  toward open below 300 lux, and holds inside the band. This runs with the
-  dashboard closed.
-- **Mirror twin:** the dashboard pushes the twin's angles for the four mapped
-  zones at the selected simulation time, so scrubbing the timeline moves the rig.
+- **Demo 1 · Follow simulation (`twin`):** select this in the dashboard's
+  Hardware demo card, then use Play or Run simulation. The dashboard pushes
+  the displayed angles for W13/W14/W9/W10 as the simulation moves, including
+  timeline scrubbing. Playback slows to one second per tick to give the rig
+  time to follow; physical travel still obeys the firmware's slew limit.
+- **Demo 2 · Sensor only (`auto`, default):** select this in the card or open
+  `/demo`, which switches to sensor-only control without loading a simulation.
+  Each panel steps 5° toward shading above 700 lux, 5° toward open below 300 lux,
+  and holds inside the band. The laptop hardware bridge and WiFi remain in use;
+  control continues with the dashboard closed.
 
 Louvre angles run 0–180°: **0° is perpendicular to the building** (the start
 position), **90° is parallel to it** (most shading), and **180° is perpendicular
@@ -54,6 +59,76 @@ again with the blade flipped**. Auto lux control shades within 0–90°; calibra
 holds use the full range. The twin uses the same convention over 0–60°, so
 mirrored angles pass through unchanged. SG90s
 give no position feedback, so every angle shown is **commanded, not measured**.
+
+## Corner-light demonstration
+
+1. Open http://localhost:3000/demo on the backend laptop. Confirm **online** and
+   **2 · Sensor only**; the simulation no longer supplies actuator targets.
+2. With the lamp off, let the four panels settle. Keep unlit sensors below
+   300 lux or within the 300–700 lux band so their expected behaviour is clear.
+3. Illuminate one corner above 700 lux. Its card highlights amber and its own
+   louvre shades; the other three hold or open according to their own readings.
+4. Move the lamp to each corner. If neighbouring sensors also rise above the
+   threshold, shield the light spill before calling it an isolation test.
+5. Return to `/dashboard` and explicitly select **1 · Follow simulation** to
+   resume mirroring. A background dashboard cannot reconnect itself from a
+   delayed timeline update after switching to sensor-only control.
+
+The physical 2×2 demonstrates independent response in four zones of the 4×4
+facade design. It does not measure the other twelve zones or establish
+full-array energy savings. The cards show real lux and commanded angles; test
+actual blade movement on the rig. No firmware change is needed for these modes.
+
+## Live CSI proof of concept (same ESP32)
+
+The `neuroskin_bridge` sketch also captures Wi-Fi CSI while running the four
+BH1750s and PCA9685. No second board or extra Arduino library is required.
+This build targets the existing classic **ESP32 Dev Module**, Arduino ESP32 core
+3.3.11. The ESP32 sends a small ping to its gateway every 20 ms to request CSI-bearing
+reply packets; the actual received rate is displayed, not assumed to be 50 Hz.
+This works with a compatible 2.4 GHz router or phone hotspot that permits the traffic.
+
+1. Upload the updated `neuroskin_bridge` sketch using the existing `secrets.h`.
+   Put the laptop and ESP32 on the same hotspot and retain the laptop's reachable
+   `BACKEND_TICK_URL`. Start the backend with `make backend HOST=0.0.0.0`.
+2. Open `/dashboard?view=floor` and select **Live CSI**, beside **CSI X-ray**.
+   Serial Monitor should show `CSI enabled, gateway …, board …`.
+3. Keep the phone and board fixed, let the louvres settle, and select
+   **Recalibrate empty room**. The baseline needs 30 valid windows (about 15 seconds
+   at the normal 500 ms bridge cadence). Windows with fewer than 20 frames/s or
+   commanded servo motion do not count.
+4. Walk near the phone-to-board link, stop, and compare the measured variation
+   against its threshold. The interactive 3D room turns amber when measured
+   signal variation exceeds that threshold. Drag to orbit, scroll to zoom, or
+   select **Top view**; **Pause waves** freezes the illustration while measurements
+   continue. The charts below show variation and the latest packet's CSI bins.
+   If the hotspot does not answer the board's pings, try
+   `sudo ping -i 0.02 <ESP32_IP>` from the laptop after `CSI enabled` appears.
+5. Disconnect the board to verify that the view reports offline and stops showing
+   current measurements. Older firmware reports **CSI firmware needed**.
+
+The existing authenticated `/hardware/tick` request carries an optional `csi`
+payload; `/hardware/status` returns it plus calibration and motion state. A
+local-only `/hardware/csi/calibrate` POST resets the baseline without moving a
+louvre or changing its control mode. Reboot, a changed access point/channel, or
+a bridge outage resets calibration. CSI failure leaves the lux/servo loop running.
+
+Amplitude is the probe's relative `|I| + |Q|` measure, not calibrated RF power.
+Motion is a proof-of-concept threshold on windowed signal variation, not a
+validated human-presence or pose model. Fans, phone movement, and moving metal
+can trigger it; commanded servo-motion windows are explicitly flagged and excluded
+from detection. The CSI X-ray skeletons remain simulated.
+
+The Live CSI room is an illustrative layout with fixed furniture and phone/ESP32
+positions, inspired by RuView's room display. Animated rings illustrate the link,
+not measured RF propagation. Only the whole-room tint and signal readouts respond
+to measurements; the single-link stream provides no spatial heatmap, person
+position, room reconstruction or pose. Waves disappear when data stops, and no
+demo signal is substituted. Reduced-motion preferences pause the waves by default.
+
+Tune `CSI_PING_MS` in the sketch and `CSI_MIN_FPS`, `CSI_MOTION_MULTIPLIER`, and
+`CSI_MIN_SIGMA` in `backend/app/hardware.py` for the physical setup, then recalibrate.
+The dashboard keeps up to 60 seconds of live history while this view is open.
 
 ## Wiring
 
@@ -156,7 +231,7 @@ firmware) if they differ.
    (or `make dev HOST=0.0.0.0`). Allow the macOS firewall prompt.
 3. Find the laptop IP with `ipconfig getifaddr en0` and use it in
    `BACKEND_TICK_URL`.
-4. Open the dashboard on the same laptop. The right rail shows *Live hardware ·
+4. Open the dashboard on the same laptop. The right rail shows *Hardware demo ·
    ESP32*, reading "waiting for ESP32" until the first tick arrives.
 
 `HOST=0.0.0.0` exposes every API route to the local network, and the token
@@ -192,6 +267,11 @@ applies a reply only when all four angles are valid numbers in 0–180° and all
 calibrations are in 0–180°.
 `commanded_angle` in each tick is the angle the ESP32 actually wrote, so it also
 acknowledges the previous reply.
+
+Timeline updates and calibration keepalives set `refresh_only: true` on
+`/control`. They receive `409` if the source has since changed, so a delayed
+refresh cannot undo an explicit demo selection. Only the dashboard where the
+operator selected Follow simulation streams its timeline.
 
 ## Behaviour and faults
 
@@ -253,7 +333,8 @@ edges under a strong lamp.
 | Independent control | Illuminate one panel while other readings stay stable; only its mapped servo responds to that light change; repeat for all four |
 | Physical response | Cross both lux boundaries; backend reasons correspond to visible opening/closing |
 | Feedback | With lamp position fixed, louvre movement changes the lux behind it; control settles or holds at its travel limit |
-| Twin mirroring | Scrub the timeline in *Mirror twin*; servos follow the W13/W14/W9/W10 angles shown in the Floor lens zone matrix |
+| Twin mirroring | Select *1 · Follow simulation* and play or scrub the timeline; servos follow W13/W14/W9/W10 shown in the Floor lens zone matrix |
+| Demo isolation | While mirroring, open `/demo`; lamp changes control their own panels, and continued playback in the previous tab cannot resume twin control |
 | Wind override | Not applicable: no anemometer is wired |
 | Network independence | Close the dashboard: auto control continues; stop the backend: louvres reach the safe angle within 3 s plus travel time |
 | Sensor/API failure | Disconnect one BH1750: its panel faults while healthy panels continue; reconnect it: readings resume |

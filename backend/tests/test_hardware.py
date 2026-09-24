@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import hardware
+from app.config import DEFAULTS
 from app.main import app
 
 client = TestClient(app, client=("127.0.0.1", 50000))
@@ -93,12 +94,95 @@ def test_twin_mode_mirrors_zone_angles_then_expires(fresh_bridge, caplog) -> Non
     assert any(record.event == "hardware_mode_changed" for record in caplog.records)
     panels = tick(batch(bh1=reading(900, 0))).json()["panels"]
     angles = {panel: command["angle"] for panel, command in panels.items()}
-    assert angles == {"bh1": 10, "bh2": 20, "bh3": 40, "bh4": 60}
+    # The twin's 0-60 degrees is scaled onto the rig's 0-90 shading half.
+    assert angles == {"bh1": 15, "bh2": 30, "bh3": 60, "bh4": 90}
 
     fresh_bridge[0] += hardware.HOLD_TTL_S + 1
     panels = tick(batch(bh1=reading(900, 0))).json()["panels"]
     assert panels["bh1"] == {"angle": 5, "mode": "auto", "reason": "900 lux above 700; shading."}
     assert client.get("/api/v1/hardware/status").json()["mode"] == "auto"
+
+
+def test_twin_gain_maps_the_twins_full_range_onto_the_rigs_shading_half() -> None:
+    assert hardware.TWIN_GAIN == hardware.SHADE_MAX / DEFAULTS.angle_max
+    # Open stays open and the twin's fully shaded angle becomes the rig's fully closed one.
+    assert 0 * hardware.TWIN_GAIN == 0
+    assert DEFAULTS.angle_max * hardware.TWIN_GAIN == hardware.SHADE_MAX
+
+
+def test_twin_mode_never_swings_the_rig_past_closed_and_keeps_the_twins_own_angle(
+    fresh_bridge,
+) -> None:
+    # 100 degrees is far outside the twin's own 0-60 but inside the 0-180 the endpoint
+    # accepts; scaled it would reach 150 and reopen the louvre, so it must saturate at closed.
+    control({"mode": "twin", "angles": {**TWIN, "W13": 100}})
+    command = tick(batch(bh1=reading(900, 0))).json()["panels"]["bh1"]
+    assert command["angle"] == hardware.SHADE_MAX
+    assert command["mode"] == "twin"
+    # The state still records the twin's own degrees, not the scaled ones.
+    assert client.get("/api/v1/hardware/status").json()["held"]["bh1"] == 100
+    # The operator reads the conversion, so a surprising angle is explainable from the log line.
+    assert "100°" in command["reason"] and "90°" in command["reason"]
+
+
+def test_wind_retreat_holds_the_rig_at_the_angles_the_agent_room_agreed() -> None:
+    retreat = {"W13": 0, "W14": 0, "W9": 6, "W10": 11}
+    assert control({"mode": "wind", "angles": retreat}).json()["mode"] == "wind"
+
+    # A bright panel cannot open a bay the room retreated: the hold outranks lux.
+    panels = tick(batch(bh1=reading(900, 45))).json()["panels"]
+    assert {panel: command["angle"] for panel, command in panels.items()} == {
+        "bh1": 0,
+        "bh2": 0,
+        "bh3": 6,
+        "bh4": 11,
+    }
+    assert panels["bh1"]["mode"] == "wind"
+    assert "W13 holds 0°" in panels["bh1"]["reason"]
+
+    # Calming the wind hands the rig back to its own lux control.
+    assert control({"mode": "auto"}).json()["mode"] == "auto"
+    assert tick(batch(bh1=reading(900, 45))).json()["panels"]["bh1"]["mode"] == "auto"
+
+
+def test_sensor_demo_disconnects_twin_and_responds_only_at_the_lit_corner() -> None:
+    control({"mode": "twin", "angles": TWIN})
+    assert tick(batch()).json()["panels"]["bh1"]["angle"] == TWIN["W13"] * hardware.TWIN_GAIN
+    response = control({"mode": "auto"}).json()
+    assert response["mode"] == "auto" and response["held"] == {}
+
+    for corner in hardware.PANEL_ZONES:
+        panels = tick(
+            batch(
+                **{
+                    panel: reading(900 if panel == corner else 100, 0)
+                    for panel in hardware.PANEL_ZONES
+                }
+            )
+        ).json()["panels"]
+        assert {panel: command["angle"] for panel, command in panels.items()} == {
+            panel: 5 if panel == corner else 0 for panel in hardware.PANEL_ZONES
+        }
+        assert all(command["mode"] == "auto" for command in panels.values())
+
+    # The demo can switch back without the bright corner altering the twin commands.
+    control({"mode": "twin", "angles": TWIN})
+    panels = tick(batch(bh1=reading(900, 0))).json()["panels"]
+    assert {panel: command["angle"] for panel, command in panels.items()} == {
+        panel: TWIN[zone] * hardware.TWIN_GAIN for panel, zone in hardware.PANEL_ZONES.items()
+    }
+
+
+@pytest.mark.parametrize("mode", ["twin", "calibrate"])
+def test_delayed_keepalive_cannot_reconnect_a_disconnected_control_source(mode) -> None:
+    angles = TWIN if mode == "twin" else dict.fromkeys(hardware.PANEL_ZONES, 30)
+    command = {"mode": mode, "angles": angles}
+    assert control(command).status_code == 200
+    assert control(command | {"refresh_only": True}).status_code == 200
+    control({"mode": "auto"})
+    assert control(command | {"refresh_only": True}).status_code == 409
+    live = client.get("/api/v1/hardware/status").json()
+    assert live["mode"] == "auto" and live["held"] == {}
 
 
 def test_calibrate_mode_holds_each_panel_then_expires(fresh_bridge) -> None:
@@ -195,3 +279,67 @@ def test_status_reports_last_batch_then_goes_offline(fresh_bridge) -> None:
     }
     fresh_bridge[0] += hardware.OFFLINE_AFTER_S + 1
     assert client.get("/api/v1/hardware/status").json()["online"] is False
+
+
+def test_live_csi_calibration_motion_gaps_and_legacy_firmware(fresh_bridge) -> None:
+    sample = {
+        "enabled": True,
+        "uptime_ms": 500,
+        "window_ms": 500,
+        "frames": 25,
+        "ap": "AA:BB:CC:DD:EE:FF",
+        "channel": 6,
+        "amplitude": 10.0,
+        "sigma": 0.5,
+        "rssi": -48,
+        "amplitudes": [8, 12, 9, 11],
+        "servos_moving": False,
+    }
+
+    def send(**changes):
+        fresh_bridge[0] += 0.5
+        sample["uptime_ms"] += 500
+        reply = tick(batch(bh1=reading(900)) | {"csi": sample | changes})
+        assert reply.status_code == 200, reply.text
+        # CSI never takes over the existing actuator loop.
+        assert reply.json()["panels"]["bh1"]["angle"] == 35
+        return client.get("/api/v1/hardware/status").json()["csi"]
+
+    assert send(servos_moving=True, sigma=10)["calibration_windows"] == 0
+    assert send(frames=2)["state"] == "low_rate"
+    for index in range(hardware.CSI_BASELINE_WINDOWS):
+        measured = send()
+        assert measured["calibration_windows"] == index + 1
+    assert measured["state"] == "quiet"
+    assert measured["frames_per_second"] == 50
+    assert measured["threshold"] == 1.5
+    assert measured["amplitudes"] == sample["amplitudes"]
+    assert send(sigma=2)["state"] == "motion"
+    assert send(sigma=2, servos_moving=True)["state"] == "servos_moving"
+    assert (
+        send(frames=0, amplitude=None, sigma=None, rssi=None, amplitudes=[])["state"] == "no_signal"
+    )
+    assert send()["state"] == "quiet"
+
+    fresh_bridge[0] += hardware.OFFLINE_AFTER_S + 1
+    offline = client.get("/api/v1/hardware/status").json()
+    assert offline["online"] is False and offline["csi"]["state"] == "offline"
+    assert send()["calibration_windows"] == 1  # reconnect requires a new baseline
+    assert send(uptime_ms=0)["calibration_windows"] == 1  # board reboot
+    assert send(channel=11)["calibration_windows"] == 1  # different RF channel
+
+    assert remote.post("/api/v1/hardware/csi/calibrate").status_code == 403
+    reset = client.post("/api/v1/hardware/csi/calibrate").json()
+    assert reset["csi"]["threshold"] is None
+    assert reset["csi"]["calibration_windows"] == 0
+    assert reset["mode"] == "auto"
+    assert send()["state"] == "calibrating"
+
+    for invalid in ({"sigma": -1}, {"amplitudes": [257]}, {"frames": 0}, {"rssi": None}):
+        assert tick(batch() | {"csi": sample | invalid}).status_code == 422
+    for _ in range(hardware.CSI_BASELINE_WINDOWS):
+        measured = send(sigma=0)
+    assert measured["threshold"] >= hardware.CSI_MIN_SIGMA
+    assert send(sigma=0)["state"] == "quiet"
+    assert tick(batch()).status_code == 200  # pre-CSI firmware remains supported
+    assert client.get("/api/v1/hardware/status").json()["csi"] is None

@@ -16,14 +16,18 @@ from time import monotonic
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.config import DEFAULTS
 
 router = APIRouter(prefix="/api/v1/hardware", tags=["hardware"])
 logger = logging.getLogger("neuroskin.hardware")
 
 PanelId = Literal["bh1", "bh2", "bh3", "bh4"]
-ControlMode = Literal["auto", "twin", "calibrate"]
-CommandMode = Literal["auto", "twin", "calibrate", "fault"]
+# "wind" is the agent room's retreat: zone angles decided against the gust, held
+# on the rig while the channel says the facade is under load.
+ControlMode = Literal["auto", "twin", "calibrate", "wind"]
+CommandMode = Literal["auto", "twin", "calibrate", "wind", "fault"]
 # BH1/BH2 are the top row, BH3/BH4 the bottom row, seen from outside.
 # ponytail: the rig stands in for one fixed 2x2 block of the west wall; edit to move it.
 PANEL_ZONES: dict[str, str] = {"bh1": "W13", "bh2": "W14", "bh3": "W9", "bh4": "W10"}
@@ -40,13 +44,74 @@ LOOPBACK = {"127.0.0.1", "::1"}
 CALIBRATION_PATH = Path(__file__).resolve().parents[1] / "data" / "hardware_calibration.json"
 
 # Physical louvre travel: 0° is perpendicular to the facade (the start position), 90° is
-# parallel to it, and 180° is perpendicular again with the blade flipped. The twin uses the
-# same convention over 0–60°, so mirrored angles pass through unchanged.
+# parallel to it, and 180° is perpendicular again with the blade flipped.
 ANGLE_MAX = 180.0
 # Auto lux control shades on the 0–90° half: 0° open, 90° closed.
 SHADE_MAX = 90.0
+# The twin's louvres only travel 0–60°, so mirrored 1:1 the rig used a third of its shading
+# half (and, over a real day, mostly under 10°: barely visible). Scale the twin's full range
+# onto the rig's: the twin's fully shaded 60° becomes the rig's fully closed 90°.
+# ponytail: linear. Raise this for a more theatrical demo; the clamp below saturates at closed
+# rather than letting a bigger angle swing past 90° and reopen the louvre.
+TWIN_GAIN = SHADE_MAX / DEFAULTS.angle_max
 Angle = Annotated[float, Field(ge=0, le=ANGLE_MAX, allow_inf_nan=False)]
 ServoDegrees = Annotated[float, Field(ge=0, le=180, allow_inf_nan=False)]
+CsiAmplitude = Annotated[float, Field(ge=0, le=256, allow_inf_nan=False)]
+CSI_BASELINE_WINDOWS = 30
+CSI_MOTION_MULTIPLIER = 3.0
+CSI_MIN_SIGMA = 0.2
+CSI_MIN_FPS = 20
+
+
+class CsiReading(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+    uptime_ms: int = Field(ge=0, le=4_294_967_295, strict=True)
+    window_ms: int = Field(ge=1, le=60_000, strict=True)
+    frames: int = Field(ge=0, le=100_000, strict=True)
+    ap: str = Field(pattern=r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$")
+    channel: int = Field(ge=1, le=14, strict=True)
+    amplitude: CsiAmplitude | None
+    sigma: CsiAmplitude | None
+    rssi: int | None = Field(ge=-128, le=0, strict=True)
+    amplitudes: list[CsiAmplitude] = Field(max_length=64)
+    servos_moving: bool
+
+    @model_validator(mode="after")
+    def consistent_samples(self):
+        present = self.amplitude is not None and self.sigma is not None and self.rssi is not None
+        if self.frames and (not present or not self.amplitudes or not self.enabled):
+            raise ValueError("CSI frames require enabled capture and measured amplitudes/RSSI.")
+        if not self.frames and (
+            self.amplitude is not None
+            or self.sigma is not None
+            or self.rssi is not None
+            or self.amplitudes
+        ):
+            raise ValueError(
+                "No CSI frames must report missing measurements, not zero or old data."
+            )
+        return self
+
+
+class CsiStatus(CsiReading):
+    sample_id: float
+    frames_per_second: float
+    state: Literal[
+        "unavailable",
+        "no_signal",
+        "low_rate",
+        "servos_moving",
+        "calibrating",
+        "motion",
+        "quiet",
+        "offline",
+    ]
+    calibration_windows: int
+    calibration_required: int = CSI_BASELINE_WINDOWS
+    baseline_sigma: float | None
+    threshold: float | None
 
 
 class PanelReading(BaseModel):
@@ -59,6 +124,7 @@ class TickRequest(BaseModel):
     seq: int = Field(ge=0, le=4_294_967_295, strict=True)
     # Four Literal keys and exactly four entries: every panel, each once.
     panels: dict[PanelId, PanelReading] = Field(min_length=4, max_length=4)
+    csi: CsiReading | None = None
 
 
 class PanelCommand(BaseModel):
@@ -101,16 +167,20 @@ class TickResponse(BaseModel):
 
 class ControlRequest(BaseModel):
     mode: ControlMode
-    # twin: angles by mirrored zone; calibrate: angles by panel; auto: none.
+    # Timeline updates/keepalives must never undo an explicit source change.
+    refresh_only: bool = False
+    # twin and wind: angles by mirrored zone; calibrate: angles by panel; auto: none.
     angles: dict[str, Angle] = Field(default_factory=dict, max_length=4, validate_default=True)
 
     @field_validator("angles")
     @classmethod
     def expected_keys(cls, value: dict[str, float], info):
         mode = info.data.get("mode")
-        expected = {"twin": set(PANEL_ZONES.values()), "calibrate": set(PANEL_ZONES)}.get(
-            mode, set()
-        )
+        expected = {
+            "twin": set(PANEL_ZONES.values()),
+            "wind": set(PANEL_ZONES.values()),
+            "calibrate": set(PANEL_ZONES),
+        }.get(mode, set())
         if set(value) != expected:
             raise ValueError(
                 f"{mode} mode needs angles for exactly: {', '.join(sorted(expected)) or 'none'}"
@@ -136,6 +206,7 @@ class HardwareStatus(BaseModel):
     panels: dict[PanelId, PanelStatus]
     calibration: dict[PanelId, ServoCalibration]
     held: dict[PanelId, float]
+    csi: CsiStatus | None = None
 
 
 def _load_calibration() -> dict[str, ServoCalibration]:
@@ -168,6 +239,8 @@ def _initial_state() -> dict:
         "seen_at": None,
         "seq": None,
         "panels": {},
+        "csi": None,
+        "csi_baseline": [],
         "calibration": _load_calibration(),
     }
 
@@ -204,9 +277,24 @@ def lux_step(lux: float | None, current: float) -> PanelCommand:
 
 
 def _command(mode: str, panel: str, held: dict[str, float], reading: PanelReading) -> PanelCommand:
-    if mode == "twin":
+    if mode == "wind":
         return PanelCommand(
-            angle=held[panel], mode="twin", reason=f"Mirroring twin zone {PANEL_ZONES[panel]}."
+            angle=held[panel],
+            mode="wind",
+            reason=(
+                f"Wind retreat: {PANEL_ZONES[panel]} holds {held[panel]:.0f}° "
+                "until the gust is off its panel."
+            ),
+        )
+    if mode == "twin":
+        angle = min(SHADE_MAX, held[panel] * TWIN_GAIN)
+        return PanelCommand(
+            angle=angle,
+            mode="twin",
+            reason=(
+                f"Mirroring twin zone {PANEL_ZONES[panel]}: {held[panel]:.0f}° "
+                f"× {TWIN_GAIN:g} = {angle:.0f}°."
+            ),
         )
     if mode == "calibrate":
         return PanelCommand(
@@ -229,10 +317,55 @@ def _local_only(request: Request) -> None:
         raise HTTPException(403, "Hardware control is only accepted from this machine.")
 
 
+def _update_csi(reading: CsiReading | None, now: float) -> None:
+    previous = _state["csi"]
+    if reading is None:
+        _state.update(csi=None, csi_baseline=[])
+        return
+    if previous is not None and (
+        reading.uptime_ms < previous.uptime_ms
+        or (reading.ap, reading.channel) != (previous.ap, previous.channel)
+        or now - _state["seen_at"] > OFFLINE_AFTER_S
+    ):
+        _state["csi_baseline"] = []
+    baseline = _state["csi_baseline"]
+    fps = reading.frames * 1000 / reading.window_ms
+    if not reading.enabled:
+        state = "unavailable"
+    elif not reading.frames:
+        state = "no_signal"
+    elif fps < CSI_MIN_FPS or reading.frames < 5:
+        state = "low_rate"
+    elif reading.servos_moving:
+        state = "servos_moving"
+    elif len(baseline) < CSI_BASELINE_WINDOWS:
+        baseline.append(reading.sigma)
+        state = "calibrating"
+    else:
+        state = "quiet"
+    ready = len(baseline) == CSI_BASELINE_WINDOWS
+    average = sum(baseline) / len(baseline) if ready else None
+    threshold = max(CSI_MIN_SIGMA, average * CSI_MOTION_MULTIPLIER) if ready else None
+    # ponytail: signal-motion threshold, not human presence; use a validated model
+    # if still-person detection or rejection of non-human motion is required.
+    if state in {"quiet", "calibrating"} and ready:
+        state = "motion" if reading.sigma > threshold else "quiet"
+    _state["csi"] = CsiStatus(
+        **reading.model_dump(),
+        sample_id=now,
+        frames_per_second=round(fps, 1),
+        state=state,
+        calibration_windows=len(baseline),
+        baseline_sigma=average,
+        threshold=threshold,
+    )
+
+
 @router.post("/tick", response_model=TickResponse, dependencies=[Depends(_authorise)])
 def tick(batch: TickRequest) -> TickResponse:
     now = monotonic()
     with _lock:
+        _update_csi(batch.csi, now)
         expired = _state["mode"] != "auto" and now - _state["held_at"] > HOLD_TTL_S
         if expired:
             _state.update(mode="auto", held={})
@@ -283,17 +416,40 @@ def status() -> HardwareStatus:
             panels=panels,
             calibration=_state["calibration"],
             held=_state["held"],
+            csi=(
+                _state["csi"].model_copy(update={"state": "offline"})
+                if _state["csi"] is not None and age > OFFLINE_AFTER_S
+                else _state["csi"]
+            ),
         )
+
+
+@router.post("/csi/calibrate", response_model=HardwareStatus, dependencies=[Depends(_local_only)])
+def calibrate_csi() -> HardwareStatus:
+    with _lock:
+        _state["csi_baseline"] = []
+        if _state["csi"] is not None:
+            _state["csi"] = _state["csi"].model_copy(
+                update={
+                    "state": "calibrating",
+                    "calibration_windows": 0,
+                    "baseline_sigma": None,
+                    "threshold": None,
+                }
+            )
+    return status()
 
 
 @router.post("/control", response_model=HardwareStatus, dependencies=[Depends(_local_only)])
 def control(request: ControlRequest) -> HardwareStatus:
     held = (
         {panel: request.angles[zone] for panel, zone in PANEL_ZONES.items()}
-        if request.mode == "twin"
+        if request.mode in ("twin", "wind")
         else dict(request.angles)
     )
     with _lock:
+        if request.refresh_only and _state["mode"] != request.mode:
+            raise HTTPException(409, "Control source changed; select the demo mode again.")
         changed = _state["mode"] != request.mode
         _state.update(mode=request.mode, held=held, held_at=monotonic())
     if changed:
