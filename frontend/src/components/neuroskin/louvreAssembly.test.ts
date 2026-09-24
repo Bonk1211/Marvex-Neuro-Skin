@@ -24,10 +24,10 @@ describe('louvre assembly', () => {
     const rodBefore = new THREE.Matrix4()
     actuator.getMatrixAt(1, rodBefore)
     assembly.targetAngle = 45
-    setLouvreAngle(assembly, 90)
-    expect(assembly.angle).toBe(60)
+    setLouvreAngle(assembly, 200)
+    expect(assembly.angle).toBe(180)
     expect(assembly.targetAngle).toBe(45)
-    expect(blade.rotation.x).toBeCloseTo(-Math.PI / 3)
+    expect(blade.rotation.x).toBeCloseTo(-Math.PI)
     expect(mounts.matrixWorld.equals(before)).toBe(true)
     expect(crank.matrixWorld.equals(crankBefore)).toBe(false)
     const rodAfter = new THREE.Matrix4()
@@ -88,7 +88,7 @@ describe('louvre assembly', () => {
     expect(closed).toBeGreaterThan(open + 40)
   })
 
-  it('clears the leaning facade throughout the full blade sweep', () => {
+  it('clears the leaning facade throughout the diagnostic optimiser sweep', () => {
     for (const tilt of [0, 25, 45]) {
       const halfWidthAt = (y: number) =>
         2 + y * Math.tan(THREE.MathUtils.degToRad(tilt))

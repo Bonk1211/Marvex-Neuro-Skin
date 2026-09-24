@@ -5,6 +5,7 @@ export interface LouvreAssembly {
   occluders: THREE.Object3D[]
   angle: number
   targetAngle: number
+  reflector?: boolean
 }
 
 interface Mechanics {
@@ -212,9 +213,10 @@ export function setLouvreAngle(
   assembly.angle = THREE.MathUtils.clamp(
     Number.isFinite(angleDeg) ? angleDeg : 0,
     0,
-    60
+    180
   )
-  const radians = -THREE.MathUtils.degToRad(assembly.angle)
+  const radians =
+    (assembly.reflector ? 1 : -1) * THREE.MathUtils.degToRad(assembly.angle)
   const { pivots, actuator, anchor, crankTips, tip, tieStart, tieEnd } =
     assembly.group.userData.mechanics as Mechanics
   for (const pivot of pivots) pivot.rotation.x = radians

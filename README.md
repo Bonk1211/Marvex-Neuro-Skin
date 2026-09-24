@@ -178,7 +178,7 @@ secrets out of `NEXT_PUBLIC_*` variables, because those are shipped to the brows
 | Route | Purpose |
 | --- | --- |
 | `/` | Product overview and entry point to each application |
-| `/dashboard` | Facade digital twin. **Run simulation** runs the three tiers in order while the sun crosses the model. Select any zone to inspect its inputs, decision and objective. |
+| `/dashboard` | Facade digital twin. **Run simulation** plays a clear, healthy west-facade solar-tracking day. **Run diagnostic tests** runs the fault/optimisation/fail-safe tiers separately. Select any zone to inspect its inputs, decision and objective. |
 | `/demo` | Sensor-only hardware demo. Opening it disconnects twin control; four BH1750 sensors independently drive the physical 2×2 louvres through the laptop bridge. |
 | `/hardware` | Actuator calibration for the ESP32 rig: map each servo's 0–180° range and test poses. |
 
@@ -246,7 +246,7 @@ the ESP32 posts four lux readings to the backend and receives four angles in ret
 
 - **Demo 1 · Follow simulation:** select this in the dashboard's Hardware demo card,
   then play or run the simulation. The rig follows W13/W14/W9/W10 at the displayed
-  time. Mirroring slows playback to one second per tick; scrubbing also updates the rig.
+  time, with matching blade angles (no angle multiplier). Angles continuously track the sun’s wall-section profile: 0° overhead, 90° at a 45° profile, approaching 180° at the facing horizon. Travel remains rate-limited. Mirroring slows playback to one second per tick; scrubbing also updates the rig.
 - **Demo 2 · Sensor only (default):** select this in the card or open `/demo` for a
   dedicated corner-light demonstration without loading a simulation. Each BH1750
   independently steps its panel toward shading above 700 lux and open below 300 lux.

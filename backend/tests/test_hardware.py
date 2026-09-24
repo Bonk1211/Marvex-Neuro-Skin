@@ -5,7 +5,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import hardware
-from app.config import DEFAULTS
 from app.main import app
 
 client = TestClient(app, client=("127.0.0.1", 50000))
@@ -94,8 +93,8 @@ def test_twin_mode_mirrors_zone_angles_then_expires(fresh_bridge, caplog) -> Non
     assert any(record.event == "hardware_mode_changed" for record in caplog.records)
     panels = tick(batch(bh1=reading(900, 0))).json()["panels"]
     angles = {panel: command["angle"] for panel, command in panels.items()}
-    # The twin's 0-60 degrees is scaled onto the rig's 0-90 shading half.
-    assert angles == {"bh1": 15, "bh2": 30, "bh3": 60, "bh4": 90}
+    # Reflection geometry needs the same physical and displayed blade angle.
+    assert angles == {"bh1": 10, "bh2": 20, "bh3": 40, "bh4": 60}
 
     fresh_bridge[0] += hardware.HOLD_TTL_S + 1
     panels = tick(batch(bh1=reading(900, 0))).json()["panels"]
@@ -103,26 +102,13 @@ def test_twin_mode_mirrors_zone_angles_then_expires(fresh_bridge, caplog) -> Non
     assert client.get("/api/v1/hardware/status").json()["mode"] == "auto"
 
 
-def test_twin_gain_maps_the_twins_full_range_onto_the_rigs_shading_half() -> None:
-    assert hardware.TWIN_GAIN == hardware.SHADE_MAX / DEFAULTS.angle_max
-    # Open stays open and the twin's fully shaded angle becomes the rig's fully closed one.
-    assert 0 * hardware.TWIN_GAIN == 0
-    assert DEFAULTS.angle_max * hardware.TWIN_GAIN == hardware.SHADE_MAX
-
-
-def test_twin_mode_never_swings_the_rig_past_closed_and_keeps_the_twins_own_angle(
-    fresh_bridge,
-) -> None:
-    # 100 degrees is far outside the twin's own 0-60 but inside the 0-180 the endpoint
-    # accepts; scaled it would reach 150 and reopen the louvre, so it must saturate at closed.
-    control({"mode": "twin", "angles": {**TWIN, "W13": 100}})
+def test_twin_mode_preserves_the_requested_half_turn(fresh_bridge) -> None:
+    control({"mode": "twin", "angles": {**TWIN, "W13": 180}})
     command = tick(batch(bh1=reading(900, 0))).json()["panels"]["bh1"]
-    assert command["angle"] == hardware.SHADE_MAX
+    assert command["angle"] == 180
     assert command["mode"] == "twin"
-    # The state still records the twin's own degrees, not the scaled ones.
-    assert client.get("/api/v1/hardware/status").json()["held"]["bh1"] == 100
-    # The operator reads the conversion, so a surprising angle is explainable from the log line.
-    assert "100°" in command["reason"] and "90°" in command["reason"]
+    assert client.get("/api/v1/hardware/status").json()["held"]["bh1"] == 180
+    assert "180° → 180°" in command["reason"]
 
 
 def test_wind_retreat_holds_the_rig_at_the_angles_the_agent_room_agreed() -> None:
@@ -147,7 +133,7 @@ def test_wind_retreat_holds_the_rig_at_the_angles_the_agent_room_agreed() -> Non
 
 def test_sensor_demo_disconnects_twin_and_responds_only_at_the_lit_corner() -> None:
     control({"mode": "twin", "angles": TWIN})
-    assert tick(batch()).json()["panels"]["bh1"]["angle"] == TWIN["W13"] * hardware.TWIN_GAIN
+    assert tick(batch()).json()["panels"]["bh1"]["angle"] == TWIN["W13"]
     response = control({"mode": "auto"}).json()
     assert response["mode"] == "auto" and response["held"] == {}
 
@@ -169,7 +155,7 @@ def test_sensor_demo_disconnects_twin_and_responds_only_at_the_lit_corner() -> N
     control({"mode": "twin", "angles": TWIN})
     panels = tick(batch(bh1=reading(900, 0))).json()["panels"]
     assert {panel: command["angle"] for panel, command in panels.items()} == {
-        panel: TWIN[zone] * hardware.TWIN_GAIN for panel, zone in hardware.PANEL_ZONES.items()
+        panel: TWIN[zone] for panel, zone in hardware.PANEL_ZONES.items()
     }
 
 

@@ -18,6 +18,7 @@ import { floorBeam, type FloorLightView } from './floorSunlight'
 import type { CsiActivity } from './csiPosture'
 import { FLOOR_PLANS, floorGroupLabel, floorProgram } from './floorWorkspaces'
 import { createCloudCanopy } from './cloudCanopy'
+import { createFacadeSunlight } from './facadeSunlight'
 import type { SkyObservation } from './CloudVisionPanel'
 import { Box, Focus, RotateCcw, Sun } from 'lucide-react'
 import type {
@@ -431,6 +432,7 @@ interface BuildingHeatmapProps {
   active?: boolean
   cameraMode?: CameraMode
   csiView?: boolean
+  solarTracking?: boolean
   csiActivity?: CsiActivity
   band?: number
   focusedBand?: number | null
@@ -476,6 +478,7 @@ export function BuildingHeatmap({
   active = true,
   cameraMode = 'orbit',
   csiView = false,
+  solarTracking = false,
   csiActivity = 'auto',
   orbit = null,
   onOrbitChange,
@@ -501,6 +504,9 @@ export function BuildingHeatmap({
   controlsSlot = null,
 }: BuildingHeatmapProps) {
   const activeRef = useRef(active)
+  const [showSunPaths, setShowSunPaths] = useState(true)
+  const sunPathsRef = useRef(showSunPaths)
+  sunPathsRef.current = showSunPaths
   activeRef.current = active
   const csiRef = useRef({ enabled: csiView, activity: csiActivity })
   csiRef.current = { enabled: csiView, activity: csiActivity }
@@ -1469,6 +1475,9 @@ export function BuildingHeatmap({
 
     const cloudCanopy = createCloudCanopy(height + 3)
     scene.add(cloudCanopy.mesh)
+    const sunPaths = createFacadeSunlight()
+    scene.add(sunPaths.group)
+    let lastRayPaint = 0
 
     let frame = 0
     const projected = new THREE.Vector3()
@@ -1488,6 +1497,22 @@ export function BuildingHeatmap({
       previousTime = now
       if (!activeRef.current || document.hidden) return
       const context = sceneRef.current
+      sunPaths.group.visible =
+        sunPathsRef.current &&
+        cameraModeRef.current !== 'plan' &&
+        buildingVariantRef.current === 'controlled'
+      if (sunPaths.group.visible && now - lastRayPaint >= 100) {
+        const currentTick = lightingRef.current.tick
+        sunPaths.update(
+          sunAt(
+            currentTick.solar_azimuth,
+            currentTick.solar_elevation
+          ).normalize(),
+          louvres.get(activeWallRef.current) ?? [],
+          wallOccluders
+        )
+        lastRayPaint = now
+      }
       if (cloudCanopy.mesh.visible && !reducedMotion.matches) {
         cloudCanopy.mesh.position.x = Math.sin(now / 30000) * 1.5
         cloudCanopy.mesh.position.z = Math.cos(now / 45000) * 0.8
@@ -1884,13 +1909,17 @@ export function BuildingHeatmap({
       const wall = walls.get(orientation)
       if (!assemblies) continue
       assemblies.forEach((assembly, index) => {
+        if (assembly.reflector !== solarTracking) {
+          assembly.reflector = solarTracking
+          setLouvreAngle(assembly, assembly.angle)
+        }
         const wasVisible = assembly.group.visible
         assembly.group.visible = controlled && Boolean(wall)
         const zoneId = `${orientation[0].toUpperCase()}${index + 1}`
         const reading = wall?.zones?.find((zone) => zone.zone === zoneId)
         // A missing channel holds its last target; wall targets never drive zones.
         if (!reading || !Number.isFinite(reading.angle)) return
-        assembly.targetAngle = THREE.MathUtils.clamp(reading.angle, 0, 60)
+        assembly.targetAngle = THREE.MathUtils.clamp(reading.angle, 0, 180)
         if (controlled && (!context.posed || !wasVisible))
           setLouvreAngle(assembly, assembly.targetAngle)
       })
@@ -2091,7 +2120,17 @@ export function BuildingHeatmap({
       motionReadoutRef.current.textContent =
         'No external louvres, actuators or control brain'
     context.refreshProbe()
-  }, [floors, overhang, roofPitch, roof, surfaceMode, tick, walls, controlled])
+  }, [
+    floors,
+    overhang,
+    roofPitch,
+    roof,
+    surfaceMode,
+    tick,
+    walls,
+    controlled,
+    solarTracking,
+  ])
 
   useEffect(() => {
     const context = sceneRef.current
@@ -2441,6 +2480,20 @@ export function BuildingHeatmap({
               >
                 View settings
               </summary>
+              {activeCameraMode !== 'plan' && controlled && (
+                <label className='mt-2 block text-[10px]'>
+                  <input
+                    type='checkbox'
+                    checked={showSunPaths}
+                    onChange={(event) => setShowSunPaths(event.target.checked)}
+                  />{' '}
+                  Sunlight paths
+                  <span className='mt-1 block text-muted-foreground'>
+                    Amber → incoming · cyan → reflected. Illustrative beam
+                    directions; reflected energy depends on the surface finish.
+                  </span>
+                </label>
+              )}
               <div
                 aria-label='Surface colouring'
                 className='mt-2 flex flex-wrap gap-1'

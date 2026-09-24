@@ -45,7 +45,9 @@ from:
 - **Demo 1 · Follow simulation (`twin`):** select this in the dashboard's
   Hardware demo card, then use Play or Run simulation. The dashboard pushes
   the displayed angles for W13/W14/W9/W10 as the simulation moves, including
-  timeline scrubbing. Playback slows to one second per tick to give the rig
+  timeline scrubbing, at the same angle (no gain multiplier). The normal clear-day
+  tracking demo gradually maps the sun’s wall-section profile to 0–180°;
+  use `/hardware` to calibrate physical blade angles. Playback slows to one second per tick to give the rig
   time to follow; physical travel still obeys the firmware's slew limit.
 - **Demo 2 · Sensor only (`auto`, default):** select this in the card or open
   `/demo`, which switches to sensor-only control without loading a simulation.
@@ -56,8 +58,10 @@ from:
 Louvre angles run 0–180°: **0° is perpendicular to the building** (the start
 position), **90° is parallel to it** (most shading), and **180° is perpendicular
 again with the blade flipped**. Auto lux control shades within 0–90°; calibration
-holds use the full range. The twin uses the same convention over 0–60°, so
-mirrored angles pass through unchanged. SG90s
+holds and solar-tracking twin commands use the full 0–180° range. Tracking
+progresses from 0° with overhead sun through 90° at a 45° sun profile, approaching
+180° at the facing horizon. It does not jump when direct beam appears. Travel
+remains rate-limited, and mirrored angles pass through unchanged. SG90s
 give no position feedback, so every angle shown is **commanded, not measured**.
 
 ## Corner-light demonstration

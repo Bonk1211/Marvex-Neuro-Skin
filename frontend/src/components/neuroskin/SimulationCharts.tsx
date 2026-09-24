@@ -124,7 +124,7 @@ export function SimulationCharts({
           <BaseChart
             data={chartData}
             annotations={referenceTimes}
-            domain={[0, 60]}
+            domain={[0, 180]}
             unit='°'
           >
             <Line
@@ -162,7 +162,7 @@ export function SimulationCharts({
           <BaseChart
             data={chartData}
             annotations={referenceTimes}
-            domain={[0, 60]}
+            domain={[0, 180]}
             unit='°'
           >
             <Line
@@ -310,7 +310,7 @@ export function SimulationCharts({
           <BaseChart
             data={chartData}
             annotations={referenceTimes}
-            domain={[0, 60]}
+            domain={[0, 180]}
             unit='°'
           >
             <Line

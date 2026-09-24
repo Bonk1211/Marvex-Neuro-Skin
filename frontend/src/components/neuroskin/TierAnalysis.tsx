@@ -35,7 +35,8 @@ export const TIER_STEPS: TierStep[] = [
     scenario: 'overview',
     tier: 'Input',
     label: 'Read sensor stream',
-    action: 'Pulling 72 ticks (07:00-19:00) of irradiance, wind, temperature and occupancy.',
+    action:
+      'Pulling 72 ticks (07:00-19:00) of irradiance, wind, temperature and occupancy.',
     why: 'Every tier below reads the same day, so the three are comparable.',
     icon: Waves,
   },
@@ -118,6 +119,7 @@ export function TierRunner({
   active,
   running,
   onRun,
+  onTracking,
   onSelect,
 }: {
   statuses: Partial<Record<ScenarioName, TierStatus>>
@@ -125,6 +127,7 @@ export function TierRunner({
   active: ScenarioName | null
   running: boolean
   onRun: () => void
+  onTracking: () => void
   onSelect: (scenario: ScenarioName) => void
 }) {
   const done = TIER_STEPS.filter(
@@ -134,16 +137,13 @@ export function TierRunner({
   return (
     <section className='console-card' aria-label='Scenario comparisons'>
       <div className='flex items-center justify-between gap-2'>
-        <p className='console-card-title'>Sandbox simulation</p>
-        <p className='text-[9px] text-muted-foreground'>
-          {done}/{TIER_STEPS.length} complete
-        </p>
+        <p className='console-card-title'>West facade solar tracking</p>
       </div>
 
       <button
         className='run-button mt-2'
         disabled={running}
-        onClick={onRun}
+        onClick={onTracking}
         type='button'
       >
         {running ? (
@@ -153,6 +153,22 @@ export function TierRunner({
         )}
         {running ? 'Running analysis' : 'Run simulation'}
       </button>
+      <p className='mt-2 text-[10px] text-muted-foreground'>
+        Clear day · healthy sensors · calm wind. Angles gradually follow the
+        sun: 0° overhead, 90° at a 45° sun profile, approaching 180° near
+        sunset.
+      </p>
+      <button
+        className='rail-action mt-2'
+        disabled={running}
+        onClick={onRun}
+        type='button'
+      >
+        Run diagnostic tests
+      </button>
+      <p className='mt-1 text-[9px] text-muted-foreground'>
+        {done}/{TIER_STEPS.length} complete
+      </p>
 
       <ol className='mt-2 flex flex-col gap-1'>
         {TIER_STEPS.map((step) => {

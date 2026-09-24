@@ -7,7 +7,9 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validato
 
 from app.config import DEFAULTS, MAX_TICK
 
-ScenarioName = Literal["overview", "lie_detector", "co_optimization", "budget_failsafe"]
+ScenarioName = Literal[
+    "overview", "solar_tracking", "lie_detector", "co_optimization", "budget_failsafe"
+]
 CloudProfile = Literal["clear", "scattered", "overcast"]
 EnvironmentSource = Literal["synthetic", "met_anchored", "open_meteo"]
 FacadeOrientation = Literal["north", "east", "south", "west"]

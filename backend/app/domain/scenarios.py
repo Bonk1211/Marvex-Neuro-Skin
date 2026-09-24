@@ -69,6 +69,7 @@ from app.weather import (
 )
 
 SCENARIO_TITLES = {
+    "solar_tracking": "West facade — normal solar tracking",
     "overview": "NeuroSkin representative tropical day",
     "lie_detector": "Tier 1 — Almanac lie-detector catch",
     "co_optimization": "Tier 2 — Naive versus co-optimisation",
@@ -283,7 +284,7 @@ def _metric_payload(ticks: list[TickPayload]) -> list[ComparisonMetric]:
 
 def _prepare_daylight(request, environments, suns, grids, observation=None):
     """Observe aperture flux at each registered probe, independently of sensor noise."""
-    if not request.daylight_model_enabled:
+    if not request.daylight_model_enabled or request.scenario == "solar_tracking":
         return None
     # Fixed geometry/site were evaluated offline; other sites/tilts have no evidence.
     if (request.latitude, request.longitude, request.facade_tilt) != (
@@ -446,6 +447,7 @@ def run_scenario(request: SimulationRunRequest) -> SimulationRunResponse:
                 solar_azimuth=solar.azimuth,
                 wall_azimuth=gain.azimuth,
                 facade_tilt=request.facade_tilt,
+                reflector=request.scenario == "solar_tracking",
             )
             for gain in gains
         }

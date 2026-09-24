@@ -94,6 +94,11 @@ def optimise_angle(
     def beam(angle: float) -> float:
         return incident * optics.beam_fraction * optics.beam_transmittance(angle) if optics else 0.0
 
+    if optics and optics.reflector:
+        angle = optics.tracking_angle()
+        breakdown = breakdown_at(angle)
+        return OptimisationResult(angle, breakdown, sum(breakdown.values()), cost(current_angle))
+
     # The grid locates the global basin, not the available actuator positions.
     grid = sorted({*map(float, range(0, 61, 5)), current_angle})
     bounds = [(DEFAULTS.angle_min, DEFAULTS.angle_max)]

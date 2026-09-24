@@ -75,11 +75,11 @@ const LENSES = [
 type Lens = (typeof LENSES)[number][0]
 
 const DEFAULT_REQUEST: SimulationRunRequest = {
-  scenario: 'overview',
+  scenario: 'solar_tracking',
   date: '2026-03-21',
   seed: 42,
   environment_source: 'synthetic',
-  cloud_profile: 'scattered',
+  cloud_profile: 'clear',
   occupancy_scale: 1,
   wind_override: 3,
   wind_direction: DEFAULT_BEARING,
@@ -328,17 +328,47 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
   )
 
   useEffect(() => {
-    // The first load is the sensor read, so the analysis opens with that step
-    // already banked and the three tiers waiting on the run button.
-    // Start in the occupied afternoon so light, people and shading are visible.
+    // Open the normal tracking demo at 15:00; the run button plays the whole day.
     void execute(initialRequest.current, 48).then((response) => {
       if (!response) return
-      tierRequests.current.overview = initialRequest.current
-      setTierResults((prev) => ({ ...prev, overview: response }))
-      setTierStatus((prev) => ({ ...prev, overview: 'done' }))
+      const scenario = initialRequest.current.scenario
+      tierRequests.current[scenario] = initialRequest.current
+      setTierResults((prev) => ({ ...prev, [scenario]: response }))
+      setTierStatus((prev) => ({ ...prev, [scenario]: 'done' }))
     })
     return () => requestController.current?.abort()
   }, [execute])
+
+  const runTracking = useCallback(async () => {
+    const next: SimulationRunRequest = {
+      ...request,
+      scenario: 'solar_tracking',
+      environment_source: 'synthetic',
+      cloud_profile: 'clear',
+      facade_orientation: 'west',
+      wind_override: 3,
+      power_ok: true,
+      zone_sensor_overrides: {},
+      zone_perturbations: {},
+      approved_episodes: [],
+      fault_correction: 'off',
+      vision_observation: null,
+    }
+    setRequest(next)
+    setSelectedWall('wall:west')
+    setSelectedZone(null)
+    setBuildingVariant('controlled')
+    setActiveTier(null)
+    setVisionSky(null)
+    setPlaying(false)
+    setTierRunning(true)
+    try {
+      const response = await execute(next, 0)
+      if (response) setPlaying(true)
+    } finally {
+      setTierRunning(false)
+    }
+  }, [execute, request])
 
   /**
    * The three-tier analysis: one run per tier, in order, with the dashboard
@@ -595,6 +625,8 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
   }
 
   const updateSkyObservation = async (observation: SkyObservation | null) => {
+    if (appliedRequest.current.scenario === 'solar_tracking')
+      return 'Solar tracking keeps the clear simulated sky.'
     if (loading || tierRunning || !tickCount) return null
     const sensorTick = Math.min(timelineIndex, tickCount - 1)
     const vision_observation = observation
@@ -713,6 +745,7 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
                       active={activeTier}
                       running={tierRunning}
                       onRun={() => void runTiers()}
+                      onTracking={() => void runTracking()}
                       onSelect={focusTier}
                     />
                   </div>
@@ -1053,6 +1086,7 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
                   className={`absolute inset-0 ${lens === 'brains' ? 'hidden' : ''}`}
                 >
                   <BuildingHeatmap
+                    solarTracking={data.scenario === 'solar_tracking'}
                     orbit={orbit}
                     onOrbitChange={setOrbit}
                     active={lens !== 'brains'}
@@ -1062,7 +1096,9 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
                     band={band}
                     focusedBand={floorFocused ? band : null}
                     onSelectBand={focusFloor}
-                    visionSky={visionSky}
+                    visionSky={
+                      data.scenario === 'solar_tracking' ? null : visionSky
+                    }
                     buildingVariant={buildingVariant}
                     onBuildingVariantChange={setBuildingVariant}
                     controlsSlot={lens === 'brains' ? null : sceneControls}

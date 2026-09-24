@@ -247,7 +247,8 @@ def run_tick(
     )
     target_angle = 0.0 if result is None else result.angle
     desired_angle = target_angle
-    if result is not None:
+    tracking = optics is not None and optics.reflector
+    if result is not None and not tracking:
         desired_angle, _moved = movement_budget(
             result.angle,
             current_angle,
@@ -276,7 +277,9 @@ def run_tick(
     elif moved:
         mode = "NORMAL"
         movement_reason = (
-            "Direct-sun exposure reduction overrides the comfort movement budget."
+            "Solar tracking: follow the sun's wall-section position gradually over 0–180 degrees."
+            if tracking
+            else "Direct-sun exposure reduction overrides the comfort movement budget."
             if glare_improvement
             else "The expected benefit clears the movement budget."
         )
@@ -287,7 +290,11 @@ def run_tick(
         movement_reason = "The target improvement is too small to justify mechanical movement."
     else:
         mode = "HOLD"
-        movement_reason = "The current angle remains the lowest-cost allowable position."
+        movement_reason = (
+            "Solar tracking: holding the almanac target; rear-facing sun parks at 0 degrees."
+            if tracking
+            else "The current angle remains the lowest-cost allowable position."
+        )
     if conditions.glare_risk:
         movement_reason += " Direct-sun exposure remains above the screening limit."
     decision = Decision(

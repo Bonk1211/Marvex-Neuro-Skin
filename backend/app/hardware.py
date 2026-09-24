@@ -18,8 +18,6 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.config import DEFAULTS
-
 router = APIRouter(prefix="/api/v1/hardware", tags=["hardware"])
 logger = logging.getLogger("neuroskin.hardware")
 
@@ -48,12 +46,6 @@ CALIBRATION_PATH = Path(__file__).resolve().parents[1] / "data" / "hardware_cali
 ANGLE_MAX = 180.0
 # Auto lux control shades on the 0–90° half: 0° open, 90° closed.
 SHADE_MAX = 90.0
-# The twin's louvres only travel 0–60°, so mirrored 1:1 the rig used a third of its shading
-# half (and, over a real day, mostly under 10°: barely visible). Scale the twin's full range
-# onto the rig's: the twin's fully shaded 60° becomes the rig's fully closed 90°.
-# ponytail: linear. Raise this for a more theatrical demo; the clamp below saturates at closed
-# rather than letting a bigger angle swing past 90° and reopen the louvre.
-TWIN_GAIN = SHADE_MAX / DEFAULTS.angle_max
 Angle = Annotated[float, Field(ge=0, le=ANGLE_MAX, allow_inf_nan=False)]
 ServoDegrees = Annotated[float, Field(ge=0, le=180, allow_inf_nan=False)]
 CsiAmplitude = Annotated[float, Field(ge=0, le=256, allow_inf_nan=False)]
@@ -287,13 +279,12 @@ def _command(mode: str, panel: str, held: dict[str, float], reading: PanelReadin
             ),
         )
     if mode == "twin":
-        angle = min(SHADE_MAX, held[panel] * TWIN_GAIN)
+        angle = held[panel]  # Already validated in 0–180°; preserve the literal twin pose.
         return PanelCommand(
             angle=angle,
             mode="twin",
             reason=(
-                f"Mirroring twin zone {PANEL_ZONES[panel]}: {held[panel]:.0f}° "
-                f"× {TWIN_GAIN:g} = {angle:.0f}°."
+                f"Mirroring twin zone {PANEL_ZONES[panel]}: {held[panel]:g}° → {angle:g}°."
             ),
         )
     if mode == "calibrate":

@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from functools import lru_cache
-from math import cos, isfinite, pi, radians, sin, sqrt
+from math import atan2, cos, degrees, isfinite, pi, radians, sin, sqrt
 
 from app.config import DEFAULTS
 
@@ -31,7 +31,9 @@ def _ray_transmittance(
 
 
 @lru_cache(maxsize=16)
-def _diffuse_curves(tilt: float) -> tuple[tuple[float, ...], tuple[float, ...]]:
+def _diffuse_curves(
+    tilt: float, reflector: bool = False
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
     """Cosine-weighted isotropic sky/ground transmission at each whole degree."""
     lean = radians(tilt - 90)
     cos_lean, sin_lean = cos(lean), sin(lean)
@@ -48,8 +50,10 @@ def _diffuse_curves(tilt: float) -> tuple[tuple[float, ...], tuple[float, ...]]:
                     samples.append((sy, sz, incidence))
         weight = sum(incidence for _, _, incidence in samples)
         transmission = []
-        for angle in range(int(DEFAULTS.angle_max) + 1):
+        for angle in range(181 if reflector else int(DEFAULTS.angle_max) + 1):
             sine, cosine = sin(radians(angle)), cos(radians(angle))
+            if reflector:
+                sine = -sine
             transmitted = sum(
                 incidence * _ray_transmittance(sy, sz, cos_lean, incidence, sine, cosine)
                 for sy, sz, incidence in samples
@@ -69,6 +73,8 @@ class FacadeOptics:
     wall_azimuth: float
     facade_tilt: float = DEFAULTS.facade_tilt
     sky_fraction: float = 1.0
+    # Reflector mounting lowers the outside edge as the positive angle increases.
+    reflector: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "beam_fraction", _clamp(self.beam_fraction))
@@ -90,7 +96,9 @@ class FacadeOptics:
         sz = cos(elevation) * cos(radians(self.solar_azimuth - self.wall_azimuth))
         lean = radians(_clamp(self.facade_tilt, 180.0) - 90.0)
         projected_pitch = sz * cos(lean) - sy * sin(lean)
-        theta = radians(_clamp(angle, DEFAULTS.angle_max))
+        theta = radians(_clamp(angle, 180.0 if self.reflector else DEFAULTS.angle_max))
+        if self.reflector:
+            theta = -theta
         # ponytail: periodic-bank average omits finite ends/side gaps; use the
         # existing mesh raycast when a spatial shadow map is required.
         return _ray_transmittance(sy, sz, cos(lean), projected_pitch, sin(theta), cos(theta))
@@ -98,8 +106,8 @@ class FacadeOptics:
     def diffuse_transmittance(self, angle: float) -> float:
         # ponytail: isotropic hemispheres with 8x16 rays, interpolated at 1 degree;
         # increase quadrature or add sky luminance data when calibration warrants it.
-        sky, ground = _diffuse_curves(_clamp(self.facade_tilt, 180.0))
-        bounded = _clamp(angle, DEFAULTS.angle_max)
+        sky, ground = _diffuse_curves(_clamp(self.facade_tilt, 180.0), self.reflector)
+        bounded = _clamp(angle, 180.0 if self.reflector else DEFAULTS.angle_max)
         low = int(bounded)
         high = min(low + 1, len(sky) - 1)
         fraction = bounded - low
@@ -116,3 +124,21 @@ class FacadeOptics:
         # Opaque blades have the same geometric transmission for visible light;
         # the room/glazing lux transfer remains the sensor model's calibration.
         return self.solar_transmittance(angle)
+
+    def tracking_angle(self) -> float:
+        """Map the sun's wall-section position continuously onto 0–180°.
+
+        Overhead is 0°, a 45° profile is 90°, and the facing horizon approaches
+        180°. Irradiance/shadow changes never switch to a different target.
+        This is a full-travel demo mapping; the ray model evaluates the actual
+        blade pose rather than assuming an optimal reflection direction.
+        """
+        elevation = radians(self.solar_elevation)
+        sy = sin(elevation)
+        sz = cos(elevation) * cos(radians(self.solar_azimuth - self.wall_azimuth))
+        # Track in front of the wall even while the roof/lean shades its glazing:
+        # the projecting reflector can see the sun before the wall plane does.
+        if self.solar_elevation <= 0 or sz <= 1e-9:
+            return 0.0
+        profile = degrees(atan2(sy, sz))
+        return _clamp(2.0 * (90.0 - profile), 180.0)

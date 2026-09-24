@@ -276,6 +276,33 @@ describe('NeuroSkinDashboard', () => {
     ).toHaveTextContent('Outside')
   })
 
+  it('runs a single healthy clear west tracking day from the main simulation button', async () => {
+    render(<NeuroSkinDashboard />)
+    await screen.findByText('Mean load')
+    expect(JSON.parse(String(simulationCalls()[0][1].body))).toMatchObject({
+      scenario: 'solar_tracking',
+      cloud_profile: 'clear',
+      wind_override: 3,
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Run simulation' }))
+    await waitFor(() => expect(simulationCalls()).toHaveLength(2))
+    expect(JSON.parse(String(simulationCalls()[1][1].body))).toMatchObject({
+      scenario: 'solar_tracking',
+      environment_source: 'synthetic',
+      cloud_profile: 'clear',
+      facade_orientation: 'west',
+      wind_override: 3,
+      power_ok: true,
+      zone_sensor_overrides: {},
+      zone_perturbations: {},
+      fault_correction: 'off',
+      vision_observation: null,
+    })
+    expect(
+      await screen.findByRole('button', { name: 'Pause sun movement' })
+    ).toBeInTheDocument()
+  })
+
   it('shows an accessible loading state while the simulation is pending', () => {
     fetchMock.mockReturnValue(new Promise(() => {}))
     render(<NeuroSkinDashboard />)
@@ -337,7 +364,9 @@ describe('NeuroSkinDashboard', () => {
       screen.queryByRole('button', { name: 'Optimisation' })
     ).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Run simulation' }))
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Run diagnostic tests' })
+    )
     await waitFor(
       () => expect(screen.getByText('4/4 complete')).toBeInTheDocument(),
       { timeout: 6000 }
@@ -422,7 +451,9 @@ describe('NeuroSkinDashboard', () => {
     await screen.findByText('Mean load')
     fetchMock.mockClear()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Run simulation' }))
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Run diagnostic tests' })
+    )
 
     // The floating card names the step that is running.
     expect(
@@ -453,7 +484,9 @@ describe('NeuroSkinDashboard', () => {
   it('shows a finished tier from its stored result instead of re-running it', async () => {
     render(<NeuroSkinDashboard />)
     await screen.findByText('Mean load')
-    fireEvent.click(screen.getByRole('button', { name: 'Run simulation' }))
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Run diagnostic tests' })
+    )
     await waitFor(
       () => expect(screen.getByText('4/4 complete')).toBeInTheDocument(),
       { timeout: 6000 }
@@ -496,7 +529,9 @@ describe('NeuroSkinDashboard', () => {
     expect(screen.getByText(/^sun \d+° elev · \d+° az$/)).toBeInTheDocument()
     const started = (timeline as HTMLInputElement).value
 
-    fireEvent.click(screen.getByRole('button', { name: 'Run simulation' }))
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Run diagnostic tests' })
+    )
     expect(
       await screen.findByRole('button', { name: 'Pause sun movement' })
     ).toBeInTheDocument()
@@ -798,7 +833,9 @@ describe('NeuroSkinDashboard', () => {
           finish = resolve
         })
     )
-    fireEvent.click(screen.getByRole('button', { name: 'Run simulation' }))
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Run diagnostic tests' })
+    )
     const signal = fetchMock.mock.calls[1][1].signal as AbortSignal
     fireEvent.click(screen.getByRole('link', { name: 'Floor' }))
     expect(signal.aborted).toBe(false)

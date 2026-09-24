@@ -1,4 +1,5 @@
 export type ScenarioName =
+  | 'solar_tracking'
   | 'overview'
   | 'lie_detector'
   | 'co_optimization'
