@@ -12,7 +12,9 @@ from app.domain.scenarios import SCENARIO_TITLES, run_scenario
 from app.feed_health import feed_health
 from app.hardware import router as hardware_router
 from app.logging_config import configure_logging
+from app.onboarding import router as onboarding_router
 from app.schemas import SimulationRunRequest, SimulationRunResponse
+from app.section import router as section_router
 from app.vision import router as vision_router
 
 configure_logging()
@@ -27,12 +29,14 @@ app = FastAPI(
     ),
 )
 app.include_router(hardware_router)
+app.include_router(section_router)
+app.include_router(onboarding_router)
 app.include_router(vision_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "X-Request-ID"],
     expose_headers=["X-Request-ID"],
 )

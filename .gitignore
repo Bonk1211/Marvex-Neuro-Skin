@@ -7,6 +7,7 @@ Thumbs.db
 # JavaScript dependencies and build output
 node_modules/
 .next/
+.next-*/
 out/
 dist/
 build/
@@ -39,5 +40,8 @@ backend/.venv/
 backend/.ruff_cache/
 **/.ipynb_checkpoints/
 
+# Building-manager profile and the documents they attach; runtime state, per deployment.
+backend/data/onboarding/
+
 # ESP32 WiFi/token secrets
-hardware/esp32/neuroskin_bridge/secrets.h
+hardware/esp32/*/secrets.h
