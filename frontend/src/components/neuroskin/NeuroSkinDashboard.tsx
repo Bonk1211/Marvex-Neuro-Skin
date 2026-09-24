@@ -782,7 +782,7 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
         <div className='console-rails'>
           <aside
             className='console-rail console-rail-left'
-            aria-label='Simulation results'
+            aria-label='Simulation results and sky monitoring'
             aria-live='polite'
           >
             {lens === 'building' && (
@@ -1091,6 +1091,11 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
                 )}
               </>
             )}
+            <CloudVisionPanel
+              onObservation={updateSkyObservation}
+              onSkyChange={setVisionSky}
+              onAgeChange={setVisionAgeSeconds}
+            />
           </aside>
 
           <RailHandle side='left' label='Resize results panel' />
@@ -1427,7 +1432,7 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
 
           <aside
             className='console-rail console-rail-right'
-            aria-label='Scene controls and sky monitoring'
+            aria-label='Scene controls'
           >
             {lens === 'floor' && (
               <MeetingGlareDemo
@@ -1478,11 +1483,6 @@ export function NeuroSkinDashboard({ profile }: { profile?: BuildingProfile }) {
             {/* Portal target for the 3D view's scene controls. Kept childless
                 so React and the portal never fight over the same node. */}
             <div ref={setSceneControls} />
-            <CloudVisionPanel
-              onObservation={updateSkyObservation}
-              onSkyChange={setVisionSky}
-              onAgeChange={setVisionAgeSeconds}
-            />
           </aside>
         </div>
       </div>
